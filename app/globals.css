@@ -1,0 +1,133 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ─── Design tokens ─── */
+@theme inline {
+  --color-background:       var(--background);
+  --color-foreground:       var(--foreground);
+  --color-card:             var(--card);
+  --color-card-foreground:  var(--card-foreground);
+  --color-popover:          var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary:          var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary:        var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted:            var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent:           var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive:      var(--destructive);
+  --color-border:           var(--border);
+  --color-input:            var(--input);
+  --color-ring:             var(--ring);
+  --color-positive:         var(--positive);
+  --color-negative:         var(--negative);
+  --color-steel:            var(--steel);
+  --color-sidebar:          var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border:   var(--sidebar-border);
+  --font-sans:              var(--font-geist-sans);
+  --font-mono:              var(--font-geist-mono);
+  --radius-sm:  calc(var(--radius) * 0.6);
+  --radius-md:  calc(var(--radius) * 0.8);
+  --radius-lg:  var(--radius);
+  --radius-xl:  calc(var(--radius) * 1.4);
+}
+
+/* ─── Dark-first palette — app is always dark ─── */
+:root {
+  --background:         oklch(0.08 0 0);
+  --card:               oklch(0.12 0 0);
+  --popover:            oklch(0.14 0 0);
+  --sidebar:            oklch(0.105 0 0);
+
+  --foreground:         oklch(0.94 0.005 74);
+  --card-foreground:    oklch(0.94 0.005 74);
+  --popover-foreground: oklch(0.94 0.005 74);
+  --sidebar-foreground: oklch(0.90 0.005 74);
+
+  --muted:              oklch(0.14 0 0);
+  --muted-foreground:   oklch(0.64 0.008 74);
+
+  /* Amber — brand primary */
+  --primary:            oklch(0.72 0.14 74);
+  --primary-foreground: oklch(0.08 0 0);
+
+  /* Neutral interactive */
+  --secondary:          oklch(0.17 0 0);
+  --secondary-foreground: oklch(0.88 0.005 74);
+  --accent:             oklch(0.16 0 0);
+  --accent-foreground:  oklch(0.88 0.005 74);
+
+  /* Semantic */
+  --positive:           oklch(0.72 0.14 74);
+  --negative:           oklch(0.64 0.16 28);
+  --steel:              oklch(0.64 0.07 240);
+  --destructive:        oklch(0.64 0.16 28);
+
+  /* Structure */
+  --border:             oklch(0.20 0 0);
+  --input:              oklch(0.20 0 0);
+  --ring:               oklch(0.72 0.14 74);
+  --sidebar-border:     oklch(0.17 0 0);
+
+  --radius: 0.25rem;
+}
+
+/* z-index scale */
+:root {
+  --z-dropdown:       100;
+  --z-sticky:         200;
+  --z-modal-backdrop: 300;
+  --z-modal:          400;
+  --z-toast:          500;
+  --z-tooltip:        600;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "ss01", "cv01", "cv11";
+  }
+}
+
+/* ─── Skeleton pulse ─── */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%       { opacity: 0.6;  }
+}
+
+.skeleton {
+  background: oklch(0.20 0 0);
+  border-radius: var(--radius);
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; opacity: 0.45; }
+}
+
+/* ─── Holdings table row hover ─── */
+.holdings-row {
+  transition: background-color 150ms ease-out;
+  cursor: pointer;
+}
+.holdings-row:hover { background-color: oklch(0.14 0 0); }
+.holdings-row.expanded { background-color: oklch(0.15 0 0); }
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: oklch(0.24 0 0);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover { background: oklch(0.32 0 0); }
