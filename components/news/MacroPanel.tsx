@@ -1,22 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { OPTIONS_HEADLINES } from "@/lib/news-data";
 import type { MacroRateItem } from "@/app/api/macro/route";
-
-const typeColor: Record<string, string> = {
-  call:    "oklch(0.72 0.14 74)",
-  put:     "oklch(0.64 0.16 28)",
-  futures: "oklch(0.64 0.07 240)",
-  macro:   "oklch(0.64 0.008 74)",
-};
-
-const typeLabel: Record<string, string> = {
-  call:    "Calls",
-  put:     "Puts",
-  futures: "Futures",
-  macro:   "Macro",
-};
 
 export function MacroPanel() {
   const [rates, setRates] = useState<MacroRateItem[]>([]);
@@ -39,7 +24,7 @@ export function MacroPanel() {
       {/* Rates */}
       <div className="px-5 py-4 border-b border-border">
         <div className="flex items-center justify-between mb-3">
-          <p className="text-xs font-medium text-muted-foreground">Rates &amp; Macro</p>
+          <h2 className="text-lg font-medium text-foreground leading-none">Rates &amp; Macro</h2>
           {updatedAt && (
             <p className="text-xs" style={{ color: "oklch(0.38 0.008 74)" }}>
               {updatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -53,26 +38,6 @@ export function MacroPanel() {
           </div>
         )}
       </div>
-
-      {/* Options / Futures */}
-      <div className="px-5 py-4 flex flex-col gap-0">
-        <p className="text-xs font-medium text-muted-foreground mb-3">
-          Options &amp; Futures
-        </p>
-        <div className="flex flex-col gap-3">
-          {OPTIONS_HEADLINES.map((h) => (
-            <div key={h.id} className="flex gap-2.5">
-              <span
-                className="text-xs font-mono shrink-0 mt-0.5"
-                style={{ color: typeColor[h.type] }}
-              >
-                {typeLabel[h.type]}
-              </span>
-              <p className="text-xs text-muted-foreground leading-snug">{h.text}</p>
-            </div>
-          ))}
-        </div>
-      </div>
     </aside>
   );
 }
@@ -82,9 +47,9 @@ function RateRow({ rate: r }: { rate: MacroRateItem }) {
   const positive = r.change > 0;
   const negative = r.change < 0;
   const changeColor = positive
-    ? "oklch(0.72 0.14 74)"
+    ? "var(--positive)"
     : negative
-    ? "oklch(0.64 0.16 28)"
+    ? "var(--negative)"
     : "oklch(0.44 0.008 74)";
 
   const changeLabel =

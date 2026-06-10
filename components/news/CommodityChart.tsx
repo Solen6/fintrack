@@ -26,12 +26,23 @@ interface Catalyst {
   label: string;
 }
 
-const LINE_COLORS = [
-  "oklch(0.72 0.14 74)",  // amber
-  "oklch(0.64 0.07 240)", // steel blue
-  "oklch(0.64 0.16 28)",  // warm red
-  "oklch(0.78 0.10 140)", // muted green
-];
+const TF_OPTIONS = ["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y"] as const;
+type Timeframe = (typeof TF_OPTIONS)[number];
+
+const INTRADAY: Timeframe[] = ["1D", "5D"];
+// Catalyst markers only make sense on the daily, ≤1y windows
+const CATALYST_FRAMES: Timeframe[] = ["1M", "6M", "YTD", "1Y"];
+
+// Thematic line color pinned to each commodity (by id), each evoking its material
+const COMMODITY_COLORS: Record<string, string> = {
+  gold:    "oklch(0.80 0.14 85)",   // gold
+  silver:  "oklch(0.80 0.01 250)",  // silver-gray
+  oil:     "oklch(0.62 0.10 215)",  // crude (deep teal)
+  copper:  "oklch(0.67 0.14 45)",   // copper-orange
+  uranium: "oklch(0.82 0.18 140)",  // uranium (glow green)
+};
+const FALLBACK_COLOR = "oklch(0.66 0.09 240)"; // steel blue, for any unmapped id
+const colorFor = (id: string) => COMMODITY_COLORS[id] ?? FALLBACK_COLOR;
 
 /* ─── Curated catalyst events per commodity ─── */
 const CATALYSTS: Record<string, Catalyst[]> = {
@@ -65,31 +76,71 @@ const CATALYSTS: Record<string, Catalyst[]> = {
   ],
 };
 
+/* ─── Timeframe-aware date helpers ─── */
+function parseDate(val: string, tf: Timeframe): Date {
+  // Intraday values are full ISO timestamps; daily values are "YYYY-MM-DD"
+  return new Date(INTRADAY.includes(tf) ? val : val + "T00:00:00");
+}
+
+function tickBucket(val: string, tf: Timeframe): string {
+  const d = parseDate(val, tf);
+  if (tf === "1D") return String(d.getHours());
+  if (tf === "5D") return d.toDateString();
+  if (tf === "5Y") return String(d.getFullYear());
+  return `${d.getFullYear()}-${d.getMonth()}`;
+}
+
+function formatTick(val: string, tf: Timeframe): string {
+  const d = parseDate(val, tf);
+  if (tf === "1D") return d.toLocaleTimeString("en-US", { hour: "numeric" });
+  if (tf === "5D") return d.toLocaleDateString("en-US", { weekday: "short" });
+  if (tf === "5Y") return String(d.getFullYear());
+  const mon = d.toLocaleDateString("en-US", { month: "short" });
+  return `${mon} '${String(d.getFullYear()).slice(-2)}`;
+}
+
+function formatTooltipDate(val: string, tf: Timeframe): string {
+  const d = parseDate(val, tf);
+  if (INTRADAY.includes(tf)) {
+    return d.toLocaleString("en-US", {
+      month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    });
+  }
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
 export function CommodityChart() {
   const [commodities, setCommodities] = useState<CommodityData[]>([]);
   const [loading, setLoading] = useState(true);
   const [active, setActive] = useState<string[]>([]);
+  const [timeframe, setTimeframe] = useState<Timeframe>("1Y");
   const [addOpen, setAddOpen] = useState(false);
+  const [tfOpen, setTfOpen] = useState(false);
   const addRef = useRef<HTMLDivElement>(null);
+  const tfRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch("/api/commodities")
+    setLoading(true);
+    fetch(`/api/commodities?range=${timeframe}`)
       .then((r) => r.json())
       .then((d) => {
         const list: CommodityData[] = d.commodities ?? [];
         setCommodities(list);
-        const first = list.find((c) => c.data.length > 0);
-        if (first) setActive([first.id]);
+        // Keep the current selection across timeframe changes; seed it on first load
+        setActive((prev) => {
+          if (prev.length) return prev;
+          const first = list.find((c) => c.data.length > 0);
+          return first ? [first.id] : [];
+        });
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [timeframe]);
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
-      if (addRef.current && !addRef.current.contains(e.target as Node)) {
-        setAddOpen(false);
-      }
+      if (addRef.current && !addRef.current.contains(e.target as Node)) setAddOpen(false);
+      if (tfRef.current && !tfRef.current.contains(e.target as Node)) setTfOpen(false);
     }
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
@@ -101,10 +152,10 @@ export function CommodityChart() {
   const activeCommodities = commodities.filter((c) => active.includes(c.id));
   const available         = commodities.filter((c) => !active.includes(c.id) && c.data.length > 0);
 
-  // Normalize to % change from day 0
+  // Normalize each series to % change from its first point
   const chartData = useMemo(() => {
-    if (activeCommodities.length === 0) return [];
-    const base = activeCommodities[0];
+    const base = activeCommodities.find((c) => c.data.length > 0);
+    if (!base) return [];
     return base.data.map((point, i) => {
       const row: Record<string, string | number> = { date: point.date };
       for (const c of activeCommodities) {
@@ -116,25 +167,26 @@ export function CommodityChart() {
     });
   }, [activeCommodities]);
 
-  // Build month tick positions from actual data dates
-  const monthTicks = useMemo(() => {
+  // Axis ticks: first point of each time bucket (hour / day / month / year by timeframe)
+  const axisTicks = useMemo(() => {
     if (chartData.length === 0) return [];
     const seen = new Set<string>();
     const ticks: string[] = [];
     for (const row of chartData) {
       const date = row.date as string;
-      const month = date.slice(0, 7); // "YYYY-MM"
-      if (!seen.has(month)) {
-        seen.add(month);
+      const bucket = tickBucket(date, timeframe);
+      if (!seen.has(bucket)) {
+        seen.add(bucket);
         ticks.push(date);
       }
     }
     return ticks;
-  }, [chartData]);
+  }, [chartData, timeframe]);
 
-  // Catalyst dates in range of actual data (primary commodity)
+  // Catalyst dates in range of actual data (primary commodity) — daily windows only
   const catalysts = useMemo(() => {
-    const primary = activeCommodities[0];
+    if (!CATALYST_FRAMES.includes(timeframe)) return [];
+    const primary = activeCommodities.find((c) => c.data.length > 0);
     if (!primary) return [];
     const dates = new Set(primary.data.map((d) => d.date));
     const allDates = primary.data.map((d) => d.date).sort();
@@ -145,8 +197,8 @@ export function CommodityChart() {
     return events
       .filter((c) => c.date >= minDate && c.date <= maxDate)
       .map((c) => {
-        // Snap to nearest trading day if exact date not in data
         if (dates.has(c.date)) return c;
+        // Snap to nearest available trading day
         const nearest = allDates.reduce((a, b) =>
           Math.abs(new Date(b).getTime() - new Date(c.date).getTime()) <
           Math.abs(new Date(a).getTime() - new Date(c.date).getTime())
@@ -155,15 +207,46 @@ export function CommodityChart() {
         );
         return { ...c, date: nearest };
       });
-  }, [activeCommodities]);
+  }, [activeCommodities, timeframe]);
 
   return (
-    <section className="border-t border-border px-6 py-4 shrink-0" style={{ height: 280 }}>
+    <section className="border-t border-border px-6 py-4 shrink-0" style={{ height: 300 }}>
       {/* Header */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <p className="text-xs font-medium text-muted-foreground mr-2">
-          Commodities · 365d % change
-        </p>
+        <h2 className="text-lg font-medium text-foreground leading-none">Commodities</h2>
+
+        {/* Timeframe selector */}
+        <div className="relative" ref={tfRef}>
+          <button
+            onClick={() => setTfOpen((o) => !o)}
+            className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded-sm border border-border text-foreground hover:border-foreground/30 transition-colors duration-150"
+            aria-haspopup="listbox"
+            aria-expanded={tfOpen}
+          >
+            {timeframe}
+            <span className="text-muted-foreground" style={{ fontSize: "0.6rem" }}>▾</span>
+          </button>
+          {tfOpen && (
+            <div
+              className="absolute left-0 top-full mt-1 rounded-sm border border-border overflow-hidden"
+              style={{ background: "oklch(0.14 0 0)", zIndex: 50, minWidth: 84 }}
+              role="listbox"
+            >
+              {TF_OPTIONS.map((tf) => (
+                <button
+                  key={tf}
+                  className="w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-accent transition-colors duration-150"
+                  style={{ color: tf === timeframe ? "var(--primary)" : "oklch(0.64 0.008 74)" }}
+                  onClick={() => { setTimeframe(tf); setTfOpen(false); }}
+                  role="option"
+                  aria-selected={tf === timeframe}
+                >
+                  {tf}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         {loading ? (
           <div className="flex gap-2">
@@ -173,11 +256,11 @@ export function CommodityChart() {
           </div>
         ) : (
           <>
-            {activeCommodities.map((c, i) => (
+            {activeCommodities.map((c) => (
               <span
                 key={c.id}
                 className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded-sm"
-                style={{ background: "oklch(0.16 0 0)", color: LINE_COLORS[i] }}
+                style={{ background: "oklch(0.16 0 0)", color: colorFor(c.id) }}
               >
                 {c.symbol}
                 <span
@@ -227,13 +310,13 @@ export function CommodityChart() {
             )}
 
             <div className="ml-auto flex items-center gap-4">
-              {activeCommodities.map((c, i) => (
+              {activeCommodities.map((c) => (
                 <span key={c.id} className="text-xs font-mono flex items-center gap-1.5">
-                  <span style={{ color: LINE_COLORS[i] }}>{c.symbol}</span>
+                  <span style={{ color: colorFor(c.id) }}>{c.symbol}</span>
                   <span className="text-foreground">
                     {c.currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })}
                   </span>
-                  <span style={{ color: c.changePct >= 0 ? "oklch(0.72 0.14 74)" : "oklch(0.64 0.16 28)" }}>
+                  <span style={{ color: c.changePct >= 0 ? "var(--positive)" : "var(--negative)" }}>
                     {c.changePct >= 0 ? "+" : ""}{c.changePct.toFixed(2)}%
                   </span>
                 </span>
@@ -251,15 +334,17 @@ export function CommodityChart() {
           <div className="flex items-center justify-center h-full">
             <p className="text-sm text-muted-foreground">Add a commodity to view its chart.</p>
           </div>
+        ) : chartData.length === 0 ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-sm text-muted-foreground">No data for this timeframe.</p>
+          </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <XAxis
                 dataKey="date"
-                ticks={monthTicks}
-                tickFormatter={(val) =>
-                  new Date(val + "T00:00:00").toLocaleDateString("en-US", { month: "short" })
-                }
+                ticks={axisTicks}
+                tickFormatter={(val) => formatTick(val, timeframe)}
                 tick={{ fontSize: 10, fill: "oklch(0.52 0.008 74)" }}
                 axisLine={false}
                 tickLine={false}
@@ -272,7 +357,7 @@ export function CommodityChart() {
                 width={48}
               />
               <Tooltip
-                content={<CustomTooltip commodities={activeCommodities} colors={LINE_COLORS} />}
+                content={<CustomTooltip commodities={activeCommodities} timeframe={timeframe} />}
                 cursor={{ stroke: "oklch(0.28 0 0)", strokeWidth: 1 }}
               />
 
@@ -291,16 +376,17 @@ export function CommodityChart() {
                 />
               ))}
 
-              {activeCommodities.map((c, i) => (
+              {activeCommodities.map((c) => (
                 <Line
                   key={c.id}
                   type="monotone"
                   dataKey={c.id}
-                  stroke={LINE_COLORS[i]}
+                  stroke={colorFor(c.id)}
                   strokeWidth={2}
                   dot={false}
-                  activeDot={{ r: 3, fill: LINE_COLORS[i] }}
+                  activeDot={{ r: 3, fill: colorFor(c.id) }}
                   isAnimationActive={false}
+                  connectNulls
                 />
               ))}
             </LineChart>
@@ -313,27 +399,23 @@ export function CommodityChart() {
 
 /* ─── Custom tooltip ─── */
 function CustomTooltip({
-  active, payload, label, commodities, colors,
+  active, payload, label, commodities, timeframe,
 }: {
   active?: boolean;
   payload?: Array<{ dataKey: string; value: number }>;
   label?: string;
   commodities: CommodityData[];
-  colors: string[];
+  timeframe: Timeframe;
 }) {
   if (!active || !payload?.length || !label) return null;
-  const date = new Date(label + "T00:00:00").toLocaleDateString("en-US", {
-    month: "short", day: "numeric", year: "numeric",
-  });
   return (
     <div className="rounded-sm border border-border px-3 py-2 text-xs font-mono" style={{ background: "oklch(0.14 0 0)" }}>
-      <p className="text-muted-foreground mb-1.5">{date}</p>
+      <p className="text-muted-foreground mb-1.5">{formatTooltipDate(label, timeframe)}</p>
       {payload.map((p) => {
         const c = commodities.find((x) => x.id === p.dataKey);
         if (!c) return null;
-        const i = commodities.indexOf(c);
         return (
-          <p key={p.dataKey} style={{ color: colors[i] }}>
+          <p key={p.dataKey} style={{ color: colorFor(c.id) }}>
             {c.symbol}: {p.value > 0 ? "+" : ""}{p.value.toFixed(2)}%
           </p>
         );

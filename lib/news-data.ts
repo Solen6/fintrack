@@ -18,12 +18,6 @@ export interface MacroRate {
   unit: string;
 }
 
-export interface OptionsHeadline {
-  id: string;
-  text: string;
-  type: "call" | "put" | "futures" | "macro";
-}
-
 export interface CommodityPoint {
   date: string; // ISO date
   price: number;
@@ -167,15 +161,6 @@ export const MACRO_RATES: MacroRate[] = [
   { label: "2s10s Spread", value: "-0.27%", change: -3,   unit: "bps" },
   { label: "CPI (YoY)",    value: "3.4%",   change: -10,  unit: "bps" },
   { label: "PCE (YoY)",    value: "2.7%",   change: -5,   unit: "bps" },
-];
-
-/* ─── Options/Futures headlines ─── */
-export const OPTIONS_HEADLINES: OptionsHeadline[] = [
-  { id: "o1", text: "NVDA 30-day IV at 52% — elevated ahead of GTC keynote", type: "call" },
-  { id: "o2", text: "SPX put/call ratio at 0.74 — bullish skew holds", type: "put" },
-  { id: "o3", text: "WTI front-month futures contango widens on inventory build", type: "futures" },
-  { id: "o4", text: "FOMC minutes point to September cut as base case", type: "macro" },
-  { id: "o5", text: "Gold Dec futures near all-time high at $2,387/oz", type: "futures" },
 ];
 
 /* ─── Seeded PRNG (mulberry32) — deterministic ─── */

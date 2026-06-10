@@ -4,12 +4,24 @@ import { NextResponse } from "next/server";
 const cache = new Map<string, { data: unknown; ts: number }>();
 const TTL = 60 * 60_000;
 
-async function yahooCandles(symbol: string) {
-  const key = symbol;
+/* Timeframe → Yahoo range/interval. `intraday` keeps the time component in the date string. */
+const RANGE_MAP: Record<string, { range: string; interval: string; intraday: boolean }> = {
+  "1D":  { range: "1d",  interval: "5m",  intraday: true  },
+  "5D":  { range: "5d",  interval: "30m", intraday: true  },
+  "1M":  { range: "1mo", interval: "1d",  intraday: false },
+  "6M":  { range: "6mo", interval: "1d",  intraday: false },
+  "YTD": { range: "ytd", interval: "1d",  intraday: false },
+  "1Y":  { range: "1y",  interval: "1d",  intraday: false },
+  "5Y":  { range: "5y",  interval: "1wk", intraday: false },
+};
+
+async function yahooCandles(symbol: string, tf: string) {
+  const conf = RANGE_MAP[tf] ?? RANGE_MAP["1Y"];
+  const key = `${symbol}:${tf}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.ts < TTL) return hit.data;
 
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1y&includePrePost=false`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${conf.interval}&range=${conf.range}&includePrePost=false`;
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; fintrack/1.0)" },
     next: { revalidate: 3600 },
@@ -28,7 +40,9 @@ async function yahooCandles(symbol: string) {
 
   const data = timestamps
     .map((t, i) => ({
-      date:  new Date(t * 1000).toISOString().split("T")[0],
+      date:  conf.intraday
+        ? new Date(t * 1000).toISOString()
+        : new Date(t * 1000).toISOString().split("T")[0],
       price: closes[i] != null ? parseFloat(closes[i].toFixed(2)) : null,
     }))
     .filter((d): d is { date: string; price: number } => d.price != null);
@@ -45,15 +59,19 @@ async function yahooCandles(symbol: string) {
 }
 
 const COMMODITIES = [
-  { id: "gold",   symbol: "GLD",      name: "Gold",      unit: "$/oz (GLD)"  },
-  { id: "silver", symbol: "SLV",      name: "Silver",    unit: "$/oz (SLV)"  },
-  { id: "oil",    symbol: "USO",      name: "WTI Crude", unit: "$/bbl (USO)" },
-  { id: "copper", symbol: "CPER",     name: "Copper",    unit: "$/lb (CPER)" },
+  { id: "gold",    symbol: "GLD",   name: "Gold",      unit: "$/oz (GLD)"   },
+  { id: "silver",  symbol: "SLV",   name: "Silver",    unit: "$/oz (SLV)"   },
+  { id: "oil",     symbol: "USO",   name: "WTI Crude", unit: "$/bbl (USO)"  },
+  { id: "copper",  symbol: "CPER",  name: "Copper",    unit: "$/lb (CPER)"  },
+  { id: "uranium", symbol: "SRUUF", name: "Uranium",   unit: "$/lb (SRUUF)" },
 ];
 
-export async function GET() {
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const tf = searchParams.get("range") ?? "1Y";
+
   const results = await Promise.allSettled(
-    COMMODITIES.map((c) => yahooCandles(c.symbol))
+    COMMODITIES.map((c) => yahooCandles(c.symbol, tf))
   );
 
   const commodities = COMMODITIES.map((meta, i) => {

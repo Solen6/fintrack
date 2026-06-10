@@ -10,6 +10,7 @@ const NAV_TABS = [
   { href: "/portfolio", label: "Portfolio" },
   { href: "/budget",    label: "Budget"    },
   { href: "/news",      label: "News"      },
+  { href: "/options",   label: "Options"   },
   { href: "/accounts",  label: "Accounts"  },
 ];
 
