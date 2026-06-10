@@ -135,7 +135,7 @@ export function PortfolioClient() {
         <div className="flex items-center justify-between px-6 py-2 border-b border-border shrink-0">
           <div>
             {quotesError && (
-              <p className="text-xs" style={{ color: "oklch(0.64 0.16 28)" }}>
+              <p className="text-xs" style={{ color: "var(--negative)" }}>
                 Live prices unavailable — showing cost basis
               </p>
             )}

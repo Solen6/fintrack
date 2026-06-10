@@ -69,7 +69,7 @@ export function AccountSidebar({ holdings, selected, onSelect, onRemoveAccount }
                   onClick={(e) => { e.stopPropagation(); handleRemove(name); }}
                   className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded-sm text-xs"
                   style={{
-                    color: confirmRemove === name ? "oklch(0.64 0.16 28)" : "oklch(0.44 0.008 74)",
+                    color: confirmRemove === name ? "var(--negative)" : "oklch(0.44 0.008 74)",
                     background: "oklch(0.12 0 0)",
                   }}
                   title={confirmRemove === name ? "Click again to confirm" : "Remove account"}

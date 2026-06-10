@@ -62,9 +62,9 @@ function Metric({ label, value, change, showSign, large, muted }: MetricProps) {
             muted
               ? { color: "oklch(0.52 0.008 74)" }
               : isPositive
-              ? { color: "oklch(0.72 0.14 74)" }
+              ? { color: "var(--positive)" }
               : isNegative
-              ? { color: "oklch(0.64 0.16 28)" }
+              ? { color: "var(--negative)" }
               : {}
           }
         >
@@ -75,8 +75,8 @@ function Metric({ label, value, change, showSign, large, muted }: MetricProps) {
             className="text-xs font-mono leading-none"
             style={
               isPositive
-                ? { color: "oklch(0.72 0.14 74)" }
-                : { color: "oklch(0.64 0.16 28)" }
+                ? { color: "var(--positive)" }
+                : { color: "var(--negative)" }
             }
           >
             {formatPercent(change, showSign)}

@@ -273,7 +273,7 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
             </div>
 
             {saveError && (
-              <p className="text-xs" style={{ color: "oklch(0.64 0.16 28)" }}>
+              <p className="text-xs" style={{ color: "var(--negative)" }}>
                 {saveError}
               </p>
             )}

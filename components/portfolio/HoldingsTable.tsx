@@ -143,8 +143,8 @@ function HoldingRow({ holding: h, expanded, onToggle }: RowProps) {
   const positive = h.gainDollar >= 0;
   const todayPositive = h.todayChangePct >= 0;
 
-  const gainColor = positive ? "oklch(0.72 0.14 74)" : "oklch(0.64 0.16 28)";
-  const todayColor = todayPositive ? "oklch(0.72 0.14 74)" : "oklch(0.64 0.16 28)";
+  const gainColor = positive ? "var(--positive)" : "var(--negative)";
+  const todayColor = todayPositive ? "var(--positive)" : "var(--negative)";
 
   const accountLabel: Record<string, string> = {
     brokerage: "Broker",

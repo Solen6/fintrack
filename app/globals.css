@@ -64,8 +64,8 @@
   --accent-foreground:  oklch(0.88 0.005 74);
 
   /* Semantic */
-  --positive:           oklch(0.72 0.14 74);
-  --negative:           oklch(0.64 0.16 28);
+  --positive:           oklch(0.72 0.15 152);
+  --negative:           oklch(0.66 0.19 25);
   --steel:              oklch(0.64 0.07 240);
   --destructive:        oklch(0.64 0.16 28);
 
