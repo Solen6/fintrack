@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { formatCurrency, formatPercent, formatShares } from "@/lib/format";
 import type { SortField, SortDir, HoldingWithMetrics } from "@/lib/types";
@@ -43,6 +43,11 @@ export function HoldingsTable({ holdings, account }: Props) {
     });
   }, [holdings, account, sort]);
 
+  const totalValue = useMemo(
+    () => filtered.reduce((sum, h) => sum + h.value, 0),
+    [filtered]
+  );
+
   const toggleSort = (field: SortField) => {
     setSort((prev) =>
       prev.field === field
@@ -62,7 +67,7 @@ export function HoldingsTable({ holdings, account }: Props) {
   return (
     <TooltipProvider>
       <div className="flex-1 overflow-auto">
-        <table className="w-full text-sm border-collapse min-w-[700px]">
+        <table className="w-full text-sm border-collapse min-w-[760px]">
           <thead>
             <tr className="border-b border-border">
               <Th field="ticker" sort={sort} onSort={toggleSort} className="w-20">Ticker</Th>
@@ -72,6 +77,7 @@ export function HoldingsTable({ holdings, account }: Props) {
               <th className="px-4 py-3 text-xs text-muted-foreground font-medium text-right w-24">Avg Cost</th>
               <th className="px-4 py-3 text-xs text-muted-foreground font-medium text-right w-24">Price</th>
               <Th field="value" sort={sort} onSort={toggleSort} align="right" className="w-28">Value</Th>
+              <th className="px-4 py-3 text-xs text-muted-foreground font-medium text-right w-20">% Acct</th>
               <Th field="gainDollar" sort={sort} onSort={toggleSort} align="right" className="w-28">Gain</Th>
               <Th field="gainPercent" sort={sort} onSort={toggleSort} align="right" className="w-20">Gain %</Th>
               <th className="px-4 py-3 text-xs text-muted-foreground font-medium w-24 text-center">Account</th>
@@ -82,6 +88,7 @@ export function HoldingsTable({ holdings, account }: Props) {
               <HoldingRow
                 key={h.id}
                 holding={h}
+                weight={totalValue > 0 ? (h.value / totalValue) * 100 : 0}
                 expanded={expandedId === h.id}
                 onToggle={() => setExpandedId((prev) => (prev === h.id ? null : h.id))}
               />
@@ -132,14 +139,70 @@ function SortArrow({ active, dir }: { active: boolean; dir: SortDir }) {
   );
 }
 
+/* ─── Security name — slides on hover to reveal the full text ─── */
+function HoldingName({ name }: { name: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [overflow, setOverflow] = useState(0);
+  const [hovered, setHovered] = useState(false);
+
+  useEffect(() => {
+    const measure = () => {
+      const c = containerRef.current;
+      const t = textRef.current;
+      if (!c || !t) return;
+      setOverflow(Math.max(0, t.scrollWidth - c.clientWidth));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [name]);
+
+  const reduceMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+  const shift = hovered && overflow > 0 ? overflow : 0;
+  const duration = reduceMotion ? 0 : Math.max(0.3, overflow / 60); // ~60px/sec
+  const fade = overflow > 0 && !hovered;
+  const fadeMask = "linear-gradient(to right, #000 78%, transparent 100%)";
+
+  return (
+    <div
+      ref={containerRef}
+      className="overflow-hidden"
+      style={{
+        maxWidth: 220,
+        maskImage: fade ? fadeMask : undefined,
+        WebkitMaskImage: fade ? fadeMask : undefined,
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title={name}
+    >
+      <span
+        ref={textRef}
+        className="inline-block whitespace-nowrap"
+        style={{
+          transform: `translateX(-${shift}px)`,
+          transition: `transform ${duration}s linear`,
+        }}
+      >
+        {name}
+      </span>
+    </div>
+  );
+}
+
 /* ─── Holding row ─── */
 interface RowProps {
   holding: HoldingWithMetrics;
+  weight: number;
   expanded: boolean;
   onToggle: () => void;
 }
 
-function HoldingRow({ holding: h, expanded, onToggle }: RowProps) {
+function HoldingRow({ holding: h, weight, expanded, onToggle }: RowProps) {
   const positive = h.gainDollar >= 0;
   const todayPositive = h.todayChangePct >= 0;
 
@@ -164,8 +227,8 @@ function HoldingRow({ holding: h, expanded, onToggle }: RowProps) {
         <td className="px-4 py-3">
           <span className="font-mono text-sm font-semibold text-foreground">{h.ticker}</span>
         </td>
-        <td className="px-4 py-3 text-muted-foreground max-w-[220px]">
-          <span className="block truncate">{h.name}</span>
+        <td className="px-4 py-3 text-muted-foreground">
+          <HoldingName name={h.name} />
         </td>
         <td className="px-4 py-3">
           <span className="text-xs text-muted-foreground">{h.sector || "—"}</span>
@@ -194,6 +257,9 @@ function HoldingRow({ holding: h, expanded, onToggle }: RowProps) {
         <td className="px-4 py-3 text-right font-mono text-sm text-foreground">
           {formatCurrency(h.value)}
         </td>
+        <td className="px-4 py-3 text-right font-mono text-sm text-muted-foreground">
+          {weight.toFixed(1)}%
+        </td>
         <td className="px-4 py-3 text-right font-mono text-sm" style={{ color: gainColor }}>
           {h.gainDollar >= 0 ? "+" : ""}{formatCurrency(h.gainDollar)}
         </td>
@@ -212,7 +278,7 @@ function HoldingRow({ holding: h, expanded, onToggle }: RowProps) {
 
       {expanded && (
         <tr className="border-b border-border/50">
-          <td colSpan={10} className="px-4 py-3">
+          <td colSpan={11} className="px-4 py-3">
             <div
               className="text-xs rounded-sm px-3 py-2"
               style={{ background: "oklch(0.14 0 0)", color: "oklch(0.60 0.008 74)" }}
