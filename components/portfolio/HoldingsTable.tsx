@@ -168,7 +168,7 @@ function HoldingRow({ holding: h, expanded, onToggle }: RowProps) {
           <span className="block truncate">{h.name}</span>
         </td>
         <td className="px-4 py-3">
-          <span className="text-xs text-muted-foreground">{h.sector}</span>
+          <span className="text-xs text-muted-foreground">{h.sector || "—"}</span>
         </td>
         <td className="px-4 py-3 text-right font-mono text-muted-foreground text-sm">
           {formatShares(h.shares)}

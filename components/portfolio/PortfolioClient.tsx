@@ -56,6 +56,15 @@ export function PortfolioClient() {
         setQuotesError(true);
       }
 
+      // Live sectors from Finnhub — authoritative; ignores stale stored values
+      let sectors: Record<string, string> = {};
+      try {
+        const sRes = await fetch(`/api/sectors?tickers=${tickers.join(",")}`);
+        if (sRes.ok) sectors = (await sRes.json()).sectors ?? {};
+      } catch {
+        // non-fatal — fall back to "—" in the table
+      }
+
       const merged: HoldingWithMetrics[] = dbHoldings.map((h) => {
         const q = quotes[h.ticker];
         return computeMetrics(
@@ -63,7 +72,7 @@ export function PortfolioClient() {
             id: h.id,
             ticker: h.ticker,
             name: h.name,
-            sector: h.sector ?? "",
+            sector: sectors[h.ticker] ?? "",
             shares: h.shares,
             costBasis: h.cost_basis,
             currentPrice: q?.price ?? h.cost_basis,
