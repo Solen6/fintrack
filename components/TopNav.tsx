@@ -137,7 +137,7 @@ function ProfileMenu() {
           {/* Actions */}
           <div className="py-1">
             <Link
-              href="/accounts"
+              href="/settings"
               role="menuitem"
               onClick={() => setOpen(false)}
               className="block px-4 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150"

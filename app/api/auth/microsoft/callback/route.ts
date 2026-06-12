@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
   const base = process.env.NEXT_PUBLIC_APP_URL!;
 
   if (error || !code || !state) {
-    return NextResponse.redirect(`${base}/accounts?error=microsoft_auth_failed`);
+    return NextResponse.redirect(`${base}/settings?error=microsoft_auth_failed`);
   }
 
   try {
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser();
 
     if (!user || user.id !== state) {
-      return NextResponse.redirect(`${base}/accounts?error=state_mismatch`);
+      return NextResponse.redirect(`${base}/settings?error=state_mismatch`);
     }
 
     const tokens = await exchangeCodeForTokens(code);
@@ -38,9 +38,9 @@ export async function GET(request: NextRequest) {
 
     if (dbError) throw dbError;
 
-    return NextResponse.redirect(`${base}/accounts?connected=true`);
+    return NextResponse.redirect(`${base}/settings?connected=true`);
   } catch (err) {
     console.error("Microsoft auth callback error:", err);
-    return NextResponse.redirect(`${base}/accounts?error=token_exchange_failed`);
+    return NextResponse.redirect(`${base}/settings?error=token_exchange_failed`);
   }
 }
