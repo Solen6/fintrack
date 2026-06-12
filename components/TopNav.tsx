@@ -2,17 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { formatRelativeTime } from "@/lib/format";
 import { LAST_SYNC } from "@/lib/mock-data";
+import { createClient } from "@/lib/supabase/client";
 
 const NAV_TABS = [
   { href: "/portfolio", label: "Portfolio" },
-  { href: "/budget",    label: "Budget"    },
   { href: "/news",      label: "News"      },
   { href: "/options",   label: "Options"   },
-  { href: "/accounts",  label: "Accounts"  },
+  { href: "/futures",   label: "Futures"   },
 ];
+
+const PROFILE = { name: "Carter Rowe", email: "carter@justinrowe.com", initial: "C" };
 
 export function TopNav() {
   const pathname = usePathname();
@@ -59,18 +62,99 @@ export function TopNav() {
           <span>{formatRelativeTime(LAST_SYNC)}</span>
         </button>
 
-        <div
-          className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium"
-          style={{
-            background: "oklch(0.20 0 0)",
-            color: "oklch(0.72 0.14 74)",
-          }}
-          aria-label="User account"
-        >
-          C
-        </div>
+        <ProfileMenu />
       </div>
     </header>
+  );
+}
+
+function ProfileMenu() {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const signOut = async () => {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    window.location.href = "/login";
+  };
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium transition-shadow duration-150 focus:outline-none"
+        style={{
+          background: "oklch(0.20 0 0)",
+          color: "oklch(0.72 0.14 74)",
+          boxShadow: open ? "0 0 0 2px oklch(0.72 0.14 74 / 0.5)" : "none",
+        }}
+        aria-label="Account menu"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {PROFILE.initial}
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full mt-2 w-60 rounded-sm border border-border overflow-hidden z-50 shadow-lg"
+          style={{ background: "oklch(0.10 0 0)" }}
+        >
+          {/* Identity header */}
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium shrink-0"
+              style={{ background: "oklch(0.20 0 0)", color: "oklch(0.72 0.14 74)" }}
+              aria-hidden
+            >
+              {PROFILE.initial}
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm text-foreground truncate">{PROFILE.name}</p>
+              <p className="text-xs text-muted-foreground truncate">{PROFILE.email}</p>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="py-1">
+            <Link
+              href="/accounts"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="block px-4 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150"
+            >
+              Settings
+            </Link>
+            <button
+              role="menuitem"
+              onClick={signOut}
+              className="block w-full text-left px-4 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors duration-150"
+            >
+              Sign out
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
