@@ -24,7 +24,7 @@ export default function LoginPage() {
       if (error) {
         setError(error.message);
       } else {
-        window.location.href = "/portfolio";
+        window.location.href = "/dashboard";
       }
     } else {
       const { error } = await supabase.auth.signUp({

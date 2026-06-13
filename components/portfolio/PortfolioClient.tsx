@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { AccountSidebar } from "./AccountSidebar";
 import { SummaryStrip } from "./SummaryStrip";
 import { HoldingsTable } from "./HoldingsTable";
+import { HoldingsHeatmap } from "./HoldingsHeatmap";
 import { CSVUploadPanel } from "./CSVUploadPanel";
 import { computeMetrics } from "@/lib/types";
 import type { HoldingWithMetrics, Quote } from "@/lib/types";
@@ -23,6 +24,7 @@ type ViewState = "loading" | "empty" | "uploading" | "ready";
 
 export function PortfolioClient() {
   const [view, setView] = useState<ViewState>("loading");
+  const [subView, setSubView] = useState<"table" | "heatmap">("table");
   const [holdings, setHoldings] = useState<HoldingWithMetrics[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
@@ -156,6 +158,28 @@ export function PortfolioClient() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <div className="flex items-center rounded-sm border border-border overflow-hidden mr-2">
+              <button
+                onClick={() => setSubView("table")}
+                className="text-xs px-2.5 py-1 transition-colors duration-150"
+                style={{
+                  background: subView === "table" ? "oklch(0.16 0 0)" : "transparent",
+                  color: subView === "table" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                }}
+              >
+                Table
+              </button>
+              <button
+                onClick={() => setSubView("heatmap")}
+                className="text-xs px-2.5 py-1 transition-colors duration-150"
+                style={{
+                  background: subView === "heatmap" ? "oklch(0.16 0 0)" : "transparent",
+                  color: subView === "heatmap" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                }}
+              >
+                Heatmap
+              </button>
+            </div>
             <button
               onClick={loadData}
               className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-sm hover:bg-accent"
@@ -172,7 +196,11 @@ export function PortfolioClient() {
           </div>
         </div>
 
-        <HoldingsTable holdings={holdings} account={selectedAccount} />
+        {subView === "table" ? (
+          <HoldingsTable holdings={holdings} account={selectedAccount} />
+        ) : (
+          <HoldingsHeatmap holdings={holdings} account={selectedAccount} />
+        )}
       </main>
     </div>
   );

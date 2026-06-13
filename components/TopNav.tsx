@@ -9,8 +9,12 @@ import { LAST_SYNC } from "@/lib/mock-data";
 import { createClient } from "@/lib/supabase/client";
 
 const NAV_TABS = [
-  { href: "/portfolio", label: "Portfolio" },
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/accounts",  label: "Accounts"  },
   { href: "/news",      label: "News"      },
+  { href: "/market",    label: "Market"    },
+  { href: "/calendar",  label: "Calendar"  },
+  { href: "/paper",     label: "Paper"     },
   { href: "/options",   label: "Options"   },
   { href: "/futures",   label: "Futures"   },
 ];

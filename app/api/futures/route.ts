@@ -7,6 +7,7 @@ export interface FutureCell {
   name:      string;
   category:  string;
   price:     number;
+  change:    number;
   changePct: number;
   error?:    boolean;
 }
@@ -56,10 +57,37 @@ const RANGE_MAP: Record<FuturesTimeframe, { range: string; interval: string }> =
 };
 
 // Cache per symbol:timeframe — 5 min (1D moves intraday)
-const cache = new Map<string, { data: { price: number; changePct: number }; ts: number }>();
+type FetchResult = { price: number; change: number; changePct: number };
+const cache = new Map<string, { data: FetchResult; ts: number }>();
 const TTL = 5 * 60_000;
 
-async function fetchChange(sym: string, tf: FuturesTimeframe): Promise<{ price: number; changePct: number }> {
+// Cap concurrent Yahoo requests so the ~28 symbols don't fire all at once (429s).
+const CONCURRENCY = 6;
+
+async function pool<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const idx = next++;
+      try {
+        results[idx] = { status: "fulfilled", value: await fn(items[idx]) };
+      } catch (reason) {
+        results[idx] = { status: "rejected", reason };
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker)
+  );
+  return results;
+}
+
+async function fetchChange(sym: string, tf: FuturesTimeframe): Promise<FetchResult> {
   const key = `${sym}:${tf}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.ts < TTL) return hit.data;
@@ -77,21 +105,25 @@ async function fetchChange(sym: string, tf: FuturesTimeframe): Promise<{ price: 
   if (!meta?.regularMarketPrice) throw new Error(`No data for ${sym}`);
 
   const price: number = meta.regularMarketPrice;
-  let changePct: number;
+  let base: number;
 
   if (tf === "1D") {
-    const prev = meta.chartPreviousClose ?? meta.previousClose ?? price;
-    changePct = prev ? ((price - prev) / prev) * 100 : 0;
+    base = meta.chartPreviousClose ?? meta.previousClose ?? price;
   } else {
     const closes: number[] = (result.indicators?.quote?.[0]?.close ?? []).filter(
       (c: number | null): c is number => c != null
     );
-    const first = closes[0];
-    const last = closes[closes.length - 1] ?? price;
-    changePct = first ? ((last - first) / first) * 100 : 0;
+    base = closes[0] ?? price;
   }
 
-  const data = { price, changePct: parseFloat(changePct.toFixed(2)) };
+  const change = price - base;
+  const changePct = base ? (change / base) * 100 : 0;
+
+  const data: FetchResult = {
+    price,
+    change: parseFloat(change.toFixed(4)),
+    changePct: parseFloat(changePct.toFixed(2)),
+  };
   cache.set(key, { data, ts: Date.now() });
   return data;
 }
@@ -100,14 +132,21 @@ export async function GET(request: NextRequest) {
   const tfParam = (request.nextUrl.searchParams.get("range") ?? "1D").toUpperCase();
   const tf: FuturesTimeframe = (["1D", "1W", "1M", "YTD"].includes(tfParam) ? tfParam : "1D") as FuturesTimeframe;
 
-  const results = await Promise.allSettled(FUTURES.map((f) => fetchChange(f.sym, tf)));
+  const results = await pool(FUTURES, CONCURRENCY, (f) => fetchChange(f.sym, tf));
 
   const cells: FutureCell[] = FUTURES.map((f, i) => {
     const r = results[i];
     if (r.status !== "fulfilled") {
-      return { symbol: f.sym, name: f.name, category: f.cat, price: 0, changePct: 0, error: true };
+      return { symbol: f.sym, name: f.name, category: f.cat, price: 0, change: 0, changePct: 0, error: true };
     }
-    return { symbol: f.sym, name: f.name, category: f.cat, price: r.value.price, changePct: r.value.changePct };
+    return {
+      symbol: f.sym,
+      name: f.name,
+      category: f.cat,
+      price: r.value.price,
+      change: r.value.change,
+      changePct: r.value.changePct,
+    };
   });
 
   return NextResponse.json({ cells, timeframe: tf });

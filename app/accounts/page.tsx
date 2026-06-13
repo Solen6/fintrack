@@ -1,7 +1,7 @@
 import { TopNav } from "@/components/TopNav";
 import { PortfolioClient } from "@/components/portfolio/PortfolioClient";
 
-export default function PortfolioPage() {
+export default function AccountsPage() {
   return (
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       <TopNav />

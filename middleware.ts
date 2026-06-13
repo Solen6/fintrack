@@ -33,7 +33,7 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Public routes — no auth needed
-  const publicRoutes = ["/login", "/auth/callback", "/api/macro", "/api/commodities", "/api/news"];
+  const publicRoutes = ["/login", "/auth/callback", "/api/macro", "/api/commodities", "/api/news", "/api/sentiment", "/api/yieldcurve", "/api/paper/cron"];
   const isPublic = publicRoutes.some((r) => pathname.startsWith(r));
 
   // Redirect unauthenticated users to login
@@ -46,7 +46,7 @@ export async function middleware(request: NextRequest) {
   // Redirect authenticated users away from login
   if (user && pathname === "/login") {
     const homeUrl = request.nextUrl.clone();
-    homeUrl.pathname = "/portfolio";
+    homeUrl.pathname = "/dashboard";
     return NextResponse.redirect(homeUrl);
   }
 

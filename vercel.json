@@ -1,0 +1,5 @@
+{
+  "crons": [
+    { "path": "/api/paper/cron", "schedule": "0 21 * * 1-5" }
+  ]
+}

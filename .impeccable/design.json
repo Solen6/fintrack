@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-12T00:00:00Z",
+  "title": "Design System: Fintrack",
+  "extensions": {
+    "colorMeta": {
+      "signal-amber": {
+        "role": "primary",
+        "displayName": "Signal Amber",
+        "canonical": "oklch(0.72 0.14 74)",
+        "tonalRamp": ["oklch(0.20 0.05 74)", "oklch(0.30 0.08 74)", "oklch(0.40 0.10 74)", "oklch(0.52 0.12 74)", "oklch(0.62 0.13 74)", "oklch(0.72 0.14 74)", "oklch(0.82 0.11 74)", "oklch(0.92 0.06 74)"]
+      },
+      "emerald-gain": {
+        "role": "secondary",
+        "displayName": "Emerald Gain",
+        "canonical": "oklch(0.72 0.15 152)",
+        "tonalRamp": ["oklch(0.22 0.06 152)", "oklch(0.32 0.09 152)", "oklch(0.42 0.11 152)", "oklch(0.52 0.13 152)", "oklch(0.62 0.14 152)", "oklch(0.72 0.15 152)", "oklch(0.82 0.12 152)", "oklch(0.92 0.07 152)"]
+      },
+      "ruby-loss": {
+        "role": "secondary",
+        "displayName": "Ruby Loss",
+        "canonical": "oklch(0.66 0.19 25)",
+        "tonalRamp": ["oklch(0.22 0.08 25)", "oklch(0.32 0.11 25)", "oklch(0.42 0.14 25)", "oklch(0.52 0.17 25)", "oklch(0.60 0.18 25)", "oklch(0.66 0.19 25)", "oklch(0.78 0.15 25)", "oklch(0.90 0.08 25)"]
+      },
+      "steel": {
+        "role": "tertiary",
+        "displayName": "Steel",
+        "canonical": "oklch(0.64 0.07 240)",
+        "tonalRamp": ["oklch(0.20 0.03 240)", "oklch(0.30 0.04 240)", "oklch(0.40 0.05 240)", "oklch(0.50 0.06 240)", "oklch(0.58 0.07 240)", "oklch(0.64 0.07 240)", "oklch(0.78 0.05 240)", "oklch(0.90 0.03 240)"]
+      },
+      "near-black-bg": {
+        "role": "neutral",
+        "displayName": "Near-Black",
+        "canonical": "oklch(0.08 0 0)",
+        "tonalRamp": ["oklch(0.08 0 0)", "oklch(0.105 0 0)", "oklch(0.12 0 0)", "oklch(0.14 0 0)", "oklch(0.17 0 0)", "oklch(0.20 0 0)", "oklch(0.64 0.008 74)", "oklch(0.94 0.005 74)"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "oklch(0.94 0.005 74)",
+        "tonalRamp": ["oklch(0.20 0 0)", "oklch(0.34 0.004 74)", "oklch(0.48 0.006 74)", "oklch(0.64 0.008 74)", "oklch(0.78 0.006 74)", "oklch(0.88 0.005 74)", "oklch(0.94 0.005 74)", "oklch(0.98 0.003 74)"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display / Big Number", "purpose": "KPI values and account totals — the figure the user came to read. Geist Mono 500." },
+      "headline": { "displayName": "Headline", "purpose": "Page and section titles. Geist Sans 500." },
+      "body": { "displayName": "Body", "purpose": "Names, descriptions, news, copy. Geist Sans 400, measure 65–75ch." },
+      "label": { "displayName": "Label", "purpose": "Panel headers and column heads, often uppercase tracked. ≤4 words." },
+      "numeric": { "displayName": "Numeric", "purpose": "Every inline figure in tables/lists. Geist Mono 400, tabular." }
+    },
+    "shadows": [
+      { "name": "overlay-lift", "value": "0 10px 15px -3px rgb(0 0 0 / 0.5)", "purpose": "Floating overlays only — dropdown menus, profile popover. Never on cards or panels." }
+    ],
+    "motion": [
+      { "name": "ease-standard", "value": "150ms ease-out", "purpose": "Default for color/background/border state transitions (tabs, buttons, rows)." },
+      { "name": "skeleton-pulse", "value": "1.6s ease-in-out infinite (opacity 0.35↔0.6)", "purpose": "Loading skeleton tiles; disabled under prefers-reduced-motion." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The page's single call to action. Amber on near-black.",
+      "html": "<button class=\"ds-btn-primary\">Place buy order</button>",
+      "css": ".ds-btn-primary { display:inline-flex; align-items:center; justify-content:center; height:32px; padding:0 10px; border:none; border-radius:4px; background:oklch(0.72 0.14 74); color:oklch(0.08 0 0); font-family:Geist Sans, system-ui, sans-serif; font-size:0.875rem; font-weight:500; cursor:pointer; transition:background 150ms ease-out, transform 150ms ease-out; } .ds-btn-primary:hover { background:oklch(0.72 0.14 74 / 0.8); } .ds-btn-primary:focus-visible { outline:none; box-shadow:0 0 0 3px oklch(0.72 0.14 74 / 0.5); } .ds-btn-primary:active { transform:translateY(1px); }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Low-emphasis action; no chrome until hover.",
+      "html": "<button class=\"ds-btn-ghost\">Settings</button>",
+      "css": ".ds-btn-ghost { display:inline-flex; align-items:center; height:32px; padding:0 10px; border:none; border-radius:4px; background:transparent; color:oklch(0.64 0.008 74); font-family:Geist Sans, system-ui, sans-serif; font-size:0.875rem; font-weight:500; cursor:pointer; transition:background 150ms ease-out, color 150ms ease-out; } .ds-btn-ghost:hover { background:oklch(0.16 0 0); color:oklch(0.94 0.005 74); }"
+    },
+    {
+      "name": "Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Flat card surface — depth from tonal step + 1px border, never shadow.",
+      "html": "<section class=\"ds-panel\"><p class=\"ds-panel-label\">Top Holdings</p><div class=\"ds-panel-body\">Content</div></section>",
+      "css": ".ds-panel { background:oklch(0.12 0 0); border:1px solid oklch(0.20 0 0); border-radius:3px; padding:16px; } .ds-panel-label { margin:0 0 12px; font-family:Geist Sans, system-ui, sans-serif; font-size:0.75rem; font-weight:500; letter-spacing:0.04em; text-transform:uppercase; color:oklch(0.64 0.008 74); } .ds-panel-body { color:oklch(0.94 0.005 74); font-family:Geist Sans, system-ui, sans-serif; font-size:0.875rem; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Transparent field with amber focus glow; mono for numeric entry.",
+      "html": "<input class=\"ds-input\" placeholder=\"AAPL\" />",
+      "css": ".ds-input { height:32px; width:100%; padding:4px 10px; border:1px solid oklch(0.20 0 0); border-radius:4px; background:transparent; color:oklch(0.94 0.005 74); font-family:Geist Mono, ui-monospace, monospace; font-size:0.875rem; outline:none; transition:border-color 150ms ease-out, box-shadow 150ms ease-out; } .ds-input::placeholder { color:oklch(0.64 0.008 74); } .ds-input:focus-visible { border-color:oklch(0.72 0.14 74); box-shadow:0 0 0 3px oklch(0.72 0.14 74 / 0.5); }"
+    },
+    {
+      "name": "Nav Tab",
+      "kind": "nav",
+      "refersTo": "nav-tab-active",
+      "description": "Top-bar text tab; active fills accent surface, idle is muted until hover.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-tab ds-tab-active\">Dashboard</a><a class=\"ds-tab\">Accounts</a><a class=\"ds-tab\">News</a></nav>",
+      "css": ".ds-nav { display:flex; gap:4px; height:48px; align-items:center; padding:0 24px; background:oklch(0.105 0 0); } .ds-tab { padding:6px 12px; border-radius:2px; font-family:Geist Sans, system-ui, sans-serif; font-size:0.875rem; color:oklch(0.64 0.008 74); cursor:pointer; transition:background 150ms ease-out, color 150ms ease-out; } .ds-tab:hover { background:oklch(0.16 0 0 / 0.6); color:oklch(0.94 0.005 74); } .ds-tab-active { background:oklch(0.16 0 0); color:oklch(0.94 0.005 74); }"
+    },
+    {
+      "name": "Heatmap Tile",
+      "kind": "custom",
+      "refersTo": "panel",
+      "description": "Signature Futures unit — background alpha scales with move magnitude, hue encodes direction.",
+      "html": "<div class=\"ds-tile\"><div class=\"ds-tile-top\"><span class=\"ds-tile-name\">WTI Crude</span><span class=\"ds-tile-sym\">CL=F</span></div><div class=\"ds-tile-bot\"><span class=\"ds-tile-price\">78.42</span><span class=\"ds-tile-pct\">+2.14%</span></div></div>",
+      "css": ".ds-tile { display:flex; flex-direction:column; gap:4px; padding:10px 12px; border-radius:2px; border:1px solid oklch(0.72 0.15 152 / 0.40); background:oklch(0.72 0.15 152 / 0.25); } .ds-tile-top { display:flex; justify-content:space-between; align-items:baseline; gap:4px; } .ds-tile-name { font-family:Geist Sans, system-ui, sans-serif; font-size:0.875rem; font-weight:500; color:oklch(0.94 0.005 74); } .ds-tile-sym { font-family:Geist Mono, ui-monospace, monospace; font-size:0.6rem; color:oklch(0.64 0.008 74); } .ds-tile-bot { display:flex; justify-content:space-between; align-items:baseline; gap:4px; } .ds-tile-price { font-family:Geist Mono, ui-monospace, monospace; font-size:0.75rem; color:oklch(0.64 0.008 74); } .ds-tile-pct { font-family:Geist Mono, ui-monospace, monospace; font-size:0.875rem; font-weight:500; color:oklch(0.94 0.005 74); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Midnight Trading Desk",
+    "overview": "Fintrack is a calm, dark desk lit by a single warm lamp. The surface is near-black; the only warm light in the room is Signal Amber, used the way a desk lamp pools light over the work that matters. It is an after-hours environment: focused, quiet, and exact, where a glance tells you where you stand. Depth comes from tonal layering, not shadow — background, panel, popover, and sidebar sit a few lightness steps apart, separated by hairline borders. Figures are monospace so ledgers align; prose is humanist sans so the chrome stays human. It rejects Robinhood gamification, generic bank-template blandness, and Mint-style consumer pastels.",
+    "keyCharacteristics": [
+      "Near-black surface with a single warm accent — amber as the only light source",
+      "Monospace for every number, humanist sans for every word",
+      "Flat by default: depth from tonal layers + 1px borders, not shadows",
+      "Semantic color only — amber (brand), emerald (gain), ruby (loss)",
+      "WCAG AA contrast, tuned for one intended environment (dark)"
+    ],
+    "rules": [
+      { "name": "The Single Lamp Rule", "body": "Signal Amber lights ≤10% of any screen. It marks the brand, the active state, and the one thing to act on — never decoration, never twice for emphasis.", "section": "colors" },
+      { "name": "The Earned Color Rule", "body": "Emerald and ruby are forbidden except to encode gain and loss. A green that doesn't mean 'up' breaks the instrument.", "section": "colors" },
+      { "name": "The Mono-for-Numbers Rule", "body": "Every quantity is set in Geist Mono, every word in Geist Sans. The split is the system.", "section": "typography" },
+      { "name": "The Flat-Desk Rule", "body": "Panels and cards are flat at rest. Shadow appears only when an element physically floats above the page (a menu, a popover).", "section": "elevation" }
+    ],
+    "dos": [
+      "Do set every number in Geist Mono and every word in Geist Sans.",
+      "Do keep Signal Amber under ~10% of any screen.",
+      "Do reserve emerald strictly for gain and ruby strictly for loss, encoded redundantly (sign, value, label).",
+      "Do build depth with tonal steps and 1px borders.",
+      "Do give every transition a ~150ms ease and a prefers-reduced-motion fallback.",
+      "Do verify body text ≥4.5:1 (muted-ink on panel passes)."
+    ],
+    "donts": [
+      "Don't gamify — no confetti, streaks, progress-bait, or celebratory animation.",
+      "Don't drift toward bank-template blandness or Mint-style pastels.",
+      "Don't put a drop shadow on a card or panel; shadows belong only to floating overlays.",
+      "Don't use amber, emerald, or ruby for anything that doesn't carry their meaning.",
+      "Don't set prices or percents in a proportional font, or run sentences in mono.",
+      "Don't introduce a light mode or warm-tinted near-white surface.",
+      "Don't use border-left/border-right > 1px as a colored accent stripe."
+    ]
+  }
+}
