@@ -108,11 +108,11 @@ export function HoldingsHeatmap({ holdings, account }: Props) {
             className="h-2.5 w-24 rounded-sm border border-border"
             style={{
               background: `linear-gradient(to right,
-                oklch(${RUBY} / 0.63),
-                oklch(${RUBY} / 0.10),
+                oklch(${RUBY} / 0.80),
+                oklch(${RUBY} / 0.22),
                 oklch(0.20 0 0),
-                oklch(${EMERALD} / 0.10),
-                oklch(${EMERALD} / 0.63))`,
+                oklch(${EMERALD} / 0.22),
+                oklch(${EMERALD} / 0.80))`,
             }}
           />
           <span className="text-xs font-mono text-muted-foreground">

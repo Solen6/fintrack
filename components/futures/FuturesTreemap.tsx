@@ -14,6 +14,14 @@ const EMERALD = "0.72 0.15 152";
 const RUBY = "0.66 0.19 25";
 const BG = "oklch(0.08 0 0)";
 
+// Dark halo behind tile text so labels stay legible over any cell color.
+const halo = (w: number) => ({
+  stroke: "oklch(0.10 0 0)",
+  strokeWidth: w,
+  strokeLinejoin: "round" as const,
+  style: { paintOrder: "stroke" as const },
+});
+
 interface TreemapNode {
   name: string;
   symbol: string;
@@ -73,8 +81,9 @@ function TreemapCell(props: {
   if (depth === 0 || width <= 0 || height <= 0 || changePct === undefined) return null;
 
   const scale = FULL_SCALE[tf ?? "1D"];
-  const intensity = Math.min(1, Math.abs(changePct) / scale);
-  const alpha = (0.12 + intensity * 0.6).toFixed(3);
+  // Power curve + raised floor so direction reads clearly even on small moves.
+  const intensity = Math.min(1, Math.abs(changePct) / scale) ** 0.7;
+  const alpha = (0.22 + intensity * 0.6).toFixed(3);
   const hue = changePct >= 0 ? EMERALD : RUBY;
 
   const showName = width > 56 && height > 34;
@@ -98,8 +107,9 @@ function TreemapCell(props: {
           x={x + 6}
           y={y + 16}
           fontSize={11}
-          fontWeight={500}
-          fill="oklch(0.96 0.005 74)"
+          fontWeight={700}
+          fill="oklch(0.98 0.005 74)"
+          {...halo(2.6)}
         >
           {clip(name ?? "", width)}
         </text>
@@ -109,8 +119,10 @@ function TreemapCell(props: {
           x={x + 6}
           y={showName ? y + 31 : y + Math.min(height / 2 + 4, height - 6)}
           fontSize={11}
+          fontWeight={500}
           fontFamily="var(--font-mono)"
-          fill="oklch(0.96 0.005 74)"
+          fill="oklch(0.98 0.005 74)"
+          {...halo(2.6)}
         >
           {pctLabel}
         </text>

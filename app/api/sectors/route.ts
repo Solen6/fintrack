@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { yahooFundCategory } from "@/lib/yahoo";
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
 
@@ -10,19 +11,29 @@ async function fetchSector(ticker: string): Promise<string> {
   const hit = cache.get(ticker);
   if (hit && Date.now() - hit.ts < TTL) return hit.sector;
 
+  // Stocks: Finnhub industry. ETFs/funds return nothing here.
+  let sector = "";
   try {
     const res = await fetch(
       `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`,
       { next: { revalidate: 43200 } }
     );
-    if (!res.ok) return "";
-    const d = await res.json();
-    const sector = (d.finnhubIndustry ?? "").trim();
-    cache.set(ticker, { sector, ts: Date.now() });
-    return sector;
+    if (res.ok) {
+      const d = await res.json();
+      sector = (d.finnhubIndustry ?? "").trim();
+    }
   } catch {
-    return "";
+    /* fall through to the fund lookup */
   }
+
+  // ETFs/mutual funds: fall back to Yahoo's fund category so they get a real
+  // sector label instead of "—".
+  if (!sector) {
+    sector = (await yahooFundCategory(ticker)) ?? "";
+  }
+
+  cache.set(ticker, { sector, ts: Date.now() });
+  return sector;
 }
 
 export async function GET(request: NextRequest) {

@@ -58,7 +58,12 @@ export async function POST() {
     return NextResponse.json({ captured: false, reason: "No live prices available." });
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  // Key the snapshot to the US market day (Eastern), not UTC. toISOString() is
+  // UTC, so an evening capture in a US timezone rolls over to "tomorrow" and
+  // plots a phantom future point on the chart. en-CA formats as YYYY-MM-DD.
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+  }).format(new Date());
   const { error: upErr } = await supabase
     .from("portfolio_snapshots")
     .upsert(

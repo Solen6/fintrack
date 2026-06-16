@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { TradeTicket } from "./TradeTicket";
+import { OptionsChain } from "./OptionsChain";
 import { EquityCurve } from "./EquityCurve";
 import type { AssetClass, MarginSummary, PaperAccountMeta, PaperOrder, PaperPosition } from "@/lib/paper-types";
 
@@ -17,6 +18,12 @@ interface State {
 
 const CLASS_LABEL: Record<AssetClass, string> = { STOCK: "Stocks", OPTION: "Options", FUTURE: "Futures", FOREX: "Forex" };
 const CLASS_ORDER: AssetClass[] = ["STOCK", "OPTION", "FUTURE", "FOREX"];
+const ASSET_TABS: { key: AssetClass; label: string }[] = [
+  { key: "STOCK", label: "Stocks" },
+  { key: "OPTION", label: "Options" },
+  { key: "FUTURE", label: "Futures" },
+  { key: "FOREX", label: "Forex" },
+];
 
 export function PaperClient() {
   const [state, setState] = useState<State | null>(null);
@@ -25,6 +32,7 @@ export function PaperClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [assetClass, setAssetClass] = useState<AssetClass>("STOCK");
 
   const load = useCallback(async (id?: string | null) => {
     setLoading(true);
@@ -183,110 +191,173 @@ export function PaperClient() {
           <Kpi label="Margin Used" value={formatCurrency(s.marginUsed)} sub={`Realized ${formatCurrency(state.realizedTotal)}`} />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-1 flex flex-col gap-4">
-            <TradeTicket accountId={state.account.id} onPlaced={reload} />
-          </div>
-
-          <div className="lg:col-span-2 flex flex-col gap-4">
-            <EquityCurve accountId={state.account.id} refreshKey={refreshKey} />
-
-            {/* positions */}
-            <section className="rounded-md border border-border bg-card p-4">
-              <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Open Positions</h2>
-              {grouped.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-2">No open positions — place your first paper trade.</p>
-              ) : (
-                <div className="overflow-x-auto flex flex-col gap-4">
-                  {grouped.map((g) => (
-                    <div key={g.cls}>
-                      <p className="text-xs font-medium text-muted-foreground mb-1">{CLASS_LABEL[g.cls]}</p>
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="text-xs uppercase tracking-wide text-muted-foreground border-b border-border">
-                            <th className="text-left py-2 font-medium">Instrument</th>
-                            <th className="text-right py-2 px-2 font-medium">Side</th>
-                            <th className="text-right py-2 px-2 font-medium">Qty</th>
-                            <th className="text-right py-2 px-2 font-medium">Avg</th>
-                            <th className="text-right py-2 px-2 font-medium">Mark</th>
-                            <th className="text-right py-2 px-2 font-medium">Margin</th>
-                            <th className="text-right py-2 px-2 font-medium">Unreal. P / L</th>
-                            <th className="text-right py-2 pl-2 font-medium"></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {g.rows.map((r) => (
-                            <tr key={r.id} className="border-b border-border/60 last:border-0">
-                              <td className="py-2.5 font-mono text-foreground">{r.name}</td>
-                              <td className="py-2.5 px-2 text-right font-mono text-xs" style={{ color: r.direction === "LONG" ? "var(--positive)" : "var(--negative)" }}>{r.direction}</td>
-                              <td className="py-2.5 px-2 text-right font-mono text-foreground">{r.qty}</td>
-                              <td className="py-2.5 px-2 text-right font-mono text-foreground">{formatCurrency(r.avgCost)}</td>
-                              <td className="py-2.5 px-2 text-right font-mono text-foreground">
-                                {formatCurrency(r.price)}{!r.livePrice && <span className="text-xs text-muted-foreground" title="Live quote unavailable"> *</span>}
-                              </td>
-                              <td className="py-2.5 px-2 text-right font-mono text-muted-foreground">{r.marginHeld > 0 ? formatCurrency(r.marginHeld) : "—"}</td>
-                              <td className="py-2.5 px-2 text-right font-mono" style={{ color: r.unrealized >= 0 ? "var(--positive)" : "var(--negative)" }}>
-                                {formatCurrency(r.unrealized)} <span className="text-xs">({formatPercent(r.unrealizedPct)})</span>
-                              </td>
-                              <td className="py-2.5 pl-2 text-right">
-                                <button onClick={() => closePosition(r)} disabled={busy} className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">Close</button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            {/* pending orders */}
-            {pending.length > 0 && (
-              <section className="rounded-md border border-border bg-card p-4">
-                <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Pending Orders</h2>
-                <ul className="flex flex-col">
-                  {pending.map((o) => (
-                    <li key={o.id} className="flex items-center gap-3 py-2 border-b border-border/60 last:border-0 text-sm">
-                      <span className="font-mono text-xs w-12 shrink-0" style={{ color: o.side === "BUY" ? "var(--positive)" : "var(--negative)" }}>{o.side}</span>
-                      <span className="font-mono text-foreground flex-1 truncate">{o.symbol}</span>
-                      <span className="font-mono text-muted-foreground w-14 shrink-0 text-right">{o.qty}</span>
-                      <span className="font-mono text-xs text-muted-foreground w-32 shrink-0 text-right">
-                        {o.orderType} {o.limitPrice != null ? `@ ${formatCurrency(o.limitPrice)}` : o.stopPrice != null ? `stop ${formatCurrency(o.stopPrice)}` : ""}
-                      </span>
-                      <button onClick={() => cancelOrder(o.id)} disabled={busy} className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 shrink-0">Cancel</button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            {/* order history */}
-            <section className="rounded-md border border-border bg-card p-4">
-              <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Order History</h2>
-              {history.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-2">No orders yet.</p>
-              ) : (
-                <ul className="flex flex-col">
-                  {history.map((o) => (
-                    <li key={o.id} className="flex items-center gap-3 py-2 border-b border-border/60 last:border-0 text-sm">
-                      <span className="font-mono text-xs w-10 shrink-0" style={{ color: o.side === "BUY" ? "var(--positive)" : "var(--negative)" }}>{o.side}</span>
-                      <span className="font-mono text-foreground flex-1 truncate">{o.symbol}</span>
-                      <span className="font-mono text-muted-foreground w-14 shrink-0 text-right">{o.qty}</span>
-                      <span className="font-mono text-foreground w-24 shrink-0 text-right">{o.price != null ? formatCurrency(o.price) : "—"}</span>
-                      <StatusPill status={o.status} />
-                      <span className="text-xs text-muted-foreground w-24 shrink-0 text-right">
-                        {new Date(o.filledAt ?? o.createdAt).toLocaleString("en-US", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          </div>
+        {/* Asset-class tab bar */}
+        <div className="flex items-center gap-1 p-1 rounded-sm w-fit" style={{ background: "oklch(0.10 0 0)" }}>
+          {ASSET_TABS.map((t) => {
+            const on = assetClass === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setAssetClass(t.key)}
+                className="rounded-sm px-3 py-1.5 text-xs font-medium transition-colors"
+                style={{
+                  background: on ? "var(--card)" : "transparent",
+                  color: on ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
         </div>
+
+        {assetClass === "OPTION" ? (
+          /* ── Options: full-width chain builder ── */
+          <div className="flex flex-col gap-4">
+            <OptionsChain accountId={state.account.id} onPlaced={reload} />
+            <PositionsAndOrders
+              grouped={grouped}
+              pending={pending}
+              history={history}
+              busy={busy}
+              closePosition={closePosition}
+              cancelOrder={cancelOrder}
+            />
+          </div>
+        ) : (
+          /* ── Stocks / Futures / Forex: trade ticket + charts ── */
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-1 flex flex-col gap-4">
+              <TradeTicket accountId={state.account.id} onPlaced={reload} assetClass={assetClass as Exclude<AssetClass, "OPTION">} />
+            </div>
+            <div className="lg:col-span-2 flex flex-col gap-4">
+              <EquityCurve accountId={state.account.id} refreshKey={refreshKey} />
+              <PositionsAndOrders
+                grouped={grouped}
+                pending={pending}
+                history={history}
+                busy={busy}
+                closePosition={closePosition}
+                cancelOrder={cancelOrder}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+function PositionsAndOrders({
+  grouped,
+  pending,
+  history,
+  busy,
+  closePosition,
+  cancelOrder,
+}: {
+  grouped: { cls: AssetClass; rows: PaperPosition[] }[];
+  pending: PaperOrder[];
+  history: PaperOrder[];
+  busy: boolean;
+  closePosition: (p: PaperPosition) => void;
+  cancelOrder: (id: string) => void;
+}) {
+  return (
+    <>
+      {/* positions */}
+      <section className="rounded-md border border-border bg-card p-4">
+        <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Open Positions</h2>
+        {grouped.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">No open positions — place your first paper trade.</p>
+        ) : (
+          <div className="overflow-x-auto flex flex-col gap-4">
+            {grouped.map((g) => (
+              <div key={g.cls}>
+                <p className="text-xs font-medium text-muted-foreground mb-1">{CLASS_LABEL[g.cls]}</p>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs uppercase tracking-wide text-muted-foreground border-b border-border">
+                      <th className="text-left py-2 font-medium">Instrument</th>
+                      <th className="text-right py-2 px-2 font-medium">Side</th>
+                      <th className="text-right py-2 px-2 font-medium">Qty</th>
+                      <th className="text-right py-2 px-2 font-medium">Avg</th>
+                      <th className="text-right py-2 px-2 font-medium">Mark</th>
+                      <th className="text-right py-2 px-2 font-medium">Margin</th>
+                      <th className="text-right py-2 px-2 font-medium">Unreal. P / L</th>
+                      <th className="text-right py-2 pl-2 font-medium"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {g.rows.map((r) => (
+                      <tr key={r.id} className="border-b border-border/60 last:border-0">
+                        <td className="py-2.5 font-mono text-foreground">{r.name}</td>
+                        <td className="py-2.5 px-2 text-right font-mono text-xs" style={{ color: r.direction === "LONG" ? "var(--positive)" : "var(--negative)" }}>{r.direction}</td>
+                        <td className="py-2.5 px-2 text-right font-mono text-foreground">{r.qty}</td>
+                        <td className="py-2.5 px-2 text-right font-mono text-foreground">{formatCurrency(r.avgCost)}</td>
+                        <td className="py-2.5 px-2 text-right font-mono text-foreground">
+                          {formatCurrency(r.price)}{!r.livePrice && <span className="text-xs text-muted-foreground" title="Live quote unavailable"> *</span>}
+                        </td>
+                        <td className="py-2.5 px-2 text-right font-mono text-muted-foreground">{r.marginHeld > 0 ? formatCurrency(r.marginHeld) : "—"}</td>
+                        <td className="py-2.5 px-2 text-right font-mono" style={{ color: r.unrealized >= 0 ? "var(--positive)" : "var(--negative)" }}>
+                          {formatCurrency(r.unrealized)} <span className="text-xs">({formatPercent(r.unrealizedPct)})</span>
+                        </td>
+                        <td className="py-2.5 pl-2 text-right">
+                          <button onClick={() => closePosition(r)} disabled={busy} className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">Close</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* pending orders */}
+      {pending.length > 0 && (
+        <section className="rounded-md border border-border bg-card p-4">
+          <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Pending Orders</h2>
+          <ul className="flex flex-col">
+            {pending.map((o) => (
+              <li key={o.id} className="flex items-center gap-3 py-2 border-b border-border/60 last:border-0 text-sm">
+                <span className="font-mono text-xs w-12 shrink-0" style={{ color: o.side === "BUY" ? "var(--positive)" : "var(--negative)" }}>{o.side}</span>
+                <span className="font-mono text-foreground flex-1 truncate">{o.symbol}</span>
+                <span className="font-mono text-muted-foreground w-14 shrink-0 text-right">{o.qty}</span>
+                <span className="font-mono text-xs text-muted-foreground w-32 shrink-0 text-right">
+                  {o.orderType} {o.limitPrice != null ? `@ ${formatCurrency(o.limitPrice)}` : o.stopPrice != null ? `stop ${formatCurrency(o.stopPrice)}` : ""}
+                </span>
+                <button onClick={() => cancelOrder(o.id)} disabled={busy} className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 shrink-0">Cancel</button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* order history */}
+      <section className="rounded-md border border-border bg-card p-4">
+        <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Order History</h2>
+        {history.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">No orders yet.</p>
+        ) : (
+          <ul className="flex flex-col">
+            {history.map((o) => (
+              <li key={o.id} className="flex items-center gap-3 py-2 border-b border-border/60 last:border-0 text-sm">
+                <span className="font-mono text-xs w-10 shrink-0" style={{ color: o.side === "BUY" ? "var(--positive)" : "var(--negative)" }}>{o.side}</span>
+                <span className="font-mono text-foreground flex-1 truncate">{o.symbol}</span>
+                <span className="font-mono text-muted-foreground w-14 shrink-0 text-right">{o.qty}</span>
+                <span className="font-mono text-foreground w-24 shrink-0 text-right">{o.price != null ? formatCurrency(o.price) : "—"}</span>
+                <StatusPill status={o.status} />
+                <span className="text-xs text-muted-foreground w-24 shrink-0 text-right">
+                  {new Date(o.filledAt ?? o.createdAt).toLocaleString("en-US", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
   );
 }
 

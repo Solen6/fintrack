@@ -1,5 +1,5 @@
 /**
- * Shared Yahoo Finance access — used by /api/options, /api/futures-style quotes,
+ * Shared Yahoo Finance access — used by /api/options/chain, /api/futures-style quotes,
  * and the paper-trading pricing layer (lib/paper-pricing.ts).
  *
  * Two endpoints:
@@ -117,4 +117,76 @@ export async function fetchOptionChain(symbol: string, date?: number): Promise<Y
     calls: opt.calls ?? [],
     puts: opt.puts ?? [],
   };
+}
+
+/* ─── Fund (ETF / mutual-fund) category ───
+   Finnhub's profile2 returns nothing for funds, so /api/sectors falls back here
+   to give ETFs a meaningful "sector" instead of "—". Returns the fund's
+   Morningstar category (e.g. "Equity Energy", "Large Blend"), or its dominant
+   holding sector, or "ETF"; null if the symbol isn't a fund / lookup fails. */
+
+const fundCache = new Map<string, { data: string | null; ts: number }>();
+const FUND_TTL = 12 * 60 * 60_000;
+
+// Yahoo sectorWeightings keys → readable labels.
+const SECTOR_LABELS: Record<string, string> = {
+  technology: "Technology",
+  financial_services: "Financial Services",
+  healthcare: "Healthcare",
+  consumer_cyclical: "Consumer Cyclical",
+  consumer_defensive: "Consumer Defensive",
+  energy: "Energy",
+  industrials: "Industrials",
+  basic_materials: "Materials",
+  communication_services: "Communication Services",
+  utilities: "Utilities",
+  realestate: "Real Estate",
+};
+
+export async function yahooFundCategory(symbol: string): Promise<string | null> {
+  const key = symbol.trim().toUpperCase();
+  const hit = fundCache.get(key);
+  if (hit && Date.now() - hit.ts < FUND_TTL) return hit.data;
+
+  const build = (crumb: string) =>
+    `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=quoteType,fundProfile,topHoldings&crumb=${encodeURIComponent(crumb)}`;
+
+  const remember = (data: string | null) => {
+    fundCache.set(key, { data, ts: Date.now() });
+    return data;
+  };
+
+  try {
+    let { cookie, crumb } = await getAuth();
+    let res = await fetch(build(crumb), { headers: { "User-Agent": UA, Cookie: cookie } });
+    if (res.status === 401) {
+      ({ cookie, crumb } = await getAuth(true));
+      res = await fetch(build(crumb), { headers: { "User-Agent": UA, Cookie: cookie } });
+    }
+    if (!res.ok) return remember(null);
+
+    const json = await res.json();
+    const result = json?.quoteSummary?.result?.[0];
+    if (!result) return remember(null);
+
+    const quoteType: string | undefined = result.quoteType?.quoteType;
+    if (quoteType !== "ETF" && quoteType !== "MUTUALFUND") return remember(null);
+
+    // Prefer the Morningstar category; else the dominant holding sector.
+    let label = (result.fundProfile?.categoryName ?? "").trim();
+    if (!label) {
+      const weights: Array<Record<string, { raw?: number }>> = result.topHoldings?.sectorWeightings ?? [];
+      let topKey = "";
+      let topVal = 0;
+      for (const entry of weights) {
+        const k = Object.keys(entry)[0];
+        const v = entry[k]?.raw ?? 0;
+        if (v > topVal) { topVal = v; topKey = k; }
+      }
+      if (topKey) label = SECTOR_LABELS[topKey] ?? topKey;
+    }
+    return remember(label || "ETF");
+  } catch {
+    return remember(null);
+  }
 }

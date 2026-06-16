@@ -28,12 +28,15 @@ const RUBY = "0.66 0.19 25";
 
 function cellStyle(changePct: number, tf: FuturesTimeframe): React.CSSProperties {
   const scale = FULL_SCALE[tf];
-  const intensity = Math.min(1, Math.abs(changePct) / scale);
-  const alpha = (0.08 + intensity * 0.55).toFixed(3);
+  // Power curve + raised floor so even small moves read clearly as green/red.
+  const intensity = Math.min(1, Math.abs(changePct) / scale) ** 0.7;
+  const alpha = (0.22 + intensity * 0.58).toFixed(3);
   const hue = changePct >= 0 ? EMERALD : RUBY;
   return {
     background: `oklch(${hue} / ${alpha})`,
-    borderColor: `oklch(${hue} / ${(Number(alpha) + 0.15).toFixed(3)})`,
+    borderColor: `oklch(${hue} / ${(Number(alpha) + 0.18).toFixed(3)})`,
+    // Dark shadow keeps text legible over the colored tile.
+    textShadow: "0 1px 2px oklch(0.08 0 0 / 0.85)",
   };
 }
 
@@ -220,11 +223,11 @@ function Legend({ tf }: { tf: FuturesTimeframe }) {
         className="h-2.5 w-28 rounded-sm border border-border"
         style={{
           background: `linear-gradient(to right,
-            oklch(${RUBY} / 0.63),
-            oklch(${RUBY} / 0.10),
+            oklch(${RUBY} / 0.80),
+            oklch(${RUBY} / 0.22),
             oklch(0.20 0 0),
-            oklch(${EMERALD} / 0.10),
-            oklch(${EMERALD} / 0.63))`,
+            oklch(${EMERALD} / 0.22),
+            oklch(${EMERALD} / 0.80))`,
         }}
       />
       <span className="text-xs font-mono text-muted-foreground">+{scale}%</span>
@@ -307,14 +310,14 @@ function FutureTile({ c, tf }: { c: FutureCell; tf: FuturesTimeframe }) {
       title={`${c.name} (${c.symbol})\nPrice ${fmtPrice(c.price)}\nChange ${fmtChange(c.change)} (${positive ? "+" : ""}${c.changePct.toFixed(2)}%)`}
     >
       <div className="flex items-baseline justify-between gap-1">
-        <span className="text-sm font-medium text-foreground truncate">{c.name}</span>
-        <span className="font-mono text-muted-foreground shrink-0" style={{ fontSize: "0.6rem" }}>
+        <span className="text-sm font-semibold text-foreground truncate">{c.name}</span>
+        <span className="font-mono text-foreground/70 shrink-0" style={{ fontSize: "0.6rem" }}>
           {c.symbol}
         </span>
       </div>
       <div className="flex items-baseline justify-between gap-1">
-        <span className="text-xs font-mono text-muted-foreground">{fmtPrice(c.price)}</span>
-        <span className="text-sm font-mono font-medium text-foreground">
+        <span className="text-xs font-mono text-foreground/70">{fmtPrice(c.price)}</span>
+        <span className="text-sm font-mono font-semibold text-foreground">
           {positive ? "+" : ""}{c.changePct.toFixed(2)}%
         </span>
       </div>

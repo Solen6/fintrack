@@ -115,6 +115,27 @@
   .skeleton { animation: none; opacity: 0.45; }
 }
 
+/* ─── Modal dialog (native <dialog>) ─── */
+@keyframes dialog-pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes dialog-backdrop {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+dialog.app-dialog[open] {
+  animation: dialog-pop 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+dialog.app-dialog[open]::backdrop {
+  background: oklch(0.04 0 0 / 0.62);
+  animation: dialog-backdrop 160ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  dialog.app-dialog[open],
+  dialog.app-dialog[open]::backdrop { animation: none; }
+}
+
 /* ─── Holdings table row hover ─── */
 .holdings-row {
   transition: background-color 150ms ease-out;

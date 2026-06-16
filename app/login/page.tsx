@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginPage() {
@@ -10,6 +10,13 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Surface the 12h forced-logout from middleware (?expired=1).
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("expired") === "1") {
+      setMessage("Your session expired after 12 hours. Please sign in again.");
+    }
+  }, []);
 
   const supabase = createClient();
 

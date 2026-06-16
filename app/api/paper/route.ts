@@ -93,6 +93,7 @@ export async function POST(request: NextRequest) {
     const orderBase = {
       user_id: user.id,
       account_id: account.id,
+      ticker: ref.symbol,        // legacy NOT NULL column — keep it populated
       asset_class: assetClass,
       symbol: ref.symbol,
       underlying: ref.underlying ?? null,
@@ -116,13 +117,14 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: e instanceof Error ? e.message : "Order rejected." }, { status: 422 });
       }
 
-      const { data: order } = await supabase.from("paper_orders").insert({
+      const { data: order, error: orderErr } = await supabase.from("paper_orders").insert({
         ...orderBase,
         order_type: "MARKET",
         status: "FILLED",
         price: priced.price,
         filled_at: new Date().toISOString(),
       }).select().single();
+      if (orderErr) throw new Error(orderErr.message);
 
       return NextResponse.json({
         filled: {
@@ -133,10 +135,12 @@ export async function POST(request: NextRequest) {
     }
 
     // LIMIT / STOP → rest as PENDING (filled by GET lazy-eval or the cron).
+    // `price` is a legacy NOT NULL column; seed it with the trigger price until filled.
     const { data: order, error } = await supabase.from("paper_orders").insert({
       ...orderBase,
       order_type: orderType,
       status: "PENDING",
+      price: limitPrice ?? stopPrice ?? 0,
       limit_price: limitPrice,
       stop_price: stopPrice,
     }).select().single();

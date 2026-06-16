@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { formatRelativeTime } from "@/lib/format";
 import { LAST_SYNC } from "@/lib/mock-data";
 import { createClient } from "@/lib/supabase/client";
+import { useProfile } from "@/lib/use-profile";
 
 const NAV_TABS = [
   { href: "/dashboard", label: "Dashboard" },
@@ -18,8 +19,6 @@ const NAV_TABS = [
   { href: "/options",   label: "Options"   },
   { href: "/futures",   label: "Futures"   },
 ];
-
-const PROFILE = { name: "Carter Rowe", email: "carter@justinrowe.com", initial: "C" };
 
 export function TopNav() {
   const pathname = usePathname();
@@ -75,6 +74,8 @@ export function TopNav() {
 function ProfileMenu() {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const profile = useProfile();
+  const initial = profile.initial || "·";
 
   useEffect(() => {
     if (!open) return;
@@ -114,7 +115,7 @@ function ProfileMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        {PROFILE.initial}
+        {initial}
       </button>
 
       {open && (
@@ -130,11 +131,11 @@ function ProfileMenu() {
               style={{ background: "oklch(0.20 0 0)", color: "oklch(0.72 0.14 74)" }}
               aria-hidden
             >
-              {PROFILE.initial}
+              {initial}
             </div>
             <div className="min-w-0">
-              <p className="text-sm text-foreground truncate">{PROFILE.name}</p>
-              <p className="text-xs text-muted-foreground truncate">{PROFILE.email}</p>
+              <p className="text-sm text-foreground truncate">{profile.name || "—"}</p>
+              <p className="text-xs text-muted-foreground truncate">{profile.email || "Loading…"}</p>
             </div>
           </div>
 

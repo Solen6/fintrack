@@ -254,20 +254,23 @@ export async function executeFill(
     throw new Error(`Insufficient margin: need $${plan.marginDelta.toFixed(2)}, have $${buyingPower.toFixed(2)}.`);
   }
 
-  // Persist position.
+  // Persist position. Errors are checked (not swallowed) so a failed write
+  // surfaces as a rejected order instead of a phantom "filled" with no position.
+  let writeErr: { message: string } | null = null;
   if (plan.newQtyAbs < EPS) {
-    if (current) await db.from("paper_positions").delete().eq("id", current.id);
+    if (current) ({ error: writeErr } = await db.from("paper_positions").delete().eq("id", current.id));
   } else if (current) {
-    await db.from("paper_positions").update({
+    ({ error: writeErr } = await db.from("paper_positions").update({
       shares: plan.newQtyAbs,
       avg_cost: plan.newAvg,
       direction: plan.newDir,
       margin_held: plan.newMargin,
-    }).eq("id", current.id);
+    }).eq("id", current.id));
   } else {
-    await db.from("paper_positions").insert({
+    ({ error: writeErr } = await db.from("paper_positions").insert({
       account_id: a.id,
       user_id: a.user_id,
+      ticker: ref.symbol,           // legacy NOT NULL column — keep it populated
       asset_class: ref.assetClass,
       symbol: ref.symbol,
       name: instrumentName(ref),
@@ -280,14 +283,16 @@ export async function executeFill(
       multiplier: multiplierFor(ref.assetClass, ref.symbol),
       direction: plan.newDir,
       margin_held: plan.newMargin,
-    });
+    }));
   }
+  if (writeErr) throw new Error(`Position write failed: ${writeErr.message}`);
 
   // Persist account cash + margin.
-  await db.from("paper_accounts").update({
+  const { error: acctErr } = await db.from("paper_accounts").update({
     cash: Number(a.cash) + plan.cashDelta,
     margin_used: Math.max(0, Number(a.margin_used) + plan.marginDelta),
   }).eq("id", a.id);
+  if (acctErr) throw new Error(`Account write failed: ${acctErr.message}`);
 
   // Realized log.
   if (Math.abs(plan.realized) > EPS) {
@@ -472,7 +477,11 @@ export async function evaluateFills(db: DB, userId: string): Promise<number> {
 /* ─── Equity snapshots (per account, idempotent per day) ─── */
 export async function captureSnapshot(db: DB, userId: string): Promise<void> {
   const accounts = await listAccounts(db, userId);
-  const today = new Date().toISOString().slice(0, 10);
+  // Key to the US market day (Eastern), not UTC — an evening capture in a US
+  // timezone would otherwise roll over to "tomorrow" and plot a phantom date.
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+  }).format(new Date());
   for (const account of accounts) {
     const state = await loadAccountState(db, userId, account);
     await db.from("paper_snapshots").upsert(

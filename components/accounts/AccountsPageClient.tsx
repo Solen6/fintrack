@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/client";
+import { useProfile } from "@/lib/use-profile";
 import { OneDriveFilePicker } from "./OneDriveFilePicker";
 
 /* ─── Types ─── */
@@ -34,6 +35,7 @@ const INITIAL_ACCOUNTS: AccountRow[] = [
 ];
 
 export function AccountsPageClient() {
+  const profile = useProfile();
   const [accounts, setAccounts] = useState<AccountRow[]>(INITIAL_ACCOUNTS);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [portfolioFile, setPortfolioFile] = useState("");
@@ -329,8 +331,8 @@ export function AccountsPageClient() {
             className="rounded-sm border border-border overflow-hidden"
             style={{ background: "oklch(0.10 0 0)" }}
           >
-            <ProfileRow label="Name" value="Carter Rowe" />
-            <ProfileRow label="Email" value="carter@justinrowe.com" last />
+            <EditableNameRow name={profile.name} loading={profile.loading} />
+            <ProfileRow label="Email" value={profile.loading ? "…" : profile.email || "—"} last />
           </div>
 
           <div className="mt-4">
@@ -438,6 +440,95 @@ function ProfileRow({
     <div className={`flex items-center gap-4 px-5 py-3.5 ${!last ? "border-b border-border" : ""}`}>
       <span className="text-xs text-muted-foreground w-28 shrink-0">{label}</span>
       <span className="text-sm text-foreground">{value}</span>
+    </div>
+  );
+}
+
+/* Editable display name → persisted to Supabase user_metadata.full_name */
+function EditableNameRow({ name, loading }: { name: string; loading: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(name);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Keep the field seeded from the live profile while not actively editing.
+  useEffect(() => {
+    if (!editing) setValue(name);
+  }, [name, editing]);
+
+  const save = async () => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setError("Name can't be empty.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const supabase = createClient();
+    const { error: upErr } = await supabase.auth.updateUser({ data: { full_name: trimmed } });
+    setSaving(false);
+    if (upErr) {
+      setError(upErr.message);
+      return;
+    }
+    setEditing(false); // useProfile picks up USER_UPDATED and refreshes everywhere
+  };
+
+  const cancel = () => {
+    setEditing(false);
+    setError(null);
+    setValue(name);
+  };
+
+  return (
+    <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border">
+      <span className="text-xs text-muted-foreground w-28 shrink-0">Name</span>
+      {editing ? (
+        <div className="flex flex-1 flex-wrap items-center gap-2">
+          <Input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            autoFocus
+            disabled={saving}
+            maxLength={60}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") save();
+              else if (e.key === "Escape") cancel();
+            }}
+            className="h-8 max-w-[240px]"
+            placeholder="Your name"
+            aria-label="Display name"
+          />
+          <button
+            onClick={save}
+            disabled={saving}
+            className="rounded-sm px-3 py-1 text-xs font-medium transition-opacity duration-150 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button
+            onClick={cancel}
+            disabled={saving}
+            className="rounded-sm border border-border px-3 py-1 text-xs text-muted-foreground transition-colors duration-150 hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            Cancel
+          </button>
+          {error && <span className="text-xs" style={{ color: "var(--negative)" }}>{error}</span>}
+        </div>
+      ) : (
+        <div className="flex flex-1 items-center gap-3">
+          <span className="text-sm text-foreground">{loading ? "…" : name || "—"}</span>
+          {!loading && (
+            <button
+              onClick={() => setEditing(true)}
+              className="rounded-sm text-xs text-muted-foreground transition-colors duration-150 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            >
+              Edit
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

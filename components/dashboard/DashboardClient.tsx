@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import nextDynamic from "next/dynamic";
 import { formatCurrency, formatPercent } from "@/lib/format";
@@ -34,6 +34,17 @@ const STEEL_RAMP = [
   "oklch(0.42 0.05 240)",
   "oklch(0.34 0.02 240)",
 ];
+
+/* Generate an N-step graphite→steel ramp for the full (expanded) allocation. */
+function steelRamp(n: number): string[] {
+  if (n <= 1) return [STEEL_RAMP[0]];
+  return Array.from({ length: n }, (_, i) => {
+    const t = i / (n - 1);
+    const l = 0.74 - t * (0.74 - 0.32);
+    const c = 0.08 - t * (0.08 - 0.02);
+    return `oklch(${l.toFixed(3)} ${c.toFixed(3)} 240)`;
+  });
+}
 
 interface DBHolding {
   id: string;
@@ -79,6 +90,7 @@ export function DashboardClient() {
   const [benchmark, setBenchmark] = useState<Record<BenchRange, number | null> | null>(null);
   const [quotesError, setQuotesError] = useState(false);
   const [asOf, setAsOf] = useState<Date | null>(null);
+  const [allocOpen, setAllocOpen] = useState(false);
 
   const load = useCallback(async () => {
     setView("loading");
@@ -214,6 +226,18 @@ export function DashboardClient() {
     }));
   }, [agg]);
 
+  /* Full allocation — every sector (+ cash), for the expanded view */
+  const fullAllocation: AllocationPoint[] = useMemo(() => {
+    const bySector = new Map<string, number>();
+    for (const p of agg.positions) {
+      bySector.set(p.sector, (bySector.get(p.sector) ?? 0) + p.value);
+    }
+    if (agg.cash > 0) bySector.set("Cash", (bySector.get("Cash") ?? 0) + agg.cash);
+    const sorted = [...bySector.entries()].sort((a, b) => b[1] - a[1]);
+    const ramp = steelRamp(sorted.length);
+    return sorted.map(([label, value], i) => ({ label, value, color: ramp[i] }));
+  }, [agg]);
+
   /* History derivations from snapshots */
   const history = useMemo(() => {
     const perf: PerfPoint[] = snapshots.map((s) => ({
@@ -318,8 +342,8 @@ export function DashboardClient() {
           </p>
           <Link
             href="/accounts"
-            className="self-center text-sm px-4 py-2 rounded-sm mt-1"
-            style={{ background: "var(--primary)", color: "oklch(0.08 0 0)" }}
+            className="self-center text-sm px-4 py-2 rounded-sm mt-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
           >
             Go to Accounts
           </Link>
@@ -335,8 +359,8 @@ export function DashboardClient() {
           <p className="text-sm text-foreground">Couldn&apos;t load your portfolio</p>
           <button
             onClick={load}
-            className="self-center text-xs px-3 py-1.5 rounded-sm"
-            style={{ background: "var(--primary)", color: "oklch(0.08 0 0)" }}
+            className="self-center text-xs px-3 py-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
           >
             Try again
           </button>
@@ -352,7 +376,7 @@ export function DashboardClient() {
       <div className="mx-auto max-w-[1400px] flex flex-col gap-5">
         {/* Header: title + live status */}
         <div className="flex items-center justify-between gap-4">
-          <h1 className="text-lg text-foreground">Dashboard</h1>
+          <h1 className="text-lg font-medium tracking-[-0.01em] text-foreground">Dashboard</h1>
           <div className="flex items-center gap-3">
             {quotesError ? (
               <span className="text-xs" style={{ color: "var(--negative)" }}>
@@ -372,7 +396,7 @@ export function DashboardClient() {
             )}
             <button
               onClick={load}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-sm hover:bg-accent"
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
             >
               Refresh
             </button>
@@ -440,9 +464,18 @@ export function DashboardClient() {
 
         {/* Allocation + returns */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Panel title="Allocation by Sector">
+          <button
+            type="button"
+            onClick={() => setAllocOpen(true)}
+            aria-label="Expand full allocation breakdown"
+            className="group rounded-md border border-border bg-card p-4 text-left transition-colors hover:border-[oklch(0.30_0_0)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs uppercase tracking-wide text-muted-foreground">Allocation by Sector</h2>
+              <ExpandIcon />
+            </div>
             <div className="flex items-center gap-4">
-              <div className="h-[160px] w-[160px] shrink-0">
+              <div className="h-[160px] w-[160px] shrink-0 pointer-events-none">
                 <AllocationDonut data={allocation} />
               </div>
               <ul className="flex flex-col gap-2 text-sm min-w-0">
@@ -461,7 +494,7 @@ export function DashboardClient() {
                 ))}
               </ul>
             </div>
-          </Panel>
+          </button>
           <Panel title="Monthly Returns">
             {history.monthlyReturns.length > 0 ? (
               <div className="h-[180px]">
@@ -535,7 +568,7 @@ export function DashboardClient() {
                       className="font-mono text-xs ml-auto shrink-0 w-16 text-right"
                       style={
                         spread === null
-                          ? { color: "oklch(0.52 0.008 74)" }
+                          ? { color: "var(--muted-foreground)" }
                           : { color: spread >= 0 ? "var(--positive)" : "var(--negative)" }
                       }
                       title={spread === null ? "Needs portfolio history for this range" : "Portfolio minus SPY"}
@@ -555,7 +588,104 @@ export function DashboardClient() {
           </div>
         </div>
       </div>
+
+      <AllocationModal
+        open={allocOpen}
+        onClose={() => setAllocOpen(false)}
+        data={fullAllocation}
+        totalValue={agg.totalValue}
+      />
     </div>
+  );
+}
+
+/* ─── Expand affordance icon ─── */
+function ExpandIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="text-muted-foreground transition-colors group-hover:text-foreground"
+      aria-hidden
+    >
+      <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+    </svg>
+  );
+}
+
+/* ─── Expanded allocation modal (full coverage, every sector) ─── */
+function AllocationModal({
+  open,
+  onClose,
+  data,
+  totalValue,
+}: {
+  open: boolean;
+  onClose: () => void;
+  data: AllocationPoint[];
+  totalValue: number;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    else if (!open && d.open) d.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={ref}
+      onClose={onClose}
+      onClick={(e) => {
+        if (e.target === ref.current) onClose(); // backdrop click
+      }}
+      className="app-dialog m-auto w-[min(92vw,640px)] rounded-md border border-border bg-popover p-0 text-foreground"
+    >
+      <div className="flex flex-col gap-5 p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-medium text-foreground">Allocation by Sector</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="grid h-7 w-7 place-items-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden>
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center sm:gap-6">
+          <div className="h-[260px] w-[260px] shrink-0">
+            <AllocationDonut data={data} />
+          </div>
+          <ul className="grid w-full grid-cols-1 gap-x-6 gap-y-2 text-sm sm:max-h-[260px] sm:grid-cols-2 sm:overflow-y-auto sm:pr-1">
+            {data.map((slice) => (
+              <li key={slice.label} className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: slice.color }} aria-hidden />
+                <span className="min-w-0 truncate text-muted-foreground">{slice.label}</span>
+                <span className="ml-auto shrink-0 font-mono text-foreground">
+                  {totalValue > 0 ? ((slice.value / totalValue) * 100).toFixed(1) : "0.0"}%
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          {data.length} {data.length === 1 ? "sector" : "sectors"} · {formatCurrency(totalValue)} total
+        </p>
+      </div>
+    </dialog>
   );
 }
 
@@ -572,7 +702,7 @@ function HistoryPlaceholder({
   return (
     <div
       className="flex flex-col items-center justify-center gap-1.5 rounded-sm border border-dashed"
-      style={{ height, borderColor: "oklch(0.22 0 0)" }}
+      style={{ height, borderColor: "var(--border)" }}
     >
       <p className="text-xs text-muted-foreground">
         {since ? `Tracking since ${since}` : "History starts today"}
@@ -588,13 +718,13 @@ function HistoryPlaceholder({
 function PctCell({ value, muted }: { value: number | null; muted?: boolean }) {
   if (value === null) {
     return (
-      <span className="font-mono text-xs w-16 text-right shrink-0" style={{ color: "oklch(0.52 0.008 74)" }}>
+      <span className="font-mono text-xs w-16 text-right shrink-0" style={{ color: "var(--muted-foreground)" }}>
         —
       </span>
     );
   }
   const color = muted
-    ? "oklch(0.64 0.008 74)"
+    ? "var(--muted-foreground)"
     : value >= 0
     ? "var(--positive)"
     : "var(--negative)";
@@ -636,7 +766,7 @@ function Divider() {
 function toneStyle(tone?: "pos" | "neg", muted = false) {
   if (tone === "pos") return { color: "var(--positive)" };
   if (tone === "neg") return { color: "var(--negative)" };
-  return muted ? { color: "oklch(0.52 0.008 74)" } : {};
+  return muted ? { color: "var(--muted-foreground)" } : {};
 }
 
 /* ─── Panel shell ─── */
@@ -716,7 +846,7 @@ function HoldingsTable({
       {positions.length > 8 && (
         <p className="text-xs text-muted-foreground mt-2">
           Showing top 8 of {positions.length} —{" "}
-          <Link href="/accounts" className="hover:text-foreground underline underline-offset-2">
+          <Link href="/accounts" className="rounded-sm hover:text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
             see all in Accounts
           </Link>
         </p>

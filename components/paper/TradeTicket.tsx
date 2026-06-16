@@ -9,72 +9,52 @@ import {
   initialMarginFor,
   notionalUsd,
 } from "@/lib/contract-specs";
-import type { AssetClass, InstrumentRef, OptionType, OrderType, Side } from "@/lib/paper-types";
+import type { AssetClass, InstrumentRef, OrderType, Side } from "@/lib/paper-types";
 
-const ASSET_TABS: { key: AssetClass; label: string }[] = [
-  { key: "STOCK", label: "Stocks" },
-  { key: "OPTION", label: "Options" },
-  { key: "FUTURE", label: "Futures" },
-  { key: "FOREX", label: "Forex" },
-];
 const ORDER_TABS: OrderType[] = ["MARKET", "LIMIT", "STOP"];
 const isMargin = (a: AssetClass) => a === "FUTURE" || a === "FOREX";
 
-interface Strike { strike: number; type: OptionType; mark: number; iv: number | null }
-
-export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlaced: () => void }) {
-  const [assetClass, setAssetClass] = useState<AssetClass>("STOCK");
+export function TradeTicket({
+  accountId,
+  onPlaced,
+  assetClass,
+}: {
+  accountId: string;
+  onPlaced: () => void;
+  assetClass: Exclude<AssetClass, "OPTION">;
+}) {
   const [side, setSide] = useState<Side>("BUY");
   const [orderType, setOrderType] = useState<OrderType>("MARKET");
   const [qty, setQty] = useState("");
   const [limitPrice, setLimitPrice] = useState("");
   const [stopPrice, setStopPrice] = useState("");
 
-  // per-class symbol selection
   const [stockSym, setStockSym] = useState("");
   const [futSym, setFutSym] = useState("ES=F");
   const [fxSym, setFxSym] = useState("EURUSD");
-
-  // option chain
-  const [underlying, setUnderlying] = useState("");
-  const [expiries, setExpiries] = useState<string[]>([]);
-  const [expiry, setExpiry] = useState("");
-  const [optionType, setOptionType] = useState<OptionType>("CALL");
-  const [strikes, setStrikes] = useState<Strike[]>([]);
-  const [strike, setStrike] = useState("");
-  const [chainLoading, setChainLoading] = useState(false);
 
   const [estPrice, setEstPrice] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
 
-  // The canonical symbol for the currently selected instrument (non-option).
   const symbol = assetClass === "STOCK" ? stockSym.trim().toUpperCase()
     : assetClass === "FUTURE" ? futSym
-    : assetClass === "FOREX" ? fxSym
-    : "";
+    : fxSym;
 
   const ref: InstrumentRef | null = useMemo(() => {
-    if (assetClass === "OPTION") {
-      if (!underlying || !expiry || !strike) return null;
-      return { assetClass, symbol: "", underlying: underlying.toUpperCase(), expiry, strike: Number(strike), optionType };
-    }
     if (!symbol) return null;
     return { assetClass, symbol };
-  }, [assetClass, symbol, underlying, expiry, strike, optionType]);
+  }, [assetClass, symbol]);
+
+  // Reset side when switching asset class
+  useEffect(() => { setSide("BUY"); setFeedback(null); }, [assetClass]);
 
   /* ── live est. price (debounced) ── */
   useEffect(() => {
     setEstPrice(null);
     if (!ref) return;
     const t = setTimeout(async () => {
-      const p = new URLSearchParams({ assetClass });
-      if (assetClass === "OPTION") {
-        p.set("underlying", ref.underlying!); p.set("expiry", ref.expiry!);
-        p.set("strike", String(ref.strike)); p.set("optionType", ref.optionType!);
-      } else {
-        p.set("symbol", ref.symbol);
-      }
+      const p = new URLSearchParams({ assetClass, symbol: ref.symbol });
       try {
         const res = await fetch(`/api/paper/quote?${p}`);
         const json = await res.json();
@@ -82,43 +62,11 @@ export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlac
       } catch { setEstPrice(null); }
     }, 400);
     return () => clearTimeout(t);
-  }, [ref, assetClass]);
-
-  /* ── option: load expiries when underlying settles ── */
-  useEffect(() => {
-    if (assetClass !== "OPTION") return;
-    const u = underlying.trim().toUpperCase();
-    setExpiries([]); setExpiry(""); setStrikes([]); setStrike("");
-    if (!u) return;
-    const t = setTimeout(async () => {
-      setChainLoading(true);
-      try {
-        const res = await fetch(`/api/paper/chain?underlying=${encodeURIComponent(u)}`);
-        const json = await res.json();
-        if (res.ok) setExpiries((json.expiries ?? []).map((e: { iso: string }) => e.iso));
-      } catch { /* ignore */ } finally { setChainLoading(false); }
-    }, 500);
-    return () => clearTimeout(t);
-  }, [underlying, assetClass]);
-
-  /* ── option: load strikes when expiry/type chosen ── */
-  useEffect(() => {
-    if (assetClass !== "OPTION" || !expiry) return;
-    const u = underlying.trim().toUpperCase();
-    setStrikes([]); setStrike("");
-    (async () => {
-      setChainLoading(true);
-      try {
-        const res = await fetch(`/api/paper/chain?underlying=${encodeURIComponent(u)}&expiry=${expiry}`);
-        const json = await res.json();
-        if (res.ok) setStrikes(optionType === "CALL" ? json.calls : json.puts);
-      } catch { /* ignore */ } finally { setChainLoading(false); }
-    })();
-  }, [expiry, optionType, assetClass, underlying]);
+  }, [ref, assetClass, symbol]);
 
   const reset = useCallback(() => {
     setQty(""); setLimitPrice(""); setStopPrice("");
-    setStockSym(""); setUnderlying(""); setExpiry(""); setStrike(""); setStrikes([]); setExpiries([]);
+    setStockSym("");
   }, []);
 
   const qtyN = Number(qty);
@@ -133,13 +81,7 @@ export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlac
     setFeedback(null);
     setSubmitting(true);
     try {
-      const payload: Record<string, unknown> = { accountId, assetClass, side, orderType, qty: qtyN };
-      if (assetClass === "OPTION") {
-        payload.underlying = underlying.toUpperCase();
-        payload.expiry = expiry; payload.strike = Number(strike); payload.optionType = optionType;
-      } else {
-        payload.symbol = symbol;
-      }
+      const payload: Record<string, unknown> = { accountId, assetClass, side, orderType, qty: qtyN, symbol };
       if (orderType === "LIMIT") payload.limitPrice = Number(limitPrice);
       if (orderType === "STOP") payload.stopPrice = Number(stopPrice);
 
@@ -168,28 +110,11 @@ export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlac
 
   const longLabel = isMargin(assetClass) ? "BUY / LONG" : "BUY";
   const shortLabel = isMargin(assetClass) ? "SELL / SHORT" : "SELL";
+  const qtyLabel = assetClass === "FOREX" ? "Units" : assetClass === "STOCK" ? "Shares" : "Contracts";
 
   return (
     <section className="rounded-md border border-border bg-card p-4 h-fit">
       <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Trade Ticket</h2>
-
-      {/* asset class tabs */}
-      <div className="grid grid-cols-4 gap-1 mb-3 p-1 rounded-sm" style={{ background: "oklch(0.10 0 0)" }}>
-        {ASSET_TABS.map((t) => {
-          const on = assetClass === t.key;
-          return (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => { setAssetClass(t.key); setSide("BUY"); setFeedback(null); }}
-              className="rounded-sm py-1.5 text-xs font-medium transition-colors"
-              style={{ background: on ? "var(--card)" : "transparent", color: on ? "var(--primary)" : "oklch(0.64 0.008 74)" }}
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
 
       <form onSubmit={submit} className="flex flex-col gap-3">
         {/* side */}
@@ -207,13 +132,12 @@ export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlac
           })}
         </div>
 
-        {/* instrument selection per class */}
+        {/* instrument */}
         {assetClass === "STOCK" && (
           <Field label="Symbol">
             <input value={stockSym} onChange={(e) => setStockSym(e.target.value.toUpperCase())} placeholder="AAPL" className={inputCls} />
           </Field>
         )}
-
         {assetClass === "FUTURE" && (
           <Field label="Contract">
             <select value={futSym} onChange={(e) => setFutSym(e.target.value)} className={inputCls}>
@@ -223,7 +147,6 @@ export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlac
             </select>
           </Field>
         )}
-
         {assetClass === "FOREX" && (
           <Field label="Pair">
             <select value={fxSym} onChange={(e) => setFxSym(e.target.value)} className={inputCls}>
@@ -232,42 +155,6 @@ export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlac
               ))}
             </select>
           </Field>
-        )}
-
-        {assetClass === "OPTION" && (
-          <>
-            <Field label="Underlying">
-              <input value={underlying} onChange={(e) => setUnderlying(e.target.value.toUpperCase())} placeholder="AAPL" className={inputCls} />
-            </Field>
-            <div className="grid grid-cols-2 gap-2">
-              {(["CALL", "PUT"] as OptionType[]).map((t) => {
-                const on = optionType === t;
-                return (
-                  <button key={t} type="button" onClick={() => setOptionType(t)}
-                    className="rounded-sm border py-1.5 text-xs font-medium transition-colors"
-                    style={{ borderColor: on ? "var(--primary)" : "oklch(0.20 0 0)", color: on ? "var(--primary)" : "oklch(0.64 0.008 74)", background: on ? "oklch(0.14 0 0)" : "transparent" }}>
-                    {t}
-                  </button>
-                );
-              })}
-            </div>
-            <Field label="Expiry">
-              <select value={expiry} onChange={(e) => setExpiry(e.target.value)} disabled={expiries.length === 0} className={inputCls}>
-                <option value="">{chainLoading ? "Loading…" : expiries.length ? "Select expiry" : "Enter underlying"}</option>
-                {expiries.map((e) => <option key={e} value={e}>{e}</option>)}
-              </select>
-            </Field>
-            <Field label="Strike">
-              <select value={strike} onChange={(e) => setStrike(e.target.value)} disabled={strikes.length === 0} className={inputCls}>
-                <option value="">{!expiry ? "Select expiry first" : chainLoading ? "Loading…" : strikes.length ? "Select strike" : "No strikes"}</option>
-                {strikes.map((s) => (
-                  <option key={s.strike} value={s.strike}>
-                    {s.strike} — {formatCurrency(s.mark)}{s.iv != null ? ` (${s.iv}% IV)` : ""}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </>
         )}
 
         {/* order type */}
@@ -284,7 +171,7 @@ export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlac
           })}
         </div>
 
-        <Field label={assetClass === "FOREX" ? "Units" : assetClass === "STOCK" || assetClass === "OPTION" ? (assetClass === "OPTION" ? "Contracts" : "Shares") : "Contracts"}>
+        <Field label={qtyLabel}>
           <input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="numeric"
             placeholder={assetClass === "FOREX" ? String(FOREX_STANDARD_LOT) : "10"} className={inputCls} />
         </Field>
@@ -303,7 +190,9 @@ export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlac
         {/* preview */}
         <div className="flex flex-col gap-1 text-xs">
           <div className="flex justify-between">
-            <span className="text-muted-foreground">Est. price {estPrice != null && <span className="font-mono">@ {formatCurrency(estPrice)}</span>}</span>
+            <span className="text-muted-foreground">
+              Est. price {estPrice != null && <span className="font-mono">@ {formatCurrency(estPrice)}</span>}
+            </span>
             <span className="font-mono text-foreground">{notional != null ? formatCurrency(notional) : "—"}</span>
           </div>
           {isMargin(assetClass) && (
@@ -325,8 +214,8 @@ export function TradeTicket({ accountId, onPlaced }: { accountId: string; onPlac
         )}
 
         <p className="text-xs text-muted-foreground leading-relaxed">
-          {sellToCloseOnly && "Stocks & options are long-only here — Sell closes a position. "}
-          Simulated account, no real money. Futures &amp; forex use a simplified margin model.
+          {sellToCloseOnly && "Stocks are long-only here — Sell closes a position. "}
+          Simulated account, no real money.{isMargin(assetClass) ? " Uses a simplified margin model." : ""}
         </p>
       </form>
     </section>
