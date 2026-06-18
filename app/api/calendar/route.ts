@@ -20,54 +20,45 @@ const dividendCache = new Map<string, { events: CalendarEvent[]; ts: number }>()
 const EARNINGS_TTL = 30 * 60 * 1000;
 const DIVIDEND_TTL = 60 * 60 * 1000;
 
-// ── Macro calendar ─────────────────────────────────────────────────────────
-// Dates published in advance by the Fed / BLS / BEA. Based on 2026 schedule.
-// Update annually or when agencies revise release dates.
-const MACRO_EVENTS: CalendarEvent[] = [
-  // FOMC
-  { date: "2026-06-18", category: "Macro", title: "FOMC Rate Decision",           detail: "2:00 PM ET + press conference",    impact: "high" },
-  { date: "2026-07-29", category: "Macro", title: "FOMC Rate Decision",           detail: "2:00 PM ET + press conference",    impact: "high" },
-  { date: "2026-09-16", category: "Macro", title: "FOMC Rate Decision",           detail: "2:00 PM ET + press conference",    impact: "high" },
-  { date: "2026-10-28", category: "Macro", title: "FOMC Rate Decision",           detail: "2:00 PM ET + press conference",    impact: "high" },
-  { date: "2026-12-09", category: "Macro", title: "FOMC Rate Decision",           detail: "2:00 PM ET + press conference",    impact: "high" },
-  // CPI
-  { date: "2026-07-15", category: "Macro", title: "CPI — June",                  detail: "Consumer Price Index, 8:30 AM ET", impact: "high" },
-  { date: "2026-08-12", category: "Macro", title: "CPI — July",                  detail: "Consumer Price Index, 8:30 AM ET", impact: "high" },
-  { date: "2026-09-11", category: "Macro", title: "CPI — August",                detail: "Consumer Price Index, 8:30 AM ET", impact: "high" },
-  { date: "2026-10-14", category: "Macro", title: "CPI — September",             detail: "Consumer Price Index, 8:30 AM ET", impact: "high" },
-  { date: "2026-11-13", category: "Macro", title: "CPI — October",               detail: "Consumer Price Index, 8:30 AM ET", impact: "high" },
-  { date: "2026-12-11", category: "Macro", title: "CPI — November",              detail: "Consumer Price Index, 8:30 AM ET", impact: "high" },
-  // Jobs
-  { date: "2026-07-02", category: "Macro", title: "Jobs Report — June",          detail: "Nonfarm payrolls, 8:30 AM ET",    impact: "high" },
-  { date: "2026-08-07", category: "Macro", title: "Jobs Report — July",          detail: "Nonfarm payrolls, 8:30 AM ET",    impact: "high" },
-  { date: "2026-09-04", category: "Macro", title: "Jobs Report — August",        detail: "Nonfarm payrolls, 8:30 AM ET",    impact: "high" },
-  { date: "2026-10-02", category: "Macro", title: "Jobs Report — September",     detail: "Nonfarm payrolls, 8:30 AM ET",    impact: "high" },
-  { date: "2026-11-06", category: "Macro", title: "Jobs Report — October",       detail: "Nonfarm payrolls, 8:30 AM ET",    impact: "high" },
-  { date: "2026-12-04", category: "Macro", title: "Jobs Report — November",      detail: "Nonfarm payrolls, 8:30 AM ET",    impact: "high" },
-  // PCE
-  { date: "2026-06-26", category: "Macro", title: "PCE Price Index — May",       detail: "Fed's preferred gauge, 8:30 AM ET", impact: "high" },
-  { date: "2026-07-31", category: "Macro", title: "PCE Price Index — June",      detail: "Fed's preferred gauge, 8:30 AM ET", impact: "high" },
-  { date: "2026-08-28", category: "Macro", title: "PCE Price Index — July",      detail: "Fed's preferred gauge, 8:30 AM ET", impact: "high" },
-  { date: "2026-09-25", category: "Macro", title: "PCE Price Index — August",    detail: "Fed's preferred gauge, 8:30 AM ET", impact: "high" },
-  { date: "2026-10-30", category: "Macro", title: "PCE Price Index — September", detail: "Fed's preferred gauge, 8:30 AM ET", impact: "high" },
-  { date: "2026-11-25", category: "Macro", title: "PCE Price Index — October",   detail: "Fed's preferred gauge, 8:30 AM ET", impact: "high" },
-  // GDP
-  { date: "2026-06-25", category: "Macro", title: "GDP — Q1 (final)",            detail: "8:30 AM ET", impact: "med" },
-  { date: "2026-07-30", category: "Macro", title: "GDP — Q2 (advance)",          detail: "8:30 AM ET", impact: "med" },
-  { date: "2026-08-27", category: "Macro", title: "GDP — Q2 (second)",           detail: "8:30 AM ET", impact: "med" },
-  { date: "2026-09-25", category: "Macro", title: "GDP — Q2 (final)",            detail: "8:30 AM ET", impact: "med" },
-  { date: "2026-10-29", category: "Macro", title: "GDP — Q3 (advance)",          detail: "8:30 AM ET", impact: "med" },
-  // Retail Sales
-  { date: "2026-06-16", category: "Macro", title: "Retail Sales — May",          detail: "8:30 AM ET", impact: "med" },
-  { date: "2026-07-16", category: "Macro", title: "Retail Sales — June",         detail: "8:30 AM ET", impact: "med" },
-  { date: "2026-08-14", category: "Macro", title: "Retail Sales — July",         detail: "8:30 AM ET", impact: "med" },
-  { date: "2026-09-15", category: "Macro", title: "Retail Sales — August",       detail: "8:30 AM ET", impact: "med" },
-  // Michigan Sentiment
-  { date: "2026-06-26", category: "Macro", title: "U. Michigan Sentiment (final)", detail: "10:00 AM ET", impact: "low" },
-  { date: "2026-07-17", category: "Macro", title: "U. Michigan Sentiment (prelim)", detail: "10:00 AM ET", impact: "low" },
-  { date: "2026-08-14", category: "Macro", title: "U. Michigan Sentiment (prelim)", detail: "10:00 AM ET", impact: "low" },
-  { date: "2026-09-11", category: "Macro", title: "U. Michigan Sentiment (prelim)", detail: "10:00 AM ET", impact: "low" },
-];
+// ── Macro calendar (live from TradingView) ─────────────────────────────────
+// importance: 1 = high, 0 = medium, -1 = low
+const macroCache: { events: CalendarEvent[]; ts: number } = { events: [], ts: 0 };
+const MACRO_TTL = 6 * 60 * 60 * 1000; // 6h
+
+async function fetchMacroEvents(from: string, to: string): Promise<CalendarEvent[]> {
+  if (macroCache.ts && Date.now() - macroCache.ts < MACRO_TTL) return macroCache.events;
+  try {
+    const url = `https://economic-calendar.tradingview.com/events?from=${from}T00:00:00.000Z&to=${to}T00:00:00.000Z&countries=US`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0", "Origin": "https://www.tradingview.com" },
+    });
+    if (!res.ok) return macroCache.events;
+    const data = await res.json();
+    const raw: Array<{ date: string; title: string; importance: number; source: string; actual: number | null; forecast: number | null; previous: number | null; unit: string }> = data.result ?? [];
+    const events: CalendarEvent[] = raw
+      .filter((e) => e.importance >= 0)
+      .map((e) => {
+        const d = new Date(e.date);
+        const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
+        const parts = [time + " ET"];
+        if (e.actual != null) parts.push(`actual: ${e.actual}${e.unit ?? ""}`);
+        else if (e.forecast != null) parts.push(`est: ${e.forecast}${e.unit ?? ""}`);
+        if (e.previous != null) parts.push(`prev: ${e.previous}${e.unit ?? ""}`);
+        return {
+          date: d.toISOString().split("T")[0],
+          category: "Macro" as const,
+          title: e.title,
+          detail: parts.join(" · "),
+          impact: e.importance === 1 ? "high" as const : e.importance === 0 ? "med" as const : "low" as const,
+        };
+      });
+    macroCache.events = events;
+    macroCache.ts = Date.now();
+    return events;
+  } catch {
+    return macroCache.events;
+  }
+}
 
 async function fetchEarnings(ticker: string, from: string, to: string, name: string): Promise<CalendarEvent[]> {
   try {
@@ -151,7 +142,7 @@ export async function GET() {
     dividendCache.set(user.id, { events: dividendEvents, ts: Date.now() });
   }
 
-  const macroEvents = MACRO_EVENTS.filter((e) => e.date >= today && e.date <= endDate);
+  const macroEvents = await fetchMacroEvents(today, endDate);
 
   const all = [...macroEvents, ...earningsEvents, ...dividendEvents].sort((a, b) =>
     a.date.localeCompare(b.date)
