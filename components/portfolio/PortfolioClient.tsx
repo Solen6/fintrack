@@ -6,6 +6,9 @@ import { SummaryStrip } from "./SummaryStrip";
 import { HoldingsTable } from "./HoldingsTable";
 import { HoldingsHeatmap } from "./HoldingsHeatmap";
 import { CSVUploadPanel } from "./CSVUploadPanel";
+import { AddPositionForm } from "./AddPositionForm";
+import { ClosePositionModal } from "./ClosePositionModal";
+import { ClosedPositions } from "./ClosedPositions";
 import { computeMetrics } from "@/lib/types";
 import type { HoldingWithMetrics, Quote } from "@/lib/types";
 
@@ -20,15 +23,16 @@ interface DBHolding {
   notes: string | null;
 }
 
-type ViewState = "loading" | "empty" | "uploading" | "ready";
+type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "ready";
 
 export function PortfolioClient() {
   const [view, setView] = useState<ViewState>("loading");
-  const [subView, setSubView] = useState<"table" | "heatmap">("table");
+  const [subView, setSubView] = useState<"table" | "heatmap" | "closed">("table");
   const [holdings, setHoldings] = useState<HoldingWithMetrics[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [quotesError, setQuotesError] = useState(false);
+  const [closingHolding, setClosingHolding] = useState<HoldingWithMetrics | null>(null);
 
   const existingAccounts = useMemo(
     () => [...new Set(holdings.map((h) => h.account))].sort(),
@@ -130,6 +134,16 @@ export function PortfolioClient() {
     );
   }
 
+  if (view === "addPosition") {
+    return (
+      <AddPositionForm
+        existingAccounts={existingAccounts}
+        onSaved={() => loadData()}
+        onCancel={() => setView("ready")}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-1 overflow-hidden">
       <AccountSidebar
@@ -179,6 +193,16 @@ export function PortfolioClient() {
               >
                 Heatmap
               </button>
+              <button
+                onClick={() => setSubView("closed")}
+                className="text-xs px-2.5 py-1 transition-colors duration-150"
+                style={{
+                  background: subView === "closed" ? "oklch(0.16 0 0)" : "transparent",
+                  color: subView === "closed" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                }}
+              >
+                Closed
+              </button>
             </div>
             <button
               onClick={loadData}
@@ -187,21 +211,66 @@ export function PortfolioClient() {
               Refresh prices
             </button>
             <button
+              onClick={() => setView("addPosition")}
+              className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+            >
+              Add position
+            </button>
+            <button
               onClick={() => setView("uploading")}
               className="text-xs px-3 py-1 rounded-sm"
               style={{ background: "oklch(0.72 0.14 74)", color: "oklch(0.08 0 0)" }}
             >
-              Upload account
+              Upload CSV
             </button>
           </div>
         </div>
 
-        {subView === "table" ? (
-          <HoldingsTable holdings={holdings} account={selectedAccount} />
-        ) : (
+        {subView === "table" && (
+          <HoldingsTable
+            holdings={holdings}
+            account={selectedAccount}
+            onEdit={async (holding, updates) => {
+              const res = await fetch("/api/holdings", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: holding.id, ...updates }),
+              });
+              if (!res.ok) throw new Error((await res.json()).error);
+              loadData();
+            }}
+            onClose={(holding) => setClosingHolding(holding)}
+          />
+        )}
+        {subView === "heatmap" && (
           <HoldingsHeatmap holdings={holdings} account={selectedAccount} />
         )}
+        {subView === "closed" && <ClosedPositions />}
       </main>
+
+      {closingHolding && (
+        <ClosePositionModal
+          holding={closingHolding}
+          onConfirm={async (shares, salePrice) => {
+            const res = await fetch("/api/holdings/close", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                holdingId: closingHolding.id,
+                shares,
+                salePrice,
+              }),
+            });
+            if (!res.ok) {
+              const d = await res.json();
+              throw new Error(d.error ?? "Failed to close");
+            }
+            setClosingHolding(null);
+            loadData();
+          }}
+          onCancel={() => setClosingHolding(null)}
+        />
+      )}
     </div>
   );
 }

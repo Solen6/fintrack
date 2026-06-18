@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import nextDynamic from "next/dynamic";
 import { formatCurrency, formatPercent } from "@/lib/format";
-import type { PerfPoint, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
+import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
+import { isInvestedType, resolveAccountType } from "@/lib/account-types";
 
 const chartLoading = () => (
   <div className="skeleton h-full w-full rounded-sm" aria-hidden />
@@ -22,9 +23,14 @@ const ReturnsBarChart = nextDynamic(
   () => import("@/components/dashboard/charts").then((m) => m.ReturnsBarChart),
   { ssr: false, loading: chartLoading }
 );
+const ReturnsBarChartExpanded = nextDynamic(
+  () => import("@/components/dashboard/charts").then((m) => m.ReturnsBarChartExpanded),
+  { ssr: false, loading: chartLoading }
+);
 
-/* Cash-like accounts: their positions count as cash, not invested holdings */
-const CASH_ACCOUNTS = new Set(["hysa", "checking", "cash"]);
+/* Performance-chart timeframes (clip + rebase the series). */
+const TIMEFRAMES = ["1M", "3M", "6M", "YTD", "1Y", "ALL"] as const;
+type Timeframe = (typeof TIMEFRAMES)[number];
 
 /* Steel ramp for allocation slices, largest → smallest */
 const STEEL_RAMP = [
@@ -65,6 +71,7 @@ interface Snapshot {
   value: number;
 }
 
+
 const BENCH_RANGES = ["1D", "5D", "1M", "6M", "YTD", "1Y"] as const;
 type BenchRange = (typeof BENCH_RANGES)[number];
 
@@ -91,6 +98,11 @@ export function DashboardClient() {
   const [quotesError, setQuotesError] = useState(false);
   const [asOf, setAsOf] = useState<Date | null>(null);
   const [allocOpen, setAllocOpen] = useState(false);
+  const [returnsOpen, setReturnsOpen] = useState<"monthly" | "yearly" | null>(null);
+
+  // Performance-chart controls.
+  const [metric, setMetric] = useState<PerfMetric>("value");
+  const [timeframe, setTimeframe] = useState<Timeframe>("ALL");
 
   const load = useCallback(async () => {
     setView("loading");
@@ -150,8 +162,9 @@ export function DashboardClient() {
 
   /* ─── Aggregations (all derived from live rows + quotes) ─── */
   const agg = useMemo(() => {
-    const investRows = holdings.filter((h) => !CASH_ACCOUNTS.has(h.account.toLowerCase()));
-    const cashRows = holdings.filter((h) => CASH_ACCOUNTS.has(h.account.toLowerCase()));
+    const isCashAcct = (account: string) => !isInvestedType(resolveAccountType(account, {}));
+    const investRows = holdings.filter((h) => !isCashAcct(h.account));
+    const cashRows = holdings.filter((h) => isCashAcct(h.account));
 
     const byTicker = new Map<string, AggHolding>();
     for (const h of investRows) {
@@ -238,46 +251,93 @@ export function DashboardClient() {
     return sorted.map(([label, value], i) => ({ label, value, color: ramp[i] }));
   }, [agg]);
 
-  /* History derivations from snapshots */
-  const history = useMemo(() => {
-    const perf: PerfPoint[] = snapshots.map((s) => ({
-      label: new Date(`${s.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      value: s.value,
-    }));
+  /* Source series for all history panels: going-forward daily snapshots. */
+  const series = useMemo(() =>
+    snapshots.map((s) => ({ date: s.date, value: s.value })),
+  [snapshots]);
 
-    // last snapshot per period → period-over-period return
-    const lastPer = (keyFn: (d: string) => string) => {
-      const m = new Map<string, number>();
-      for (const s of snapshots) m.set(keyFn(s.date), s.value);
+  /* Performance chart: clip the series to the selected timeframe, then rebase
+     gain/return to the window's first point (so "+$X since DATE" is honest). */
+  const perf = useMemo(() => {
+    const start = (() => {
+      if (timeframe === "ALL") return null;
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      if (timeframe === "1M") d.setMonth(d.getMonth() - 1);
+      else if (timeframe === "3M") d.setMonth(d.getMonth() - 3);
+      else if (timeframe === "6M") d.setMonth(d.getMonth() - 6);
+      else if (timeframe === "YTD") d.setMonth(0, 1);
+      else if (timeframe === "1Y") d.setFullYear(d.getFullYear() - 1);
+      return d;
+    })();
+    const clipped = start
+      ? series.filter((s) => new Date(`${s.date}T00:00:00`) >= start)
+      : series;
+    const base = clipped[0];
+    const points: PerfPoint[] = clipped.map((s) => {
+      const gain = base ? s.value - base.value : 0;
+      const returnPct = base && base.value > 0 ? (gain / base.value) * 100 : 0;
+      return {
+        label: new Date(`${s.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+        date: new Date(`${s.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+        metric: metric === "value" ? s.value : returnPct,
+        total: s.value,
+        securities: s.value,
+        cash: 0,
+        gain,
+        returnPct,
+      };
+    });
+    const last = points[points.length - 1];
+    return {
+      points,
+      gain: last?.gain ?? 0,
+      returnPct: last?.returnPct ?? 0,
+      endValue: last?.total ?? 0,
+      since: clipped.length
+        ? new Date(`${clipped[0].date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+        : null,
+    };
+  }, [series, timeframe, metric]);
+
+  /* History derivations — period-over-period returns from snapshots. */
+  const history = useMemo(() => {
+    const byPeriod = (keyFn: (d: string) => string) => {
+      const m = new Map<string, { firstVal: number; lastVal: number }>();
+      for (const s of series) {
+        const k = keyFn(s.date);
+        const cur = m.get(k);
+        if (!cur) m.set(k, { firstVal: s.value, lastVal: s.value });
+        else { cur.lastVal = s.value; }
+      }
       return [...m.entries()];
     };
 
-    const monthly = lastPer((d) => d.slice(0, 7));
-    const monthlyReturns: ReturnPoint[] = monthly.slice(1).map(([key, v], i) => ({
-      label: new Date(`${key}-15T12:00:00`).toLocaleDateString("en-US", { month: "short" }),
-      pct: monthly[i][1] > 0 ? ((v - monthly[i][1]) / monthly[i][1]) * 100 : 0,
-    }));
+    type Period = [string, { firstVal: number; lastVal: number }];
+    const buildReturns = (periods: Period[], labelFn: (key: string) => string): ReturnPoint[] =>
+      periods.map(([key, p], i) => {
+        const baseVal = i > 0 ? periods[i - 1][1].lastVal : p.firstVal;
+        const pnl = p.lastVal - baseVal;
+        return { label: labelFn(key), pct: baseVal > 0 ? (pnl / baseVal) * 100 : 0 };
+      });
 
-    const yearly = lastPer((d) => d.slice(0, 4));
-    const yearlyReturns: ReturnPoint[] = yearly.slice(1).map(([key, v], i) => ({
-      label: key,
-      pct: yearly[i][1] > 0 ? ((v - yearly[i][1]) / yearly[i][1]) * 100 : 0,
-    }));
+    const monthly = byPeriod((d) => d.slice(0, 7));
+    const monthlyReturns = buildReturns(monthly, (key) =>
+      new Date(`${key}-15T12:00:00`).toLocaleDateString("en-US", { month: "short" }));
 
-    const bestMonths = monthly
-      .slice(1)
-      .map(([key, v], i) => ({
-        label: new Date(`${key}-15T12:00:00`).toLocaleDateString("en-US", { month: "short", year: "numeric" }),
-        pct: monthly[i][1] > 0 ? ((v - monthly[i][1]) / monthly[i][1]) * 100 : 0,
-      }))
+    const yearly = byPeriod((d) => d.slice(0, 4));
+    const yearlyReturns = buildReturns(yearly, (key) => key);
+
+    const bestMonths = buildReturns(monthly, (key) =>
+      new Date(`${key}-15T12:00:00`).toLocaleDateString("en-US", { month: "short", year: "numeric" }))
       .sort((a, b) => b.pct - a.pct);
 
-    const since = snapshots.length
-      ? new Date(`${snapshots[0].date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    const since = series.length
+      ? new Date(`${series[0].date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
       : null;
 
-    return { perf, monthlyReturns, yearlyReturns, bestMonths, since };
-  }, [snapshots]);
+    return { monthlyReturns, yearlyReturns, bestMonths, since };
+  }, [series]);
 
   /* Portfolio return per timeframe, vs market. 1D is live (today's quotes);
      longer ranges need a snapshot at/before the period start — null until
@@ -297,9 +357,8 @@ export function DashboardClient() {
     const portfolioReturn = (range: BenchRange): number | null => {
       if (range === "1D") return agg.todayPct;
       const target = startDate(range);
-      // latest snapshot on/before the period start
-      let base: Snapshot | null = null;
-      for (const s of snapshots) {
+      let base: { date: string; value: number } | null = null;
+      for (const s of series) {
         if (new Date(`${s.date}T00:00:00`) <= target) base = s;
         else break;
       }
@@ -312,7 +371,7 @@ export function DashboardClient() {
       portfolio: portfolioReturn(range),
       market: benchmark?.[range] ?? null,
     }));
-  }, [agg.todayPct, agg.totalValue, snapshots, benchmark]);
+  }, [agg.todayPct, agg.totalValue, series, benchmark]);
 
   /* ─── States ─── */
   if (view === "loading") {
@@ -369,7 +428,7 @@ export function DashboardClient() {
     );
   }
 
-  const hasHistory = history.perf.length >= 2;
+  const hasHistory = perf.points.length >= 2;
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-6">
@@ -430,16 +489,58 @@ export function DashboardClient() {
               </div>
             </div>
             <div className="flex flex-col">
-              <span className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
-                Performance Over Time
-              </span>
+              {/* Chart header: title + window readout, then controls */}
+              <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 mb-1">
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Performance Over Time
+                  </span>
+                  {hasHistory && (
+                    <div className="flex items-baseline gap-2">
+                      <span
+                        className="font-mono text-lg leading-none"
+                        style={toneStyle(perf.gain >= 0 ? "pos" : "neg")}
+                      >
+                        {perf.gain >= 0 ? "+" : ""}{formatCurrency(perf.gain)}
+                      </span>
+                      <span
+                        className="font-mono text-xs"
+                        style={toneStyle(perf.returnPct >= 0 ? "pos" : "neg")}
+                      >
+                        {formatPercent(perf.returnPct)}
+                      </span>
+                      {perf.since && (
+                        <span className="text-xs text-muted-foreground">since {perf.since}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <Segmented
+                  options={[
+                    { value: "value", label: "Value $" },
+                    { value: "return", label: "Return %" },
+                  ]}
+                  value={metric}
+                  onChange={(v) => setMetric(v as PerfMetric)}
+                />
+              </div>
+
               {hasHistory ? (
                 <div className="h-[220px]">
-                  <PerformanceChart data={history.perf} />
+                  <PerformanceChart data={perf.points} metric={metric} />
                 </div>
               ) : (
-                <HistoryPlaceholder since={history.since} height={220} />
+                <HistoryPlaceholder since={perf.since ?? history.since} height={220} />
               )}
+
+              {/* Controls: timeframe */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3">
+                <Segmented
+                  options={TIMEFRAMES.map((t) => ({ value: t, label: t }))}
+                  value={timeframe}
+                  onChange={(v) => setTimeframe(v as Timeframe)}
+                />
+              </div>
             </div>
           </div>
         </section>
@@ -495,24 +596,42 @@ export function DashboardClient() {
               </ul>
             </div>
           </button>
-          <Panel title="Monthly Returns">
+          <button
+            type="button"
+            onClick={() => setReturnsOpen("monthly")}
+            aria-label="Expand monthly returns"
+            className="group rounded-md border border-border bg-card p-4 text-left transition-colors hover:border-[oklch(0.30_0_0)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs uppercase tracking-wide text-muted-foreground">Monthly Returns</h2>
+              <ExpandIcon />
+            </div>
             {history.monthlyReturns.length > 0 ? (
-              <div className="h-[180px]">
+              <div className="h-[180px] pointer-events-none">
                 <ReturnsBarChart data={history.monthlyReturns} />
               </div>
             ) : (
-              <HistoryPlaceholder since={history.since} height={180} detail="Needs two months of snapshots." />
+              <HistoryPlaceholder since={history.since} height={180} detail="Building once snapshots arrive." />
             )}
-          </Panel>
-          <Panel title="Yearly Returns">
+          </button>
+          <button
+            type="button"
+            onClick={() => setReturnsOpen("yearly")}
+            aria-label="Expand yearly returns"
+            className="group rounded-md border border-border bg-card p-4 text-left transition-colors hover:border-[oklch(0.30_0_0)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs uppercase tracking-wide text-muted-foreground">Yearly Returns</h2>
+              <ExpandIcon />
+            </div>
             {history.yearlyReturns.length > 0 ? (
-              <div className="h-[180px]">
+              <div className="h-[180px] pointer-events-none">
                 <ReturnsBarChart data={history.yearlyReturns} />
               </div>
             ) : (
-              <HistoryPlaceholder since={history.since} height={180} detail="Needs two years of snapshots." />
+              <HistoryPlaceholder since={history.since} height={180} detail="Building once snapshots arrive." />
             )}
-          </Panel>
+          </button>
         </div>
 
         {/* Best months + vs market + holdings */}
@@ -594,6 +713,13 @@ export function DashboardClient() {
         onClose={() => setAllocOpen(false)}
         data={fullAllocation}
         totalValue={agg.totalValue}
+      />
+
+      <ReturnsModal
+        open={returnsOpen}
+        onClose={() => setReturnsOpen(null)}
+        monthlyData={history.monthlyReturns}
+        yearlyData={history.yearlyReturns}
       />
     </div>
   );
@@ -767,6 +893,109 @@ function toneStyle(tone?: "pos" | "neg", muted = false) {
   if (tone === "pos") return { color: "var(--positive)" };
   if (tone === "neg") return { color: "var(--negative)" };
   return muted ? { color: "var(--muted-foreground)" } : {};
+}
+
+/* ─── Segmented control (timeframe / metric toggles) ─── */
+function Segmented({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: string; label: string }[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-sm border border-border bg-[oklch(0.10_0_0)] p-0.5">
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => onChange(o.value)}
+            aria-pressed={active}
+            className="rounded-[3px] px-2.5 py-1 text-xs font-mono transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            style={
+              active
+                ? { background: "oklch(0.20 0.02 74)", color: "var(--primary)" }
+                : { color: "var(--muted-foreground)" }
+            }
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+
+/* ─── Expanded returns modal (Monthly or Yearly) ─── */
+function ReturnsModal({
+  open,
+  onClose,
+  monthlyData,
+  yearlyData,
+}: {
+  open: "monthly" | "yearly" | null;
+  onClose: () => void;
+  monthlyData: { label: string; pct: number }[];
+  yearlyData: { label: string; pct: number }[];
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    else if (!open && d.open) d.close();
+  }, [open]);
+
+  const data = open === "monthly" ? monthlyData : yearlyData;
+  const title = open === "monthly" ? "Monthly Returns" : "Yearly Returns";
+
+  return (
+    <dialog
+      ref={ref}
+      onClose={onClose}
+      onClick={(e) => {
+        if (e.target === ref.current) onClose();
+      }}
+      className="app-dialog m-auto w-[min(92vw,720px)] rounded-md border border-border bg-popover p-0 text-foreground"
+    >
+      <div className="flex flex-col gap-4 p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-medium text-foreground">{title}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="grid h-7 w-7 place-items-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden>
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        {data.length > 0 ? (
+          <div className="h-[360px]">
+            <ReturnsBarChartExpanded data={data} />
+          </div>
+        ) : (
+          <div
+            className="flex items-center justify-center rounded-sm border border-dashed"
+            style={{ height: 200, borderColor: "var(--border)" }}
+          >
+            <p className="text-xs text-muted-foreground">No data yet</p>
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground">
+          Hover over bars to see the % change.
+        </p>
+      </div>
+    </dialog>
+  );
 }
 
 /* ─── Panel shell ─── */

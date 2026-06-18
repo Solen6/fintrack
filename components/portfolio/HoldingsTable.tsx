@@ -14,9 +14,11 @@ import {
 interface Props {
   holdings: HoldingWithMetrics[];
   account: string;
+  onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null }) => Promise<void>;
+  onClose?: (holding: HoldingWithMetrics) => void;
 }
 
-export function HoldingsTable({ holdings, account }: Props) {
+export function HoldingsTable({ holdings, account, onEdit, onClose }: Props) {
   const [sort, setSort] = useState<{ field: SortField; dir: SortDir }>({
     field: "value",
     dir: "desc",
@@ -81,6 +83,9 @@ export function HoldingsTable({ holdings, account }: Props) {
               <Th field="gainDollar" sort={sort} onSort={toggleSort} align="right" className="w-28">Gain</Th>
               <Th field="gainPercent" sort={sort} onSort={toggleSort} align="right" className="w-20">Gain %</Th>
               <th className="px-4 py-3 text-xs text-muted-foreground font-medium w-24 text-center">Account</th>
+              {(onEdit || onClose) && (
+                <th className="px-4 py-3 text-xs text-muted-foreground font-medium w-24 text-center">Actions</th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -91,6 +96,8 @@ export function HoldingsTable({ holdings, account }: Props) {
                 weight={totalValue > 0 ? (h.value / totalValue) * 100 : 0}
                 expanded={expandedId === h.id}
                 onToggle={() => setExpandedId((prev) => (prev === h.id ? null : h.id))}
+                onEdit={onEdit}
+                onClose={onClose}
               />
             ))}
           </tbody>
@@ -200,9 +207,16 @@ interface RowProps {
   weight: number;
   expanded: boolean;
   onToggle: () => void;
+  onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null }) => Promise<void>;
+  onClose?: (holding: HoldingWithMetrics) => void;
 }
 
-function HoldingRow({ holding: h, weight, expanded, onToggle }: RowProps) {
+function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose }: RowProps) {
+  const [editing, setEditing] = useState(false);
+  const [editShares, setEditShares] = useState(String(h.shares));
+  const [editCost, setEditCost] = useState(String(h.costBasis));
+  const [editNotes, setEditNotes] = useState(h.notes ?? "");
+  const [saving, setSaving] = useState(false);
   const positive = h.gainDollar >= 0;
   const todayPositive = h.todayChangePct >= 0;
 
@@ -274,11 +288,110 @@ function HoldingRow({ holding: h, weight, expanded, onToggle }: RowProps) {
             {accountLabel[h.account] ?? h.account}
           </span>
         </td>
+        {(onEdit || onClose) && (
+          <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-center gap-1">
+              {onEdit && (
+                <button
+                  onClick={() => {
+                    setEditShares(String(h.shares));
+                    setEditCost(String(h.costBasis));
+                    setEditNotes(h.notes ?? "");
+                    setEditing(true);
+                  }}
+                  className="text-xs px-1.5 py-0.5 rounded-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  title="Edit position"
+                >
+                  Edit
+                </button>
+              )}
+              {onClose && (
+                <button
+                  onClick={() => onClose(h)}
+                  className="text-xs px-1.5 py-0.5 rounded-sm hover:bg-accent transition-colors"
+                  style={{ color: "var(--negative)" }}
+                  title="Close position"
+                >
+                  Close
+                </button>
+              )}
+            </div>
+          </td>
+        )}
       </tr>
 
-      {expanded && (
+      {editing && onEdit && (
         <tr className="border-b border-border/50">
-          <td colSpan={11} className="px-4 py-3">
+          <td colSpan={12} className="px-4 py-3">
+            <form
+              className="flex items-center gap-3 flex-wrap"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setSaving(true);
+                await onEdit(h, {
+                  shares: parseFloat(editShares),
+                  cost_basis: parseFloat(editCost),
+                  notes: editNotes.trim() || null,
+                });
+                setSaving(false);
+                setEditing(false);
+              }}
+            >
+              <label className="text-xs text-muted-foreground">
+                Shares
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  className="ml-1.5 w-20 px-2 py-1 text-xs font-mono rounded-sm border border-border bg-transparent text-foreground focus:outline-none focus:border-[var(--primary)]"
+                  value={editShares}
+                  onChange={(e) => setEditShares(e.target.value)}
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                Avg Cost
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  className="ml-1.5 w-24 px-2 py-1 text-xs font-mono rounded-sm border border-border bg-transparent text-foreground focus:outline-none focus:border-[var(--primary)]"
+                  value={editCost}
+                  onChange={(e) => setEditCost(e.target.value)}
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                Notes
+                <input
+                  type="text"
+                  className="ml-1.5 w-40 px-2 py-1 text-xs rounded-sm border border-border bg-transparent text-foreground focus:outline-none focus:border-[var(--primary)]"
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  placeholder="Optional"
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={saving}
+                className="text-xs px-2.5 py-1 rounded-sm font-medium disabled:opacity-50"
+                style={{ background: "oklch(0.72 0.14 74)", color: "oklch(0.08 0 0)" }}
+              >
+                {saving ? "…" : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className="text-xs px-2 py-1 text-muted-foreground hover:text-foreground"
+              >
+                Cancel
+              </button>
+            </form>
+          </td>
+        </tr>
+      )}
+
+      {expanded && !editing && (
+        <tr className="border-b border-border/50">
+          <td colSpan={12} className="px-4 py-3">
             <div
               className="text-xs rounded-sm px-3 py-2"
               style={{ background: "oklch(0.14 0 0)", color: "oklch(0.60 0.008 74)" }}

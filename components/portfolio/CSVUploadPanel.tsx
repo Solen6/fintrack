@@ -4,6 +4,12 @@ import { useState, useRef, useCallback } from "react";
 import { parsePortfolioCSV } from "@/lib/parse-csv";
 import type { ParsedHolding } from "@/lib/parse-csv";
 import { formatCurrency } from "@/lib/format";
+import {
+  ACCOUNT_TYPES,
+  DEFAULT_ACCOUNT_TYPE,
+  guessAccountType,
+  type AccountType,
+} from "@/lib/account-types";
 
 interface Props {
   existingAccounts?: string[];
@@ -13,7 +19,15 @@ interface Props {
 
 export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Props) {
   const [accountName, setAccountName] = useState("");
+  const [accountType, setAccountType] = useState<AccountType>(DEFAULT_ACCOUNT_TYPE);
+  const [typeTouched, setTypeTouched] = useState(false);
   const [parsed, setParsed] = useState<ParsedHolding[] | null>(null);
+
+  // Auto-guess the type from the name until the user picks one explicitly.
+  const updateName = (name: string) => {
+    setAccountName(name);
+    if (!typeTouched) setAccountType(guessAccountType(name));
+  };
   const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -29,6 +43,15 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
+      // Misrouted file guard: a transaction-history export (Run Date / Cash
+      // Balance columns) belongs in "Upload history", not this positions uploader.
+      if (/(^|\n)\s*"?Run Date"?,/.test(text) || text.includes("Cash Balance ($)")) {
+        setParsed(null);
+        setParseErrors([
+          'This looks like a transaction history export. Use the "Upload history" button instead — this uploader is for the Positions export (Accounts → Positions → Download).',
+        ]);
+        return;
+      }
       const result = parsePortfolioCSV(text);
       setParsed(result.holdings);
       setParseErrors(result.errors);
@@ -61,6 +84,12 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
         const j = await res.json();
         setSaveError(j.error ?? "Failed to save.");
       } else {
+        // Persist the account's type (best-effort — don't block on it).
+        await fetch("/api/accounts/meta", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account: accountName.trim(), type: accountType }),
+        }).catch(() => null);
         onSaved();
       }
     } catch {
@@ -111,7 +140,7 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
           <input
             type="text"
             value={accountName}
-            onChange={(e) => setAccountName(e.target.value)}
+            onChange={(e) => updateName(e.target.value)}
             placeholder="e.g. Fidelity Brokerage, Vanguard Roth IRA, 401k…"
             className="w-full rounded-sm px-3 py-2 text-sm bg-transparent border outline-none transition-colors"
             style={{
@@ -146,6 +175,38 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
               Existing holdings in "{accountName.trim()}" will be replaced.
             </p>
           )}
+        </div>
+
+        {/* Account type */}
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-muted-foreground">
+            Account type
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {ACCOUNT_TYPES.map((t) => {
+              const active = accountType === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => { setAccountType(t.id); setTypeTouched(true); }}
+                  className="text-xs px-3 py-1.5 rounded-sm transition-colors"
+                  style={{
+                    background: active ? "oklch(0.20 0.02 74)" : "oklch(0.12 0 0)",
+                    color: active ? "oklch(0.72 0.14 74)" : "oklch(0.55 0.008 74)",
+                    border: `1px solid ${active ? "oklch(0.40 0.06 74)" : "oklch(0.20 0 0)"}`,
+                  }}
+                >
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {accountType === "cash"
+              ? "Counts as cash (HYSA / checking / sweep) — not invested holdings."
+              : "Counts as invested — included in returns and allocation."}
+          </p>
         </div>
 
         {/* Drop zone */}
