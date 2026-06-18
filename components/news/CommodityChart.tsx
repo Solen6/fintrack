@@ -18,6 +18,7 @@ interface CommodityData {
   unit: string;
   currentPrice: number;
   changePct: number;
+  basePrice: number;
   data: Array<{ date: string; price: number }>;
 }
 
@@ -109,10 +110,24 @@ function formatTooltipDate(val: string, tf: Timeframe): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+/* ─── Persist the tracked-commodity selection across tab switches ─── */
+const ACTIVE_STORAGE_KEY = "fintrack:news:commodities";
+
+function loadActive(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 export function CommodityChart() {
   const [commodities, setCommodities] = useState<CommodityData[]>([]);
   const [loading, setLoading] = useState(true);
-  const [active, setActive] = useState<string[]>([]);
+  const [active, setActive] = useState<string[]>(loadActive);
   const [timeframe, setTimeframe] = useState<Timeframe>("1Y");
   const [addOpen, setAddOpen] = useState(false);
   const [tfOpen, setTfOpen] = useState(false);
@@ -137,6 +152,14 @@ export function CommodityChart() {
       .finally(() => setLoading(false));
   }, [timeframe]);
 
+  // Remember the tracked-commodity selection so it survives leaving the News tab
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(ACTIVE_STORAGE_KEY, JSON.stringify(active));
+    } catch { /* ignore quota / disabled storage */ }
+  }, [active]);
+
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
       if (addRef.current && !addRef.current.contains(e.target as Node)) setAddOpen(false);
@@ -152,16 +175,28 @@ export function CommodityChart() {
   const activeCommodities = commodities.filter((c) => active.includes(c.id));
   const available         = commodities.filter((c) => !active.includes(c.id) && c.data.length > 0);
 
-  // Normalize each series to % change from its first point
+  // Normalize each series to % change from its first point, aligned by date
   const chartData = useMemo(() => {
-    const base = activeCommodities.find((c) => c.data.length > 0);
-    if (!base) return [];
-    return base.data.map((point, i) => {
-      const row: Record<string, string | number> = { date: point.date };
+    const dateSet = new Set<string>();
+    for (const c of activeCommodities) for (const d of c.data) dateSet.add(d.date);
+    const allDates = [...dateSet].sort();
+    if (allDates.length === 0) return [];
+
+    const priceMaps = new Map<string, Map<string, number>>();
+    const basePrices = new Map<string, number>();
+    for (const c of activeCommodities) {
+      const m = new Map<string, number>();
+      for (const d of c.data) m.set(d.date, d.price);
+      priceMaps.set(c.id, m);
+      basePrices.set(c.id, c.basePrice || c.data[0]?.price || 1);
+    }
+
+    return allDates.map((date) => {
+      const row: Record<string, string | number> = { date };
       for (const c of activeCommodities) {
-        const startPrice = c.data[0]?.price ?? 1;
-        const p = c.data[i]?.price;
-        if (p != null) row[c.id] = parseFloat((((p - startPrice) / startPrice) * 100).toFixed(2));
+        const p = priceMaps.get(c.id)?.get(date);
+        const s = basePrices.get(c.id) ?? 1;
+        if (p != null && s > 0) row[c.id] = parseFloat((((p - s) / s) * 100).toFixed(2));
       }
       return row;
     });

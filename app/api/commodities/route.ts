@@ -47,13 +47,14 @@ async function yahooCandles(symbol: string, tf: string) {
     }))
     .filter((d): d is { date: string; price: number } => d.price != null);
 
-  const currentPrice = meta.regularMarketPrice ?? closes[closes.length - 1] ?? 0;
-  const prevClose    = meta.chartPreviousClose ?? closes[closes.length - 2] ?? currentPrice;
-  const changePct    = prevClose > 0
-    ? parseFloat((((currentPrice - prevClose) / prevClose) * 100).toFixed(2))
+  const lastClose    = data.length > 0 ? data[data.length - 1].price : 0;
+  const currentPrice = meta.regularMarketPrice ?? lastClose;
+  const basePrice    = meta.chartPreviousClose ?? (data.length > 0 ? data[0].price : 1);
+  const changePct    = basePrice > 0
+    ? parseFloat((((currentPrice - basePrice) / basePrice) * 100).toFixed(2))
     : 0;
 
-  const out = { data, currentPrice, changePct };
+  const out = { data, currentPrice, changePct, basePrice };
   cache.set(key, { data: out, ts: Date.now() });
   return out as typeof out;
 }
@@ -79,8 +80,8 @@ export async function GET(req: Request) {
     if (r.status !== "fulfilled") {
       return { ...meta, currentPrice: 0, changePct: 0, data: [] };
     }
-    const v = r.value as { data: { date: string; price: number }[]; currentPrice: number; changePct: number };
-    return { ...meta, currentPrice: v.currentPrice, changePct: v.changePct, data: v.data };
+    const v = r.value as { data: { date: string; price: number }[]; currentPrice: number; changePct: number; basePrice: number };
+    return { ...meta, currentPrice: v.currentPrice, changePct: v.changePct, basePrice: v.basePrice, data: v.data };
   });
 
   return NextResponse.json({ commodities });
