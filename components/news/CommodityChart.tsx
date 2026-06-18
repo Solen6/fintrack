@@ -112,6 +112,7 @@ function formatTooltipDate(val: string, tf: Timeframe): string {
 
 /* ─── Persist the tracked-commodity selection across tab switches ─── */
 const ACTIVE_STORAGE_KEY = "fintrack:news:commodities";
+const TF_STORAGE_KEY = "fintrack:news:commodities:tf";
 
 function loadActive(): string[] {
   if (typeof window === "undefined") return [];
@@ -124,11 +125,20 @@ function loadActive(): string[] {
   }
 }
 
+function loadTimeframe(): Timeframe {
+  if (typeof window === "undefined") return "1Y";
+  try {
+    const raw = window.localStorage.getItem(TF_STORAGE_KEY);
+    if (raw && (TF_OPTIONS as readonly string[]).includes(raw)) return raw as Timeframe;
+  } catch {}
+  return "1Y";
+}
+
 export function CommodityChart() {
   const [commodities, setCommodities] = useState<CommodityData[]>([]);
   const [loading, setLoading] = useState(true);
   const [active, setActive] = useState<string[]>(loadActive);
-  const [timeframe, setTimeframe] = useState<Timeframe>("1Y");
+  const [timeframe, setTimeframe] = useState<Timeframe>(loadTimeframe);
   const [addOpen, setAddOpen] = useState(false);
   const [tfOpen, setTfOpen] = useState(false);
   const addRef = useRef<HTMLDivElement>(null);
@@ -152,13 +162,20 @@ export function CommodityChart() {
       .finally(() => setLoading(false));
   }, [timeframe]);
 
-  // Remember the tracked-commodity selection so it survives leaving the News tab
+  // Remember selections so they survive leaving the News tab
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       window.localStorage.setItem(ACTIVE_STORAGE_KEY, JSON.stringify(active));
-    } catch { /* ignore quota / disabled storage */ }
+    } catch {}
   }, [active]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(TF_STORAGE_KEY, timeframe);
+    } catch {}
+  }, [timeframe]);
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
