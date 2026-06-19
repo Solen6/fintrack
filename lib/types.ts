@@ -10,6 +10,8 @@ export interface Holding {
   currentPrice: number;
   account: AccountType;
   notes?: string;
+  /* Dividend handling: true = reinvest (DRIP), false = pay to cash. */
+  drip?: boolean;
 }
 
 export type SortField =

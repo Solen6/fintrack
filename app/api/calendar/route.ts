@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
 
-export type EventCategory = "Macro" | "Earnings" | "Dividend";
+export type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split";
 
 export interface CalendarEvent {
   date: string; // YYYY-MM-DD
@@ -98,6 +98,36 @@ async function fetchDividends(ticker: string, from: string, to: string): Promise
   }
 }
 
+async function fetchSplits(ticker: string, from: string, to: string): Promise<CalendarEvent[]> {
+  try {
+    const p1 = Math.floor(new Date(`${from}T00:00:00Z`).getTime() / 1000);
+    const p2 = Math.floor(new Date(`${to}T00:00:00Z`).getTime() / 1000);
+    const url =
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
+      `?period1=${p1}&period2=${p2}&interval=1d&events=split`;
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, next: { revalidate: 3600 } });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const splits = data?.chart?.result?.[0]?.events?.splits as
+      | Record<string, { date: number; numerator: number; denominator: number; splitRatio?: string }>
+      | undefined;
+    if (!splits) return [];
+    return Object.values(splits).map((s) => {
+      const label = s.splitRatio ?? `${s.numerator}:${s.denominator}`;
+      const reverse = s.numerator < s.denominator;
+      return {
+        date: new Date(s.date * 1000).toISOString().slice(0, 10),
+        category: "Split" as const,
+        title: `${ticker} ${reverse ? "reverse split (consolidation)" : "stock split"}`,
+        detail: `${label} · shares & cost basis auto-adjusted`,
+        ticker,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 export async function GET() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -144,7 +174,15 @@ export async function GET() {
 
   const macroEvents = await fetchMacroEvents(today, endDate);
 
-  const all = [...macroEvents, ...earningsEvents, ...dividendEvents].sort((a, b) =>
+  // Splits / consolidations (Yahoo events). Surfaces effective/declared actions
+  // in the window; the daily cron applies them to holdings on the day they hit.
+  const splitEvents: CalendarEvent[] = [];
+  for (const ticker of tickers) {
+    splitEvents.push(...(await fetchSplits(ticker, today, endDate)));
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  const all = [...macroEvents, ...earningsEvents, ...dividendEvents, ...splitEvents].sort((a, b) =>
     a.date.localeCompare(b.date)
   );
 

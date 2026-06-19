@@ -5,7 +5,7 @@ import Link from "next/link";
 import nextDynamic from "next/dynamic";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
-import { isInvestedType, resolveAccountType } from "@/lib/account-types";
+import { isInvestedType, resolveAccountType, type AccountType } from "@/lib/account-types";
 
 const chartLoading = () => (
   <div className="skeleton h-full w-full rounded-sm" aria-hidden />
@@ -69,7 +69,12 @@ interface QuoteData {
 interface Snapshot {
   date: string;
   value: number;
+  /* Cash balance captured for this account on this day (0 for legacy/pre-cash rows). */
+  cash?: number;
+  /* null = legacy combined row (pre per-account split); otherwise the account name. */
+  account: string | null;
 }
+
 
 
 const BENCH_RANGES = ["1D", "5D", "1M", "6M", "YTD", "1Y"] as const;
@@ -94,6 +99,8 @@ export function DashboardClient() {
   const [quotes, setQuotes] = useState<Record<string, QuoteData>>({});
   const [sectors, setSectors] = useState<Record<string, string>>({});
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [accountTypes, setAccountTypes] = useState<Record<string, AccountType>>({});
+  const [cashBalances, setCashBalances] = useState<Record<string, number>>({});
   const [benchmark, setBenchmark] = useState<Record<BenchRange, number | null> | null>(null);
   const [quotesError, setQuotesError] = useState(false);
   const [asOf, setAsOf] = useState<Date | null>(null);
@@ -103,6 +110,10 @@ export function DashboardClient() {
   // Performance-chart controls.
   const [metric, setMetric] = useState<PerfMetric>("value");
   const [timeframe, setTimeframe] = useState<Timeframe>("ALL");
+  /* Accounts the user has explicitly turned OFF. Empty = "Combined" (all on).
+     Storing the off-list (instead of an on-list) means newly added accounts
+     auto-enroll into the combined view — they're simply not in the off-set. */
+  const [excludedAccounts, setExcludedAccounts] = useState<Set<string>>(() => new Set());
 
   const load = useCallback(async () => {
     setView("loading");
@@ -121,10 +132,12 @@ export function DashboardClient() {
 
       // Quotes + sectors in parallel; capture today's snapshot fire-and-forget
       const snapshotCapture = fetch("/api/snapshots", { method: "POST" }).catch(() => null);
-      const [qRes, sRes, bRes] = await Promise.all([
+      const [qRes, sRes, bRes, tRes, cRes] = await Promise.all([
         fetch(`/api/quotes?tickers=${tickers.join(",")}`).catch(() => null),
         fetch(`/api/sectors?tickers=${tickers.join(",")}`).catch(() => null),
         fetch("/api/benchmark").catch(() => null),
+        fetch("/api/accounts/meta").catch(() => null),
+        fetch("/api/cash").catch(() => null),
       ]);
 
       if (qRes?.ok) {
@@ -141,6 +154,16 @@ export function DashboardClient() {
       if (bRes?.ok) {
         const { returns } = await bRes.json();
         setBenchmark(returns ?? null);
+      }
+      if (tRes?.ok) {
+        const { types } = await tRes.json();
+        setAccountTypes(types ?? {});
+      }
+      if (cRes?.ok) {
+        const { balances } = await cRes.json();
+        const m: Record<string, number> = {};
+        for (const b of balances ?? []) m[b.account] = Number(b.balance);
+        setCashBalances(m);
       }
 
       // History after capture so today's point is included
@@ -160,11 +183,43 @@ export function DashboardClient() {
 
   useEffect(() => { load(); }, [load]);
 
+  /* All accounts present in holdings or cash balances, sorted for stable order. */
+  const accountList = useMemo(() => {
+    const set = new Set<string>();
+    for (const h of holdings) {
+      const a = (h.account ?? "").trim();
+      if (a) set.add(a);
+    }
+    for (const a of Object.keys(cashBalances)) {
+      if (a.trim()) set.add(a);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [holdings, cashBalances]);
+
+  /* Enabled = every known account minus the user's explicit off-list. */
+  const enabledAccounts = useMemo(() => {
+    return new Set(accountList.filter((a) => !excludedAccounts.has(a)));
+  }, [accountList, excludedAccounts]);
+
+  const allAccountsOn = excludedAccounts.size === 0;
+
+  const toggleAccount = useCallback((acct: string) => {
+    setExcludedAccounts((prev) => {
+      const next = new Set(prev);
+      if (next.has(acct)) next.delete(acct);
+      else next.add(acct);
+      return next;
+    });
+  }, []);
+
+  const resetAccountSelection = useCallback(() => setExcludedAccounts(new Set()), []);
+
   /* ─── Aggregations (all derived from live rows + quotes) ─── */
   const agg = useMemo(() => {
-    const isCashAcct = (account: string) => !isInvestedType(resolveAccountType(account, {}));
-    const investRows = holdings.filter((h) => !isCashAcct(h.account));
-    const cashRows = holdings.filter((h) => isCashAcct(h.account));
+    const isCashAcct = (account: string) => !isInvestedType(resolveAccountType(account, accountTypes));
+    const filtered = holdings.filter((h) => enabledAccounts.has(h.account));
+    const investRows = filtered.filter((h) => !isCashAcct(h.account));
+    const cashRows = filtered.filter((h) => isCashAcct(h.account));
 
     const byTicker = new Map<string, AggHolding>();
     for (const h of investRows) {
@@ -198,10 +253,17 @@ export function DashboardClient() {
       return p;
     }).sort((a, b) => b.value - a.value);
 
-    const cash = cashRows.reduce((s, h) => {
+    // Cash = legacy cash-typed holdings (rare) + real cash balances from the
+    // cash_balances table, both honoring the account toggle.
+    const cashFromHoldings = cashRows.reduce((s, h) => {
       const q = quotes[h.ticker];
       return s + Number(h.shares) * (q?.price ?? (Number(h.cost_basis) || 1));
     }, 0);
+    const cashFromBalances = Object.entries(cashBalances).reduce(
+      (s, [acct, bal]) => (enabledAccounts.has(acct) ? s + bal : s),
+      0,
+    );
+    const cash = cashFromHoldings + cashFromBalances;
 
     const invested = positions.reduce((s, p) => s + p.cost, 0);
     const positionsValue = positions.reduce((s, p) => s + p.value, 0);
@@ -219,7 +281,7 @@ export function DashboardClient() {
         : 0;
 
     return { positions, cash, invested, positionsValue, totalValue, totalGain, totalReturnPct, todayChange, todayPct };
-  }, [holdings, quotes, sectors]);
+  }, [holdings, quotes, sectors, enabledAccounts, accountTypes, cashBalances]);
 
   /* Allocation by sector — top 4 + Other, steel ramp */
   const allocation: AllocationPoint[] = useMemo(() => {
@@ -251,13 +313,57 @@ export function DashboardClient() {
     return sorted.map(([label, value], i) => ({ label, value, color: ramp[i] }));
   }, [agg]);
 
-  /* Source series for all history panels: going-forward daily snapshots. */
-  const series = useMemo(() =>
-    snapshots.map((s) => ({ date: s.date, value: s.value })),
-  [snapshots]);
+  /* Source series for all history panels: collapse per-account snapshots into
+     one daily total honoring the account toggle.
+       • Per-account rows (account != null): summed if that account is enabled.
+       • Legacy rows (account == null): a pre-split combined total. Used ONLY as
+         a fallback for dates that have NO per-account rows — otherwise a day
+         with both a legacy total AND per-account rows would be double-counted
+         (this was the "+100% on the latest day" bug: Jun 19 had both a null
+         and a "t" row, summing to 2× the real value).
+     The same filtered series feeds the performance chart AND the monthly /
+     yearly bars, so toggles propagate everywhere. */
+  const series = useMemo(() => {
+    type Acc = { value: number; cash: number };
+    // Pass 1: sum enabled per-account rows per date (securities value + cash).
+    const perAccount = new Map<string, Acc>();
+    const legacy = new Map<string, Acc>();
+    for (const s of snapshots) {
+      const cash = s.cash ?? 0;
+      if (s.account === null) {
+        legacy.set(s.date, { value: s.value, cash }); // last write wins; one combined total/day
+      } else if (enabledAccounts.has(s.account)) {
+        const cur = perAccount.get(s.date) ?? { value: 0, cash: 0 };
+        perAccount.set(s.date, { value: cur.value + s.value, cash: cur.cash + cash });
+      }
+    }
+    // Pass 2: per-account total wins for a date; fall back to the legacy
+    // combined row only when that date has no per-account rows AND all
+    // accounts are enabled (a legacy total can't be filtered by account).
+    const byDate = new Map<string, Acc>(perAccount);
+    if (allAccountsOn) {
+      for (const [date, acc] of legacy) {
+        if (!byDate.has(date)) byDate.set(date, acc);
+      }
+    }
+    return [...byDate.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, acc]) => ({ date, value: acc.value, cash: acc.cash }));
+  }, [snapshots, enabledAccounts, allAccountsOn]);
 
-  /* Performance chart: clip the series to the selected timeframe, then rebase
-     gain/return to the window's first point (so "+$X since DATE" is honest). */
+  /* Performance chart: clip the series to the selected timeframe, then plot
+     GAIN VS COST BASIS at each point — (value − costBasis) / costBasis.
+
+     This makes the chart's headline return match the Accounts tab exactly
+     (both are "how far is the portfolio above what I paid"), instead of the
+     old "return since the first snapshot," which only saw the tracked window
+     and disagreed with the Accounts number. Robust to contributions: adding a
+     position raises value AND cost basis together, so the ratio doesn't jump.
+
+     costBasis = current total cost of enabled holdings (agg.invested). It's
+     held flat across the window — an approximation if you've traded mid-window,
+     but exact when holdings are stable, and it's what reconciles the two
+     numbers the user looks at. */
   const perf = useMemo(() => {
     const start = (() => {
       if (timeframe === "ALL") return null;
@@ -273,17 +379,21 @@ export function DashboardClient() {
     const clipped = start
       ? series.filter((s) => new Date(`${s.date}T00:00:00`) >= start)
       : series;
-    const base = clipped[0];
+
+    const costBasis = agg.invested;
     const points: PerfPoint[] = clipped.map((s) => {
-      const gain = base ? s.value - base.value : 0;
-      const returnPct = base && base.value > 0 ? (gain / base.value) * 100 : 0;
+      // Return % is a pure securities figure (gain vs cost basis) — cash isn't a
+      // gain. The Value line plots the true total: securities + cash.
+      const gain = s.value - costBasis;
+      const returnPct = costBasis > 0 ? (gain / costBasis) * 100 : 0;
+      const totalValue = s.value + s.cash;
       return {
         label: new Date(`${s.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
         date: new Date(`${s.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-        metric: metric === "value" ? s.value : returnPct,
-        total: s.value,
+        metric: metric === "value" ? totalValue : returnPct,
+        total: totalValue,
         securities: s.value,
-        cash: 0,
+        cash: s.cash,
         gain,
         returnPct,
       };
@@ -298,7 +408,7 @@ export function DashboardClient() {
         ? new Date(`${clipped[0].date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
         : null,
     };
-  }, [series, timeframe, metric]);
+  }, [series, timeframe, metric, agg.invested]);
 
   /* History derivations — period-over-period returns from snapshots. */
   const history = useMemo(() => {
@@ -509,9 +619,7 @@ export function DashboardClient() {
                       >
                         {formatPercent(perf.returnPct)}
                       </span>
-                      {perf.since && (
-                        <span className="text-xs text-muted-foreground">since {perf.since}</span>
-                      )}
+                      <span className="text-xs text-muted-foreground">vs cost basis</span>
                     </div>
                   )}
                 </div>
@@ -533,13 +641,22 @@ export function DashboardClient() {
                 <HistoryPlaceholder since={perf.since ?? history.since} height={220} />
               )}
 
-              {/* Controls: timeframe */}
+              {/* Controls: timeframe + per-account toggle */}
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3">
                 <Segmented
                   options={TIMEFRAMES.map((t) => ({ value: t, label: t }))}
                   value={timeframe}
                   onChange={(v) => setTimeframe(v as Timeframe)}
                 />
+                {accountList.length > 1 && (
+                  <AccountToggles
+                    accounts={accountList}
+                    enabled={enabledAccounts}
+                    allOn={allAccountsOn}
+                    onToggle={toggleAccount}
+                    onReset={resetAccountSelection}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -930,6 +1047,62 @@ function Segmented({
   );
 }
 
+
+/* ─── Account toggles ─── Combined chip + one chip per account.
+   "Combined" highlights when every account is on; clicking it resets the
+   selection (and re-enrolls accounts added later). Each account chip toggles
+   individually; the chart + monthly/yearly bars re-derive from the selection. */
+function AccountToggles({
+  accounts,
+  enabled,
+  allOn,
+  onToggle,
+  onReset,
+}: {
+  accounts: string[];
+  enabled: Set<string>;
+  allOn: boolean;
+  onToggle: (acct: string) => void;
+  onReset: () => void;
+}) {
+  return (
+    <div className="inline-flex flex-wrap items-center gap-1">
+      <button
+        type="button"
+        onClick={onReset}
+        aria-pressed={allOn}
+        className="rounded-sm px-2.5 py-1 text-xs font-mono transition-colors border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        style={
+          allOn
+            ? { background: "oklch(0.20 0.02 74)", color: "var(--primary)", borderColor: "oklch(0.30 0.04 74)" }
+            : { background: "transparent", color: "var(--muted-foreground)", borderColor: "var(--border)" }
+        }
+        title="Show combined total across every account"
+      >
+        Combined
+      </button>
+      {accounts.map((acct) => {
+        const on = enabled.has(acct);
+        return (
+          <button
+            key={acct}
+            type="button"
+            onClick={() => onToggle(acct)}
+            aria-pressed={on}
+            className="rounded-sm px-2.5 py-1 text-xs font-mono transition-colors border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            style={
+              on
+                ? { background: "oklch(0.20 0.02 74)", color: "var(--primary)", borderColor: "oklch(0.30 0.04 74)" }
+                : { background: "transparent", color: "var(--muted-foreground)", borderColor: "var(--border)", textDecoration: "line-through" }
+            }
+          >
+            {acct}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 /* ─── Expanded returns modal (Monthly or Yearly) ─── */
 function ReturnsModal({

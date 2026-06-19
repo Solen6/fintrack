@@ -1,26 +1,37 @@
 import { formatCurrency, formatPercent } from "@/lib/format";
 import type { HoldingWithMetrics } from "@/lib/types";
 
+interface CashBalance {
+  account: string;
+  label: string;
+  balance: number;
+}
+
 interface Props {
   holdings: HoldingWithMetrics[];
+  cash?: CashBalance[];
   account: string;
 }
 
-export function SummaryStrip({ holdings, account }: Props) {
+export function SummaryStrip({ holdings, cash = [], account }: Props) {
   const filtered = account === "all"
     ? holdings
     : holdings.filter((h) => h.account === account);
 
-  const totalValue = filtered.reduce((s, h) => s + h.value, 0);
+  const cashTotal = (account === "all" ? cash : cash.filter((c) => c.account === account))
+    .reduce((s, c) => s + c.balance, 0);
+
+  const positionsValue = filtered.reduce((s, h) => s + h.value, 0);
+  const totalValue = positionsValue + cashTotal;
   const totalCost  = filtered.reduce((s, h) => s + h.costTotal, 0);
-  const unrealized = totalValue - totalCost;
+  const unrealized = positionsValue - totalCost;
   const unrealizedPct = totalCost > 0 ? (unrealized / totalCost) * 100 : 0;
 
   const todayChange = filtered.reduce((s, h) => {
     const pct = h.todayChangePct / 100;
     return s + (h.value / (1 + pct)) * pct;
   }, 0);
-  const todayPct = totalValue > 0 ? (todayChange / (totalValue - todayChange)) * 100 : 0;
+  const todayPct = positionsValue > 0 ? (todayChange / (positionsValue - todayChange)) * 100 : 0;
 
   return (
     <div className="flex items-center gap-8 px-6 py-4 border-b border-border text-sm shrink-0 overflow-x-auto">
@@ -28,6 +39,7 @@ export function SummaryStrip({ holdings, account }: Props) {
       <div className="w-px h-8 bg-border shrink-0" aria-hidden />
       <Metric label="Today" value={formatCurrency(todayChange)} change={todayPct} showSign />
       <Metric label="Unrealized P&L" value={formatCurrency(unrealized)} change={unrealizedPct} showSign />
+      {cashTotal > 0 && <Metric label="Cash" value={formatCurrency(cashTotal)} muted />}
       {account === "all" && filtered.length > 0 && (
         <>
           <div className="w-px h-8 bg-border shrink-0" aria-hidden />

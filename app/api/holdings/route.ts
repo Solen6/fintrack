@@ -68,7 +68,7 @@ export async function PATCH(request: NextRequest) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await request.json();
-  const { id, ticker, name, shares, cost_basis, account, notes } = body as {
+  const { id, ticker, name, shares, cost_basis, account, notes, drip } = body as {
     id: string;
     ticker?: string;
     name?: string;
@@ -76,6 +76,7 @@ export async function PATCH(request: NextRequest) {
     cost_basis?: number;
     account?: string;
     notes?: string | null;
+    drip?: boolean;
   };
 
   if (!id) return NextResponse.json({ error: "Holding id is required" }, { status: 400 });
@@ -87,6 +88,7 @@ export async function PATCH(request: NextRequest) {
   if (cost_basis !== undefined) updates.cost_basis = cost_basis;
   if (account !== undefined) updates.account = account;
   if (notes !== undefined) updates.notes = notes;
+  if (drip !== undefined) updates.drip = drip;
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });

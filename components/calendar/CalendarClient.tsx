@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type EventCategory = "Macro" | "Earnings" | "Dividend";
+type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split";
 
 interface CalendarEvent {
   date: string;
@@ -13,7 +13,7 @@ interface CalendarEvent {
   impact?: "high" | "med" | "low";
 }
 
-const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Dividend"];
+const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Dividend", "Split"];
 
 const HIDDEN_KEY = "fintrack:calendar:hidden";
 
@@ -42,6 +42,7 @@ const CATEGORY_COLORS: Record<EventCategory, string> = {
   Macro:    "oklch(0.64 0.07 240)",
   Earnings: "oklch(0.72 0.14 74)",
   Dividend: "oklch(0.72 0.15 152)",
+  Split:    "oklch(0.70 0.13 300)",
 };
 
 function formatDateLabel(dateStr: string): string {

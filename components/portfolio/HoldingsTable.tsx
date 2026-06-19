@@ -14,11 +14,12 @@ import {
 interface Props {
   holdings: HoldingWithMetrics[];
   account: string;
-  onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null }) => Promise<void>;
+  onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null; drip?: boolean }) => Promise<void>;
   onClose?: (holding: HoldingWithMetrics) => void;
+  onDelete?: (holding: HoldingWithMetrics) => Promise<void>;
 }
 
-export function HoldingsTable({ holdings, account, onEdit, onClose }: Props) {
+export function HoldingsTable({ holdings, account, onEdit, onClose, onDelete }: Props) {
   const [sort, setSort] = useState<{ field: SortField; dir: SortDir }>({
     field: "value",
     dir: "desc",
@@ -83,8 +84,8 @@ export function HoldingsTable({ holdings, account, onEdit, onClose }: Props) {
               <Th field="gainDollar" sort={sort} onSort={toggleSort} align="right" className="w-28">Gain</Th>
               <Th field="gainPercent" sort={sort} onSort={toggleSort} align="right" className="w-20">Gain %</Th>
               <th className="px-4 py-3 text-xs text-muted-foreground font-medium w-24 text-center">Account</th>
-              {(onEdit || onClose) && (
-                <th className="px-4 py-3 text-xs text-muted-foreground font-medium w-24 text-center">Actions</th>
+              {(onEdit || onClose || onDelete) && (
+                <th className="px-4 py-3 text-xs text-muted-foreground font-medium w-32 text-center">Actions</th>
               )}
             </tr>
           </thead>
@@ -98,6 +99,7 @@ export function HoldingsTable({ holdings, account, onEdit, onClose }: Props) {
                 onToggle={() => setExpandedId((prev) => (prev === h.id ? null : h.id))}
                 onEdit={onEdit}
                 onClose={onClose}
+                onDelete={onDelete}
               />
             ))}
           </tbody>
@@ -207,16 +209,19 @@ interface RowProps {
   weight: number;
   expanded: boolean;
   onToggle: () => void;
-  onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null }) => Promise<void>;
+  onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null; drip?: boolean }) => Promise<void>;
   onClose?: (holding: HoldingWithMetrics) => void;
+  onDelete?: (holding: HoldingWithMetrics) => Promise<void>;
 }
 
-function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose }: RowProps) {
+function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, onDelete }: RowProps) {
   const [editing, setEditing] = useState(false);
   const [editShares, setEditShares] = useState(String(h.shares));
   const [editCost, setEditCost] = useState(String(h.costBasis));
   const [editNotes, setEditNotes] = useState(h.notes ?? "");
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const positive = h.gainDollar >= 0;
   const todayPositive = h.todayChangePct >= 0;
 
@@ -288,7 +293,7 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose }:
             {accountLabel[h.account] ?? h.account}
           </span>
         </td>
-        {(onEdit || onClose) && (
+        {(onEdit || onClose || onDelete) && (
           <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-center gap-1">
               {onEdit && (
@@ -313,6 +318,28 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose }:
                   title="Close position"
                 >
                   Close
+                </button>
+              )}
+              {onDelete && (
+                <button
+                  onClick={async () => {
+                    if (!confirmDelete) {
+                      setConfirmDelete(true);
+                      return;
+                    }
+                    setDeleting(true);
+                    await onDelete(h);
+                    // Component unmounts on reload; reset is defensive.
+                    setDeleting(false);
+                    setConfirmDelete(false);
+                  }}
+                  onMouseLeave={() => setConfirmDelete(false)}
+                  disabled={deleting}
+                  className="text-xs px-1.5 py-0.5 rounded-sm hover:bg-accent transition-colors disabled:opacity-50"
+                  style={{ color: "var(--negative)" }}
+                  title={confirmDelete ? "Click again to permanently delete" : "Delete position (no realized gain recorded)"}
+                >
+                  {deleting ? "…" : confirmDelete ? "Sure?" : "Delete"}
                 </button>
               )}
             </div>

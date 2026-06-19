@@ -1,5 +1,6 @@
 {
   "crons": [
-    { "path": "/api/paper/cron", "schedule": "0 21 * * 1-5" }
+    { "path": "/api/paper/cron", "schedule": "0 21 * * 1-5" },
+    { "path": "/api/snapshots/cron", "schedule": "0 22 * * 1-5" }
   ]
 }

@@ -53,6 +53,47 @@ export async function yahooQuote(symbol: string): Promise<YahooQuote | null> {
   }
 }
 
+/* ─── v8 chart: daily close history (no auth) ───
+   One point per US trading day in [from, to], oldest first. Used by the ledger
+   derivation engine to value reconstructed holdings on each past date. */
+export interface DailyClose { date: string; close: number } // date = YYYY-MM-DD (Eastern)
+
+export async function yahooDailyHistory(
+  symbol: string,
+  fromUnixSec: number,
+  toUnixSec: number,
+): Promise<DailyClose[]> {
+  const key = symbol.trim().toUpperCase();
+  try {
+    const url =
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(key)}` +
+      `?interval=1d&period1=${Math.floor(fromUnixSec)}&period2=${Math.floor(toUnixSec)}`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; fintrack/1.0)" },
+      next: { revalidate: 3600 },
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    const result = json?.chart?.result?.[0];
+    const timestamps: number[] | undefined = result?.timestamp;
+    const closes: (number | null)[] | undefined =
+      result?.indicators?.quote?.[0]?.close ??
+      result?.indicators?.adjclose?.[0]?.adjclose;
+    if (!timestamps || !closes) return [];
+    const out: DailyClose[] = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      const c = closes[i];
+      if (c == null) continue;
+      const date = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" })
+        .format(new Date(timestamps[i] * 1000));
+      out.push({ date, close: c });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /* ─── v7 options: cookie + crumb handshake, then chain fetch ─── */
 let authCache: { cookie: string; crumb: string; ts: number } | null = null;
 const AUTH_TTL = 60 * 60_000;

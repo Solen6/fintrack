@@ -5,14 +5,21 @@ import { cn } from "@/lib/utils";
 import { formatCurrencyCompact } from "@/lib/format";
 import type { HoldingWithMetrics } from "@/lib/types";
 
+interface CashBalance {
+  account: string;
+  label: string;
+  balance: number;
+}
+
 interface Props {
   holdings: HoldingWithMetrics[];
+  cash?: CashBalance[];
   selected: string;
   onSelect: (id: string) => void;
   onRemoveAccount: (name: string) => void;
 }
 
-export function AccountSidebar({ holdings, selected, onSelect, onRemoveAccount }: Props) {
+export function AccountSidebar({ holdings, cash = [], selected, onSelect, onRemoveAccount }: Props) {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
   const accounts = useMemo(() => {
@@ -20,10 +27,13 @@ export function AccountSidebar({ holdings, selected, onSelect, onRemoveAccount }
     for (const h of holdings) {
       map.set(h.account, (map.get(h.account) ?? 0) + h.value);
     }
+    for (const c of cash) {
+      map.set(c.account, (map.get(c.account) ?? 0) + c.balance);
+    }
     return Array.from(map.entries())
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [holdings]);
+  }, [holdings, cash]);
 
   const grandTotal = accounts.reduce((s, a) => s + a.value, 0);
 

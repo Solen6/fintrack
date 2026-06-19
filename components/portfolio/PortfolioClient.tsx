@@ -7,7 +7,9 @@ import { HoldingsTable } from "./HoldingsTable";
 import { HoldingsHeatmap } from "./HoldingsHeatmap";
 import { CSVUploadPanel } from "./CSVUploadPanel";
 import { AddPositionForm } from "./AddPositionForm";
+import { AddCashForm } from "./AddCashForm";
 import { ClosePositionModal } from "./ClosePositionModal";
+import { DividendManager } from "./DividendManager";
 import { ClosedPositions } from "./ClosedPositions";
 import { computeMetrics } from "@/lib/types";
 import type { HoldingWithMetrics, Quote } from "@/lib/types";
@@ -21,33 +23,63 @@ interface DBHolding {
   account: string;
   sector: string | null;
   notes: string | null;
+  drip: boolean | null;
 }
 
-type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "ready";
+type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "addCash" | "ready";
+
+interface CashBalance {
+  account: string;
+  label: string;
+  balance: number;
+}
 
 export function PortfolioClient() {
   const [view, setView] = useState<ViewState>("loading");
   const [subView, setSubView] = useState<"table" | "heatmap" | "closed">("table");
   const [holdings, setHoldings] = useState<HoldingWithMetrics[]>([]);
+  const [cash, setCash] = useState<CashBalance[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [quotesError, setQuotesError] = useState(false);
   const [closingHolding, setClosingHolding] = useState<HoldingWithMetrics | null>(null);
+  const [managingDividends, setManagingDividends] = useState(false);
 
   const existingAccounts = useMemo(
-    () => [...new Set(holdings.map((h) => h.account))].sort(),
-    [holdings]
+    () => [...new Set([...holdings.map((h) => h.account), ...cash.map((c) => c.account)])].sort(),
+    [holdings, cash]
   );
+
+  const cashByAccount = useMemo(() => {
+    const m: Record<string, { label: string; balance: number }> = {};
+    for (const c of cash) m[c.account] = { label: c.label, balance: c.balance };
+    return m;
+  }, [cash]);
 
   const loadData = useCallback(async () => {
     setView("loading");
     try {
-      const res = await fetch("/api/holdings");
+      const [res, cashRes] = await Promise.all([
+        fetch("/api/holdings"),
+        fetch("/api/cash").catch(() => null),
+      ]);
       if (!res.ok) throw new Error();
       const { holdings: dbHoldings }: { holdings: DBHolding[] } = await res.json();
 
-      if (!dbHoldings || dbHoldings.length === 0) {
+      const cashBalances: CashBalance[] = cashRes?.ok
+        ? (await cashRes.json()).balances ?? []
+        : [];
+      setCash(cashBalances);
+
+      if ((!dbHoldings || dbHoldings.length === 0) && cashBalances.length === 0) {
         setView("empty");
+        return;
+      }
+      if (!dbHoldings || dbHoldings.length === 0) {
+        // Cash-only: nothing to price, but show the cash UI.
+        setHoldings([]);
+        setLastRefreshed(new Date());
+        setView("ready");
         return;
       }
 
@@ -84,6 +116,7 @@ export function PortfolioClient() {
             currentPrice: q?.price ?? h.cost_basis,
             account: h.account,
             notes: h.notes ?? undefined,
+            drip: h.drip ?? false,
           },
           q?.changePct ?? 0
         );
@@ -100,11 +133,18 @@ export function PortfolioClient() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleRemoveAccount = async (accountName: string) => {
-    await fetch("/api/holdings", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ account: accountName }),
-    });
+    await Promise.all([
+      fetch("/api/holdings", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account: accountName }),
+      }),
+      fetch("/api/cash", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account: accountName }),
+      }).catch(() => null),
+    ]);
     loadData();
   };
 
@@ -144,17 +184,29 @@ export function PortfolioClient() {
     );
   }
 
+  if (view === "addCash") {
+    return (
+      <AddCashForm
+        existingAccounts={existingAccounts}
+        cashByAccount={cashByAccount}
+        onSaved={() => loadData()}
+        onCancel={() => setView("ready")}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-1 overflow-hidden">
       <AccountSidebar
         holdings={holdings}
+        cash={cash}
         selected={selectedAccount}
         onSelect={setSelectedAccount}
         onRemoveAccount={handleRemoveAccount}
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        <SummaryStrip holdings={holdings} account={selectedAccount} />
+        <SummaryStrip holdings={holdings} cash={cash} account={selectedAccount} />
 
         {/* Toolbar */}
         <div className="flex items-center justify-between px-6 py-2 border-b border-border shrink-0">
@@ -211,10 +263,22 @@ export function PortfolioClient() {
               Refresh prices
             </button>
             <button
+              onClick={() => setManagingDividends(true)}
+              className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+            >
+              Manage dividends
+            </button>
+            <button
               onClick={() => setView("addPosition")}
               className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
             >
               Add position
+            </button>
+            <button
+              onClick={() => setView("addCash")}
+              className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+            >
+              Add cash
             </button>
             <button
               onClick={() => setView("uploading")}
@@ -240,6 +304,15 @@ export function PortfolioClient() {
               loadData();
             }}
             onClose={(holding) => setClosingHolding(holding)}
+            onDelete={async (holding) => {
+              const res = await fetch("/api/holdings", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: holding.id }),
+              });
+              if (!res.ok) throw new Error((await res.json()).error);
+              loadData();
+            }}
           />
         )}
         {subView === "heatmap" && (
@@ -269,6 +342,15 @@ export function PortfolioClient() {
             loadData();
           }}
           onCancel={() => setClosingHolding(null)}
+        />
+      )}
+
+      {managingDividends && (
+        <DividendManager
+          holdings={holdings}
+          account={selectedAccount}
+          onSaved={() => { setManagingDividends(false); loadData(); }}
+          onCancel={() => setManagingDividends(false)}
         />
       )}
     </div>
