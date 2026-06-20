@@ -85,12 +85,13 @@ export function parsePortfolioCSV(text: string): ParseResult {
     return -1;
   };
 
-  const tickerIdx    = col(["symbol", "ticker"]);
-  const nameIdx      = col(["description", "name", "security"]);
-  const sharesIdx    = col(["quantity", "shares"]);
-  const costIdx      = col(["average cost basis", "cost basis per share", "avg cost", "cost/share", "purchase price"]);
-  const accountIdx   = col(["account name", "account type", "account"]);
-  const sectorIdx    = col(["sector"]);
+  const tickerIdx       = col(["symbol", "ticker"]);
+  const nameIdx         = col(["description", "name", "security"]);
+  const sharesIdx       = col(["quantity", "shares"]);
+  const costTotalIdx    = col(["cost basis total"]);
+  const costPerShareIdx = col(["average cost basis", "cost basis per share", "avg cost", "cost/share", "purchase price"]);
+  const accountIdx      = col(["account name", "account type", "account"]);
+  const sectorIdx       = col(["sector"]);
 
   if (tickerIdx === -1 || sharesIdx === -1) {
     return {
@@ -111,10 +112,20 @@ export function parsePortfolioCSV(text: string): ParseResult {
     if (["SPAXX", "FDRXX", "FZSXX", "FCASH", "--", ""].includes(ticker)) continue;
     if (ticker.startsWith("**") || ticker.startsWith("Pending")) continue;
 
-    const name    = nameIdx !== -1 ? (row[nameIdx]?.trim() ?? ticker) : ticker;
-    const shares  = parseFloat((row[sharesIdx] ?? "0").replace(/[,$]/g, ""));
-    const costRaw = costIdx !== -1 ? row[costIdx]?.replace(/[,$]/g, "") : "";
-    const cost    = costRaw ? parseFloat(costRaw) : 0;
+    const name   = nameIdx !== -1 ? (row[nameIdx]?.trim() ?? ticker) : ticker;
+    const shares = parseFloat((row[sharesIdx] ?? "0").replace(/[,$]/g, ""));
+
+    // Prefer "Cost Basis Total" (Fidelity's precise dollar total) over per-share,
+    // which Fidelity rounds to 2 decimal places causing compounding error on many shares.
+    const totalRaw    = costTotalIdx    !== -1 ? row[costTotalIdx]?.replace(/[,$]/g, "")    : "";
+    const perShareRaw = costPerShareIdx !== -1 ? row[costPerShareIdx]?.replace(/[,$]/g, "") : "";
+    const costTotal   = totalRaw    ? parseFloat(totalRaw)    : NaN;
+    const costPerShare = perShareRaw ? parseFloat(perShareRaw) : NaN;
+    const cost = !isNaN(costTotal) && shares > 0
+      ? costTotal / shares   // back-compute precise per-share from the total
+      : !isNaN(costPerShare)
+        ? costPerShare
+        : 0;
 
     const accountRaw = accountIdx !== -1 ? row[accountIdx]?.trim().toLowerCase() : "";
     const account = normalizeAccount(accountRaw);
