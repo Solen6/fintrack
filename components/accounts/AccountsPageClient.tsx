@@ -2,42 +2,31 @@
 
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
-import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/client";
 import { useProfile } from "@/lib/use-profile";
 import { OneDriveFilePicker } from "./OneDriveFilePicker";
+import {
+  ACCOUNT_TYPES,
+  resolveAccountType,
+  type AccountType,
+} from "@/lib/account-types";
 
-/* ─── Types ─── */
-type AccountType = "investment" | "savings" | "checking" | "roth";
-
-interface AccountRow {
-  id: string;
+/* ─── Account type editing ───
+   Real accounts are derived from the user's holdings + cash balances. Each one's
+   type tag (brokerage / retirement / cash) lives in the account_meta table and
+   drives the Accounts-tab grouping + the dashboard performance filter. Until a
+   type is explicitly set, resolveAccountType falls back to a name guess. */
+interface AccountTypeRow {
   name: string;
-  institution: string;
   type: AccountType;
-  active: boolean;
 }
-
-const TYPE_LABELS: Record<AccountType, string> = {
-  investment: "Brokerage",
-  roth:       "Roth IRA",
-  savings:    "Savings",
-  checking:   "Checking",
-};
-
-/* ─── Initial state ─── */
-const INITIAL_ACCOUNTS: AccountRow[] = [
-  { id: "brokerage", name: "Brokerage",  institution: "Fidelity", type: "investment", active: true },
-  { id: "roth",      name: "Roth IRA",   institution: "Fidelity", type: "roth",       active: true },
-  { id: "hysa",      name: "HYSA",       institution: "Marcus",   type: "savings",    active: true },
-  { id: "checking",  name: "Checking",   institution: "Chase",    type: "checking",   active: true },
-];
 
 export function AccountsPageClient() {
   const profile = useProfile();
-  const [accounts, setAccounts] = useState<AccountRow[]>(INITIAL_ACCOUNTS);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<AccountTypeRow[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [savingTypes, setSavingTypes] = useState<Set<string>>(new Set());
   const [portfolioFile, setPortfolioFile] = useState("");
   const [portfolioSheet, setPortfolioSheet] = useState("");
   const [budgetFile, setBudgetFile] = useState("");
@@ -69,6 +58,27 @@ export function AccountsPageClient() {
       });
   }, [searchParams]);
 
+  /* Load the user's real accounts (from holdings + cash) and their current type
+     tags from account_meta. */
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/holdings").then((r) => r.json()).catch(() => ({})),
+      fetch("/api/cash").then((r) => r.json()).catch(() => ({})),
+      fetch("/api/accounts/meta").then((r) => r.json()).catch(() => ({})),
+    ])
+      .then(([h, c, m]) => {
+        const types: Record<string, string> = m?.types ?? {};
+        const names = new Set<string>();
+        for (const x of h?.holdings ?? []) if (x?.account) names.add(x.account as string);
+        for (const x of c?.balances ?? []) if (x?.account) names.add(x.account as string);
+        const list = Array.from(names)
+          .sort((a, b) => a.localeCompare(b))
+          .map((name) => ({ name, type: resolveAccountType(name, types) }));
+        setAccounts(list);
+      })
+      .finally(() => setAccountsLoading(false));
+  }, []);
+
   const handlePickerSave = async (
     portfolio: { filePath: string; fileName: string; sheetName: string },
     budget:    { filePath: string; fileName: string; sheetName: string }
@@ -95,26 +105,31 @@ export function AccountsPageClient() {
     setSyncedAt(null);
   };
 
-  const toggleActive = (id: string) =>
+  /* Persist an account's type tag to account_meta. Optimistic; reverts on error.
+     prevType is captured inside the functional updater so it reflects the latest
+     committed value (safe under rapid edits), and the saving indicator is keyed
+     per account so overlapping saves don't clear each other's state. */
+  const setAccountType = async (name: string, type: AccountType) => {
+    let prevType: AccountType | undefined;
     setAccounts((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, active: !a.active } : a))
+      prev.map((a) => {
+        if (a.name === name) { prevType = a.type; return { ...a, type }; }
+        return a;
+      })
     );
-
-  const updateAccount = (id: string, field: keyof AccountRow, value: string) =>
-    setAccounts((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, [field]: value } : a))
-    );
-
-  const removeAccount = (id: string) =>
-    setAccounts((prev) => prev.filter((a) => a.id !== id));
-
-  const addAccount = () => {
-    const newId = `account-${Date.now()}`;
-    setAccounts((prev) => [
-      ...prev,
-      { id: newId, name: "New Account", institution: "", type: "checking", active: true },
-    ]);
-    setEditingId(newId);
+    setSavingTypes((s) => new Set(s).add(name));
+    try {
+      const res = await fetch("/api/accounts/meta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account: name, type }),
+      });
+      if (!res.ok) throw new Error("save failed");
+    } catch {
+      if (prevType) setAccounts((prev) => prev.map((a) => (a.name === name ? { ...a, type: prevType! } : a)));
+    } finally {
+      setSavingTypes((s) => { const n = new Set(s); n.delete(name); return n; });
+    }
   };
 
   return (
@@ -212,115 +227,57 @@ export function AccountsPageClient() {
           )}
         </section>
 
-        {/* ── Accounts ── */}
+        {/* ── Account types ── */}
         <section>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-foreground">Accounts</h2>
-            <SettingsButton onClick={addAccount}>+ Add account</SettingsButton>
+            <h2 className="text-sm font-semibold text-foreground">Account types</h2>
           </div>
 
           <div
             className="rounded-sm border border-border overflow-hidden"
             style={{ background: "oklch(0.10 0 0)" }}
           >
-            {accounts.length === 0 ? (
+            {accountsLoading ? (
+              <p className="px-5 py-4 text-sm text-muted-foreground animate-pulse">Loading accounts…</p>
+            ) : accounts.length === 0 ? (
               <p className="px-5 py-4 text-sm text-muted-foreground">
-                No accounts configured.
+                No accounts yet — upload a CSV or add a position first.
               </p>
             ) : (
               accounts.map((account, idx) => {
-                const isEditing = editingId === account.id;
                 const isLast = idx === accounts.length - 1;
-
                 return (
                   <div
-                    key={account.id}
+                    key={account.name}
                     className={`px-5 py-3.5 flex items-center gap-4 ${!isLast ? "border-b border-border" : ""}`}
                   >
-                    {/* Active toggle */}
-                    <Switch
-                      checked={account.active}
-                      onCheckedChange={() => toggleActive(account.id)}
-                      aria-label={`Toggle ${account.name}`}
-                    />
-
-                    {/* Name + institution */}
-                    {isEditing ? (
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        <Input
-                          value={account.name}
-                          onChange={(e) => updateAccount(account.id, "name", e.target.value)}
-                          className="h-7 text-sm w-36"
-                          autoFocus
-                        />
-                        <Input
-                          value={account.institution}
-                          onChange={(e) => updateAccount(account.id, "institution", e.target.value)}
-                          placeholder="Institution"
-                          className="h-7 text-sm w-32"
-                        />
-                        <select
-                          value={account.type}
-                          onChange={(e) =>
-                            updateAccount(account.id, "type", e.target.value as AccountType)
-                          }
-                          className="h-7 text-xs rounded-sm px-2 border border-border text-foreground"
-                          style={{ background: "oklch(0.16 0 0)" }}
-                        >
-                          <option value="investment">Brokerage</option>
-                          <option value="roth">Roth IRA</option>
-                          <option value="savings">Savings</option>
-                          <option value="checking">Checking</option>
-                        </select>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <span className={`text-sm font-medium ${!account.active ? "text-muted-foreground" : "text-foreground"}`}>
-                          {account.name}
-                        </span>
-                        {account.institution && (
-                          <span className="text-xs text-muted-foreground">{account.institution}</span>
-                        )}
-                        <span
-                          className="text-xs px-1.5 py-0.5 rounded-sm ml-1"
-                          style={{
-                            background: "oklch(0.16 0 0)",
-                            color: "oklch(0.52 0.008 74)",
-                          }}
-                        >
-                          {TYPE_LABELS[account.type]}
-                        </span>
-                      </div>
+                    <span className="text-sm font-medium text-foreground flex-1 min-w-0 truncate">
+                      {account.name}
+                    </span>
+                    {savingTypes.has(account.name) && (
+                      <span className="text-xs text-muted-foreground">Saving…</span>
                     )}
-
-                    {/* Actions */}
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() =>
-                          setEditingId((prev) =>
-                            prev === account.id ? null : account.id
-                          )
-                        }
-                        className="text-xs text-muted-foreground hover:text-foreground transition-colors duration-150 px-2 py-1"
-                        aria-label={isEditing ? "Done editing" : `Edit ${account.name}`}
-                      >
-                        {isEditing ? "Done" : "Edit"}
-                      </button>
-                      <button
-                        onClick={() => removeAccount(account.id)}
-                        className="text-xs text-muted-foreground hover:text-foreground transition-colors duration-150 px-2 py-1"
-                        aria-label={`Remove ${account.name}`}
-                      >
-                        Remove
-                      </button>
-                    </div>
+                    <select
+                      value={account.type}
+                      onChange={(e) => setAccountType(account.name, e.target.value as AccountType)}
+                      className="h-7 text-xs rounded-sm px-2 border border-border text-foreground shrink-0"
+                      style={{ background: "oklch(0.16 0 0)" }}
+                      aria-label={`Type for ${account.name}`}
+                    >
+                      {ACCOUNT_TYPES.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 );
               })
             )}
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            Investment accounts (Brokerage, Roth IRA) show holdings. Savings and Checking accounts show balance only.
+            Tags group accounts on the Accounts tab and filter the dashboard performance chart.
+            Brokerage &amp; Retirement count as invested; Cash is held separately.
           </p>
         </section>
 
@@ -350,7 +307,7 @@ export function AccountsPageClient() {
         </section>
 
         {/* ── App version ── */}
-        <p className="text-xs text-muted-foreground pb-4">fintrack · v0.1.0 · mock data mode</p>
+        <p className="text-xs text-muted-foreground pb-4">fintrack · v0.1.0</p>
       </div>
     </div>
   );
@@ -398,32 +355,6 @@ function SettingsButton({
     >
       {children}
     </button>
-  );
-}
-
-function FileRow({
-  label,
-  value,
-  onChange,
-  placeholder,
-  last,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder: string;
-  last?: boolean;
-}) {
-  return (
-    <div className={`flex items-center gap-4 px-5 py-3.5 ${!last ? "border-b border-border" : ""}`}>
-      <span className="text-xs text-muted-foreground w-28 shrink-0">{label}</span>
-      <Input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="h-7 text-xs font-mono flex-1"
-      />
-    </div>
   );
 }
 

@@ -11,8 +11,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchQuote } from "@/lib/finnhub";
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
-
 export interface SplitDue {
   ratio: number; // new shares per old share. 2:1 → 2, 1:10 reverse → 0.1
   label: string; // e.g. "2:1" or "1:10"
@@ -60,18 +58,32 @@ export async function fetchSplitDue(ticker: string, date: string): Promise<Split
 }
 
 /**
- * Cash dividend with ex-date == `date` from Finnhub dividend2 (the same source
- * the Calendar tab uses, so the two stay consistent).
+ * Cash dividend with ex-date == `date` from Yahoo chart events (`events=div`).
+ * Finnhub's /stock/dividend2 is a premium endpoint — it 403s on the free tier
+ * we run on, so it silently yielded zero dividends. Yahoo surfaces the dividend
+ * on/after its ex-date (same as splits), which is exactly when we apply it, and
+ * keeps this consistent with fetchSplitDue + the Calendar tab. Free, no crumb.
  */
 export async function fetchDividendDue(ticker: string, date: string): Promise<DividendDue | null> {
   try {
-    const url = `https://finnhub.io/api/v1/stock/dividend2?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`;
-    const res = await fetch(url, { next: { revalidate: 3600 } });
+    const from = Math.floor(new Date(`${date}T00:00:00Z`).getTime() / 1000) - 2 * 86400;
+    const to = Math.floor(new Date(`${date}T00:00:00Z`).getTime() / 1000) + 2 * 86400;
+    const url =
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
+      `?period1=${from}&period2=${to}&interval=1d&events=div`;
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, next: { revalidate: 3600 } });
     if (!res.ok) return null;
     const data = await res.json();
-    const hit = (data?.data ?? []).find((d: { date: string }) => d.date === date);
-    if (!hit || typeof hit.amount !== "number") return null;
-    return { amount: hit.amount };
+    const dividends = data?.chart?.result?.[0]?.events?.dividends as
+      | Record<string, { date: number; amount: number }>
+      | undefined;
+    if (!dividends) return null;
+    for (const d of Object.values(dividends)) {
+      if (utcDate(d.date) !== date) continue;
+      if (typeof d.amount !== "number") continue;
+      return { amount: d.amount };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -81,6 +93,7 @@ interface Holding {
   id: string;
   user_id: string;
   ticker: string;
+  name: string | null;
   shares: number;
   cost_basis: number;
   account: string | null;
@@ -114,7 +127,7 @@ export async function applyCorporateActions(
 
   const { data: holdingsRaw, error } = await db
     .from("holdings")
-    .select("id,user_id,ticker,shares,cost_basis,account,drip");
+    .select("id,user_id,ticker,name,shares,cost_basis,account,drip");
   if (error) throw new Error(error.message);
   const holdings = (holdingsRaw ?? []) as Holding[];
   if (holdings.length === 0) return summary;
@@ -157,7 +170,14 @@ export async function applyCorporateActions(
     let shares = Number(h.shares);
     let costBasis = Number(h.cost_basis);
     let changed = false;
-    const ledger: { action_type: "split" | "dividend"; detail: string }[] = [];
+    const ledger: {
+      action_type: "split" | "dividend";
+      detail: string;
+      ticker?: string;
+      name?: string | null;
+      amount?: number; // total cash value of a dividend event
+      reinvested?: boolean;
+    }[] = [];
 
     // 1. Split / consolidation first (so a same-day dividend uses post-split shares).
     if (split && !applied.has(`${h.id}|split`)) {
@@ -188,6 +208,10 @@ export async function applyCorporateActions(
           ledger.push({
             action_type: "dividend",
             detail: `DRIP $${dividend.amount}/sh → +${bought.toFixed(6)} sh @ $${price.toFixed(2)} ($${total.toFixed(2)})`,
+            ticker: t,
+            name: h.name,
+            amount: total,
+            reinvested: true,
           });
         } else {
           // No price → don't lose the dividend; fall back to cash so it's not skipped.
@@ -199,6 +223,10 @@ export async function applyCorporateActions(
           ledger.push({
             action_type: "dividend",
             detail: `DRIP $${dividend.amount}/sh — no live price, credited $${total.toFixed(2)} to cash instead`,
+            ticker: t,
+            name: h.name,
+            amount: total,
+            reinvested: false, // intended DRIP but fell back to cash
           });
         }
       } else {
@@ -210,6 +238,10 @@ export async function applyCorporateActions(
         ledger.push({
           action_type: "dividend",
           detail: `$${dividend.amount}/sh × ${shares.toFixed(4)} sh → $${total.toFixed(2)} to cash`,
+          ticker: t,
+          name: h.name,
+          amount: total,
+          reinvested: false,
         });
       }
     }
@@ -224,14 +256,26 @@ export async function applyCorporateActions(
         .eq("id", h.id);
       if (upErr) { summary.errors++; continue; } // don't ledger a change that didn't land
     }
-    const ledgerRows = ledger.map((l) => ({
+    const baseRows = ledger.map((l) => ({
       holding_id: h.id,
       user_id: h.user_id,
       action_type: l.action_type,
       effective_date: date,
       detail: l.detail,
     }));
-    const { error: ledErr } = await db.from("applied_corporate_actions").insert(ledgerRows);
+    const fullRows = ledger.map((l, i) => ({
+      ...baseRows[i],
+      ticker: l.ticker ?? null,
+      name: l.name ?? null,
+      amount: l.amount ?? null,
+      reinvested: l.reinvested ?? null,
+    }));
+    let { error: ledErr } = await db.from("applied_corporate_actions").insert(fullRows);
+    // If the dividend-history columns haven't been migrated yet, fall back to the
+    // base columns so the idempotency record still lands (action won't re-apply).
+    if (ledErr && /column|schema cache|PGRST204/i.test(ledErr.message ?? "")) {
+      ({ error: ledErr } = await db.from("applied_corporate_actions").insert(baseRows));
+    }
     if (ledErr) summary.errors++;
   }
 

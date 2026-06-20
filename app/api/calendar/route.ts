@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { yahooNextDividend } from "@/lib/yahoo";
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
 
@@ -79,23 +80,28 @@ async function fetchEarnings(ticker: string, from: string, to: string, name: str
 }
 
 async function fetchDividends(ticker: string, from: string, to: string): Promise<CalendarEvent[]> {
-  try {
-    const url = `https://finnhub.io/api/v1/stock/dividend2?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`;
-    const res = await fetch(url, { next: { revalidate: 3600 } });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.data ?? [])
-      .filter((d: { date: string }) => d.date >= from && d.date <= to)
-      .map((d: { date: string; amount: number; payDate: string }) => ({
-        date: d.date,
-        category: "Dividend" as const,
-        title: `${ticker} ex-dividend`,
-        detail: `$${d.amount?.toFixed(2) ?? "?"}/sh · pay date ${d.payDate ?? "TBD"}`,
-        ticker,
-      }));
-  } catch {
-    return [];
-  }
+  // Finnhub /stock/dividend2 is premium (403 on our free tier). The next ex-date
+  // comes from Yahoo quoteSummary instead. It's the next DECLARED ex-date, so it
+  // only appears once a company has announced its next dividend (~2–4 weeks out);
+  // undeclared future quarters won't show — that's the honest limit of free data.
+  const next = await yahooNextDividend(ticker);
+  if (!next) return [];
+  // "Upcoming" the way a brokerage shows it = the PAYMENT is still ahead, even if
+  // the ex-date just passed (e.g. LRCX went ex 6/17 but pays 7/8). Anchor the
+  // agenda entry to whichever of pay/ex date is still in the forward window.
+  const anchor = next.payDate && next.payDate >= from ? next.payDate : next.exDate;
+  if (anchor < from || anchor > to) return [];
+  const amt = next.amount != null ? `$${next.amount.toFixed(2)}/sh · ` : "";
+  const detail = `${amt}ex ${next.exDate}${next.payDate ? ` · pays ${next.payDate}` : ""}`;
+  return [
+    {
+      date: anchor,
+      category: "Dividend" as const,
+      title: `${ticker} dividend`,
+      detail,
+      ticker,
+    },
+  ];
 }
 
 async function fetchSplits(ticker: string, from: string, to: string): Promise<CalendarEvent[]> {
@@ -158,15 +164,16 @@ export async function GET() {
     earningsCache.set(user.id, { events: earningsEvents, ts: Date.now() });
   }
 
-  // Dividends — 1 hr cache per user
+  // Dividends — 1 hr cache per user. Yahoo quoteSummary forward ex/pay date.
+  // ETF distributions (SPDR sector funds) aren't in any free feed, so they only
+  // appear once Yahoo posts the ex-date around ex-day — accepted free-data lag.
   let dividendEvents: CalendarEvent[] = [];
   const dividendCached = dividendCache.get(user.id);
   if (dividendCached && Date.now() - dividendCached.ts < DIVIDEND_TTL) {
     dividendEvents = dividendCached.events;
   } else {
     for (const ticker of tickers) {
-      const events = await fetchDividends(ticker, today, endDate);
-      dividendEvents.push(...events);
+      dividendEvents.push(...(await fetchDividends(ticker, today, endDate)));
       await new Promise((r) => setTimeout(r, 50));
     }
     dividendCache.set(user.id, { events: dividendEvents, ts: Date.now() });

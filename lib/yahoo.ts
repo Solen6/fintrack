@@ -231,3 +231,86 @@ export async function yahooFundCategory(symbol: string): Promise<string | null> 
     return remember(null);
   }
 }
+
+/* ─── Upcoming dividend (forward ex-date) ───
+   Finnhub's /stock/dividend2 is premium (free tier 403s), and Yahoo chart
+   `events=div` only surfaces ex-dates on/after they pass — neither fills a
+   forward calendar. quoteSummary.exDividendDate is the next DECLARED ex-date,
+   which is the only honest forward source. It only populates once a company has
+   announced its next dividend (~2–4 weeks ahead), so far-out quarters won't
+   appear until declared — that's the real limit, not a bug. Returns the ex /
+   pay dates as YYYY-MM-DD (UTC), or null. */
+
+export interface NextDividend {
+  exDate: string;        // YYYY-MM-DD
+  payDate: string | null;
+  amount: number | null; // most recent actual per-share payment, as a guide
+}
+
+/** Most recent actual per-share dividend from chart history (honest figure,
+ *  unlike summaryDetail.dividendRate which is the ANNUAL rate). */
+async function lastDividendAmount(symbol: string): Promise<number | null> {
+  try {
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - 200 * 86400;
+    const url =
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
+      `?period1=${from}&period2=${to}&interval=1d&events=div`;
+    const res = await fetch(url, { headers: { "User-Agent": UA }, next: { revalidate: 21600 } });
+    if (!res.ok) return null;
+    const divs = (await res.json())?.chart?.result?.[0]?.events?.dividends as
+      | Record<string, { date: number; amount: number }>
+      | undefined;
+    if (!divs) return null;
+    const latest = Object.values(divs).sort((a, b) => b.date - a.date)[0];
+    return typeof latest?.amount === "number" ? latest.amount : null;
+  } catch {
+    return null;
+  }
+}
+
+const divCache = new Map<string, { data: NextDividend | null; ts: number }>();
+const DIV_TTL = 6 * 60 * 60_000;
+
+const toUtcDate = (raw: unknown): string | null =>
+  typeof raw === "number" && raw > 1e9 ? new Date(raw * 1000).toISOString().slice(0, 10) : null;
+
+export async function yahooNextDividend(symbol: string): Promise<NextDividend | null> {
+  const key = symbol.trim().toUpperCase();
+  const hit = divCache.get(key);
+  if (hit && Date.now() - hit.ts < DIV_TTL) return hit.data;
+
+  const remember = (data: NextDividend | null) => {
+    divCache.set(key, { data, ts: Date.now() });
+    return data;
+  };
+
+  const build = (crumb: string) =>
+    `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=summaryDetail,calendarEvents&crumb=${encodeURIComponent(crumb)}`;
+
+  try {
+    let { cookie, crumb } = await getAuth();
+    let res = await fetch(build(crumb), { headers: { "User-Agent": UA, Cookie: cookie } });
+    if (res.status === 401) {
+      ({ cookie, crumb } = await getAuth(true));
+      res = await fetch(build(crumb), { headers: { "User-Agent": UA, Cookie: cookie } });
+    }
+    if (!res.ok) return remember(null);
+
+    const result = (await res.json())?.quoteSummary?.result?.[0];
+    if (!result) return remember(null);
+
+    const sd = result.summaryDetail ?? {};
+    const ce = result.calendarEvents ?? {};
+    const exDate = toUtcDate(ce.exDividendDate?.raw ?? sd.exDividendDate?.raw);
+    if (!exDate) return remember(null);
+
+    return remember({
+      exDate,
+      payDate: toUtcDate(ce.dividendDate?.raw),
+      amount: await lastDividendAmount(key),
+    });
+  } catch {
+    return remember(null);
+  }
+}

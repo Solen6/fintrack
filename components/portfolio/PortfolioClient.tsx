@@ -11,6 +11,7 @@ import { AddCashForm } from "./AddCashForm";
 import { ClosePositionModal } from "./ClosePositionModal";
 import { DividendManager } from "./DividendManager";
 import { ClosedPositions } from "./ClosedPositions";
+import { DividendHistory } from "./DividendHistory";
 import { computeMetrics } from "@/lib/types";
 import type { HoldingWithMetrics, Quote } from "@/lib/types";
 
@@ -36,7 +37,7 @@ interface CashBalance {
 
 export function PortfolioClient() {
   const [view, setView] = useState<ViewState>("loading");
-  const [subView, setSubView] = useState<"table" | "heatmap" | "closed">("table");
+  const [subView, setSubView] = useState<"table" | "heatmap" | "closed" | "dividends">("table");
   const [holdings, setHoldings] = useState<HoldingWithMetrics[]>([]);
   const [cash, setCash] = useState<CashBalance[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
@@ -255,6 +256,16 @@ export function PortfolioClient() {
               >
                 Closed
               </button>
+              <button
+                onClick={() => setSubView("dividends")}
+                className="text-xs px-2.5 py-1 transition-colors duration-150"
+                style={{
+                  background: subView === "dividends" ? "oklch(0.16 0 0)" : "transparent",
+                  color: subView === "dividends" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                }}
+              >
+                Dividends
+              </button>
             </div>
             <button
               onClick={loadData}
@@ -319,6 +330,7 @@ export function PortfolioClient() {
           <HoldingsHeatmap holdings={holdings} account={selectedAccount} />
         )}
         {subView === "closed" && <ClosedPositions />}
+        {subView === "dividends" && <DividendHistory />}
       </main>
 
       {closingHolding && (
