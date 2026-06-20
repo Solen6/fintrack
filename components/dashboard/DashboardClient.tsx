@@ -576,6 +576,21 @@ export function DashboardClient() {
         <section className="rounded-md border border-border bg-card p-5">
           <div className="grid gap-6 lg:grid-cols-[minmax(0,300px)_1fr]">
             <div className="flex flex-col justify-center gap-2 lg:border-r lg:border-border lg:pr-6">
+              {/* Supporting metrics above the total */}
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mb-1">
+                <Metric
+                  label="Overall Return"
+                  value={formatPercent(agg.totalReturnPct)}
+                  tone={agg.totalReturnPct >= 0 ? "pos" : "neg"}
+                />
+                <Metric
+                  label="Total Gain"
+                  value={formatCurrency(agg.totalGain)}
+                  tone={agg.totalGain >= 0 ? "pos" : "neg"}
+                />
+                <Metric label="Invested" value={formatCurrency(agg.invested)} muted />
+                <Metric label="Positions" value={String(agg.positions.length)} muted />
+              </div>
               <span className="text-xs uppercase tracking-wide text-muted-foreground">
                 Total Portfolio Value
               </span>
@@ -662,23 +677,12 @@ export function DashboardClient() {
           </div>
         </section>
 
-        {/* Supporting metrics */}
-        <div className="flex flex-wrap items-center gap-x-8 gap-y-3 px-1">
-          <Metric
-            label="Overall Return"
-            value={formatPercent(agg.totalReturnPct)}
-            tone={agg.totalReturnPct >= 0 ? "pos" : "neg"}
-          />
-          <Metric
-            label="Total Gain"
-            value={formatCurrency(agg.totalGain)}
-            tone={agg.totalGain >= 0 ? "pos" : "neg"}
-          />
-          <Divider />
-          {agg.cash > 0 && <Metric label="Cash" value={formatCurrency(agg.cash)} />}
-          <Metric label="Invested" value={formatCurrency(agg.invested)} muted />
-          <Metric label="Positions" value={String(agg.positions.length)} muted />
-        </div>
+        {/* Supporting metrics — cash only (gain/return/invested/positions moved into hero) */}
+        {agg.cash > 0 && (
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-3 px-1">
+            <Metric label="Cash" value={formatCurrency(agg.cash)} />
+          </div>
+        )}
 
         {/* Allocation + returns */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
