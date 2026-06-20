@@ -28,6 +28,10 @@ export function AccountsPageClient() {
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [savingTypes, setSavingTypes] = useState<Set<string>>(new Set());
   const [portfolioFile, setPortfolioFile] = useState("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteInput, setDeleteInput] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [portfolioSheet, setPortfolioSheet] = useState("");
   const [budgetFile, setBudgetFile] = useState("");
   const [budgetSheet, setBudgetSheet] = useState("");
@@ -96,6 +100,26 @@ export function AccountsPageClient() {
       budget_sheet_name:    budget.sheetName,
       updated_at:           new Date().toISOString(),
     }).not("user_id", "is", null);
+  };
+
+  const handleDeleteAccount = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch("/api/account/delete", { method: "DELETE" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setDeleteError(body.error || "Failed to delete account.");
+        setDeleting(false);
+        return;
+      }
+      const supabase = createClient();
+      await supabase.auth.signOut();
+      window.location.href = "/login";
+    } catch {
+      setDeleteError("An unexpected error occurred.");
+      setDeleting(false);
+    }
   };
 
   const disconnectMicrosoft = async () => {
@@ -306,9 +330,77 @@ export function AccountsPageClient() {
           </div>
         </section>
 
+        {/* ── Danger Zone ── */}
+        <section>
+          <h2 className="text-sm font-semibold mb-4" style={{ color: "var(--negative)" }}>Danger Zone</h2>
+          <div className="rounded-sm border p-4 flex items-center justify-between gap-4" style={{ borderColor: "oklch(0.28 0.06 25)", background: "oklch(0.10 0.01 25)" }}>
+            <div>
+              <p className="text-sm text-foreground font-medium">Delete account</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Permanently deletes your account and all data. This cannot be undone.</p>
+            </div>
+            <button
+              className="shrink-0 rounded-sm border px-4 py-2 text-sm font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+              style={{ borderColor: "var(--negative)", color: "var(--negative)", background: "transparent" }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "oklch(0.64 0.16 28 / 0.12)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+              onClick={() => setShowDeleteConfirm(true)}
+            >
+              Delete account
+            </button>
+          </div>
+        </section>
+
         {/* ── App version ── */}
         <p className="text-xs text-muted-foreground pb-4">fintrack · v0.1.0</p>
       </div>
+
+      {/* ── Delete account confirmation modal ── */}
+      {showDeleteConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(0,0,0,0.7)" }}
+          onClick={(e) => { if (e.target === e.currentTarget) { setShowDeleteConfirm(false); setDeleteInput(""); setDeleteError(null); } }}
+        >
+          <div
+            className="w-full max-w-sm mx-4 rounded-sm border p-6 flex flex-col gap-4"
+            style={{ background: "oklch(0.12 0 0)", borderColor: "oklch(0.22 0 0)" }}
+          >
+            <div>
+              <h3 className="text-base font-semibold text-foreground">Delete account?</h3>
+              <p className="text-sm text-muted-foreground mt-1">This will permanently delete your account and all holdings, snapshots, and history. There is no recovery.</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Type <span className="font-mono text-foreground">DELETE</span> to confirm</p>
+              <Input
+                value={deleteInput}
+                onChange={(e) => setDeleteInput(e.target.value)}
+                placeholder="DELETE"
+                autoFocus
+                className="h-9"
+                onKeyDown={(e) => { if (e.key === "Escape") { setShowDeleteConfirm(false); setDeleteInput(""); setDeleteError(null); } }}
+              />
+              {deleteError && <p className="text-xs mt-1.5" style={{ color: "var(--negative)" }}>{deleteError}</p>}
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                className="rounded-sm border border-border px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                onClick={() => { setShowDeleteConfirm(false); setDeleteInput(""); setDeleteError(null); }}
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-sm px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
+                style={{ background: "var(--negative)", color: "#fff" }}
+                disabled={deleteInput !== "DELETE" || deleting}
+                onClick={handleDeleteAccount}
+              >
+                {deleting ? "Deleting…" : "Delete account"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
