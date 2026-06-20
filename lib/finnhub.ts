@@ -1,18 +1,23 @@
 /**
- * Server-side Finnhub quote fetching, shared by /api/quotes, /api/paper
- * (order fills), and /api/snapshots (daily value capture).
+ * Server-side equity quote fetching for /api/quotes, /api/paper (order fills),
+ * and /api/snapshots (daily value capture).
+ *
+ * Previously used Finnhub `d.c` (last trade on one exchange), which diverged
+ * by a few cents from what Fidelity shows. Now uses Yahoo Finance
+ * `v8/finance/chart → meta.regularMarketPrice`, which matches the NBBO-derived
+ * price displayed by Fidelity and most retail brokerages.
  */
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
+const UA = "Mozilla/5.0 (compatible; fintrack/1.0)";
 
 export interface FinnhubQuote {
-  ticker: string;
-  price: number;
-  change: number;
+  ticker:    string;
+  price:     number;
+  change:    number;
   changePct: number;
-  open: number;
-  high: number;
-  low: number;
+  open:      number;
+  high:      number;
+  low:       number;
   prevClose: number;
 }
 
@@ -26,25 +31,38 @@ export async function fetchQuote(ticker: string): Promise<FinnhubQuote | null> {
   if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
 
   try {
-    const res = await fetch(
-      `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(key)}&token=${FINNHUB_KEY}`,
-      { next: { revalidate: 60 } }
-    );
-    if (!res.ok) return null;
-    const d = await res.json();
+    const url =
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(key)}` +
+      `?interval=1d&range=1d&includePrePost=false`;
 
-    // Finnhub returns 0s for invalid tickers
-    if (!d.c || d.c === 0) return null;
+    const res = await fetch(url, {
+      headers: { "User-Agent": UA },
+      next: { revalidate: 60 },
+    });
+    if (!res.ok) return null;
+
+    const json = await res.json();
+    const meta = json?.chart?.result?.[0]?.meta;
+    if (!meta?.regularMarketPrice) return null;
+
+    const price:     number = meta.regularMarketPrice;
+    const prevClose: number = meta.chartPreviousClose ?? meta.previousClose ?? price;
+    const open:      number = meta.regularMarketOpen      ?? prevClose;
+    const high:      number = meta.regularMarketDayHigh   ?? price;
+    const low:       number = meta.regularMarketDayLow    ?? price;
+    const change:    number = meta.regularMarketChange    ?? (price - prevClose);
+    const changePct: number = meta.regularMarketChangePercent
+      ?? (prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0);
 
     const quote: FinnhubQuote = {
       ticker: key,
-      price: d.c,
-      change: d.d,
-      changePct: d.dp,
-      open: d.o,
-      high: d.h,
-      low: d.l,
-      prevClose: d.pc,
+      price,
+      change,
+      changePct,
+      open,
+      high,
+      low,
+      prevClose,
     };
     cache.set(key, { data: quote, ts: Date.now() });
     return quote;
