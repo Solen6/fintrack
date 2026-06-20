@@ -346,10 +346,24 @@ export function DashboardClient() {
         if (!byDate.has(date)) byDate.set(date, acc);
       }
     }
-    return [...byDate.entries()]
+    const result = [...byDate.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, acc]) => ({ date, value: acc.value, cash: acc.cash }));
-  }, [snapshots, enabledAccounts, allAccountsOn]);
+      
+    // Force the final point to match live data, ensuring the chart perfectly aligns with the hero
+    if (result.length > 0) {
+      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+      const last = result[result.length - 1];
+      if (last.date === todayStr) {
+        last.value = agg.positionsValue;
+        last.cash = agg.cash;
+      } else {
+        result.push({ date: todayStr, value: agg.positionsValue, cash: agg.cash });
+      }
+    }
+    
+    return result;
+  }, [snapshots, enabledAccounts, allAccountsOn, agg.positionsValue, agg.cash]);
 
   /* Performance chart: clip the series to the selected timeframe, then plot
      GAIN VS COST BASIS at each point — (value − costBasis) / costBasis.
