@@ -16,14 +16,20 @@ export function OptionChainTable({
   customMap,
   onToggle,
   onToggleSide,
+  activeKey,
+  clickableTypes,
 }: {
   rows: ChainStrike[];
   spot: number;
   loading: boolean;
-  /** strike→side per type, keyed "<strike>-CALL" / "<strike>-PUT". Undefined in strategy mode (read-only). */
+  /** strike→side per type, keyed "<strike>-CALL" / "<strike>-PUT". */
   customMap?: Map<string, "BUY" | "SELL">;
   onToggle?: (strike: number, type: "CALL" | "PUT") => void;
   onToggleSide?: (strike: number, type: "CALL" | "PUT") => void;
+  /** "<strike>-CALL" / "<strike>-PUT" of the leg currently armed for repositioning (strategy mode). */
+  activeKey?: string;
+  /** When set, only these option types respond to clicks (e.g. a call spread ignores put clicks). Undefined = both. */
+  clickableTypes?: Set<"call" | "put">;
 }) {
   const atmRef = useRef<HTMLTableRowElement | null>(null);
 
@@ -54,6 +60,8 @@ export function OptionChainTable({
   const num = (n: number | undefined, dp = 2) => (n && n > 0 ? n.toFixed(dp) : "—");
   const ivPct = (iv: number) => (iv > 0 ? (iv * 100).toFixed(1) : "—");
   const interactive = !!onToggle;
+  const callClickable = interactive && (!clickableTypes || clickableTypes.has("call"));
+  const putClickable = interactive && (!clickableTypes || clickableTypes.has("put"));
 
   return (
     <div className="overflow-auto" style={{ maxHeight: 560 }}>
@@ -89,26 +97,32 @@ export function OptionChainTable({
             const putSide = customMap?.get(putKey);
             const callSel = callSide !== undefined;
             const putSel = putSide !== undefined;
+            const callActive = activeKey === callKey;
+            const putActive = activeKey === putKey;
 
-            const callBg = isAtm ? "oklch(0.16 0.012 74 / 0.7)" : itmCall ? "oklch(0.14 0 0 / 0.5)" : "transparent";
-            const putBg = isAtm ? "oklch(0.16 0.012 74 / 0.7)" : itmPut ? "oklch(0.14 0 0 / 0.5)" : "transparent";
+            const callBg = callActive ? "oklch(0.20 0.05 74 / 0.85)" : isAtm ? "oklch(0.16 0.012 74 / 0.7)" : itmCall ? "oklch(0.14 0 0 / 0.5)" : "transparent";
+            const putBg = putActive ? "oklch(0.20 0.05 74 / 0.85)" : isAtm ? "oklch(0.16 0.012 74 / 0.7)" : itmPut ? "oklch(0.14 0 0 / 0.5)" : "transparent";
 
             const callCells = (cls: string) => ({
-              className: `py-1.5 px-2 font-mono ${cls} ${interactive ? "cursor-pointer" : ""}`,
+              className: `py-1.5 px-2 font-mono ${cls} ${callClickable ? "cursor-pointer" : ""}`,
               style: { background: callBg } as React.CSSProperties,
-              onClick: interactive ? () => onToggle?.(row.strike, "CALL") : undefined,
+              onClick: callClickable ? () => onToggle?.(row.strike, "CALL") : undefined,
             });
             const putCells = (cls: string) => ({
-              className: `py-1.5 px-2 font-mono ${cls} ${interactive ? "cursor-pointer" : ""}`,
+              className: `py-1.5 px-2 font-mono ${cls} ${putClickable ? "cursor-pointer" : ""}`,
               style: { background: putBg } as React.CSSProperties,
-              onClick: interactive ? () => onToggle?.(row.strike, "PUT") : undefined,
+              onClick: putClickable ? () => onToggle?.(row.strike, "PUT") : undefined,
             });
 
-            const dot = (sel: boolean, side: "BUY" | "SELL" | undefined, onFlip: () => void) =>
+            const dot = (sel: boolean, side: "BUY" | "SELL" | undefined, active: boolean, onFlip: () => void) =>
               sel ? (
                 <button
                   className="rounded-full w-4 h-4 inline-flex items-center justify-center text-[8px] font-bold"
-                  style={{ background: side === "SELL" ? "var(--negative)" : "var(--positive)", color: "oklch(0.08 0 0)" }}
+                  style={{
+                    background: side === "SELL" ? "var(--negative)" : "var(--positive)",
+                    color: "oklch(0.08 0 0)",
+                    boxShadow: active ? "0 0 0 2px var(--primary)" : undefined,
+                  }}
                   onClick={(e) => { e.stopPropagation(); onFlip(); }}
                   title={`Toggle Buy/Sell (currently ${side})`}
                 >
@@ -124,7 +138,7 @@ export function OptionChainTable({
                 <td {...callCells("text-right text-muted-foreground")}>{ivPct(row.callIV)}</td>
                 <td {...callCells("text-right")} style={{ background: callBg, color: callSel ? (callSide === "SELL" ? "var(--negative)" : "var(--positive)") : "var(--foreground)", fontWeight: callSel ? 600 : 400 }}>{num(row.callBid)}</td>
                 <td {...callCells("text-right")} style={{ background: callBg, color: callSel ? (callSide === "SELL" ? "var(--negative)" : "var(--positive)") : "var(--foreground)", fontWeight: callSel ? 600 : 400 }}>{num(row.callAsk)}</td>
-                <td className="py-1.5 px-1 text-center" style={{ width: 20, background: callBg }}>{dot(callSel, callSide, () => onToggleSide?.(row.strike, "CALL"))}</td>
+                <td className="py-1.5 px-1 text-center" style={{ width: 20, background: callBg }}>{dot(callSel, callSide, callActive, () => onToggleSide?.(row.strike, "CALL"))}</td>
                 <td className="py-1.5 px-3" style={{ background: callBg }} />
 
                 {/* Strike */}
@@ -134,7 +148,7 @@ export function OptionChainTable({
 
                 {/* Put side */}
                 <td className="py-1.5 px-3" style={{ background: putBg }} />
-                <td className="py-1.5 px-1 text-center" style={{ width: 20, background: putBg }}>{dot(putSel, putSide, () => onToggleSide?.(row.strike, "PUT"))}</td>
+                <td className="py-1.5 px-1 text-center" style={{ width: 20, background: putBg }}>{dot(putSel, putSide, putActive, () => onToggleSide?.(row.strike, "PUT"))}</td>
                 <td {...putCells("text-left")} style={{ background: putBg, color: putSel ? (putSide === "SELL" ? "var(--negative)" : "var(--positive)") : "var(--foreground)", fontWeight: putSel ? 600 : 400 }}>{num(row.putBid)}</td>
                 <td {...putCells("text-left")} style={{ background: putBg, color: putSel ? (putSide === "SELL" ? "var(--negative)" : "var(--positive)") : "var(--foreground)", fontWeight: putSel ? 600 : 400 }}>{num(row.putAsk)}</td>
                 <td {...putCells("text-left text-muted-foreground")}>{ivPct(row.putIV)}</td>

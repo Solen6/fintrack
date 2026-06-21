@@ -191,3 +191,69 @@ export function instantiateStrategy(
     return buildLeg(t.type, t.side, row, t.qtyRatio * size, spot, expiry);
   });
 }
+
+/**
+ * Best-effort recognition of a freely-built leg set into a named strategy — used
+ * by the click-to-build mode to label a position as you assemble it (e.g. a long
+ * call + long put at the same strike → "Long Straddle"). Matches by structure
+ * (types, sides, strike ordering); falls back to a generic descriptor.
+ */
+export function recognizeStrategy(legs: Leg[]): string | null {
+  const opt = legs.filter((l) => l.type !== "stock");
+  const stock = legs.filter((l) => l.type === "stock");
+  if (opt.length === 0 && stock.length === 0) return null;
+  if (opt.length === 0) return stock[0].side === "long" ? "Long Stock" : "Short Stock";
+
+  const calls = opt.filter((l) => l.type === "call").sort((a, b) => a.strike - b.strike);
+  const puts = opt.filter((l) => l.type === "put").sort((a, b) => a.strike - b.strike);
+  const eq = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+  const sorted = [...opt].sort((a, b) => a.strike - b.strike);
+
+  // Stock + one option.
+  if (stock.length === 1 && opt.length === 1) {
+    const o = opt[0];
+    if (stock[0].side === "long" && o.type === "call" && o.side === "short") return "Covered Call";
+    if (stock[0].side === "long" && o.type === "put" && o.side === "long") return "Protective Put";
+  }
+
+  if (stock.length === 0) {
+    if (opt.length === 1) {
+      const o = opt[0];
+      if (o.type === "call") return o.side === "long" ? "Long Call" : "Short Call";
+      return o.side === "long" ? "Long Put" : "Short Put";
+    }
+
+    if (opt.length === 2) {
+      const [a, b] = sorted; // a = lower strike
+      // 1 call + 1 put.
+      if (calls.length === 1 && puts.length === 1) {
+        if (a.side === b.side) {
+          const same = eq(a.strike, b.strike);
+          if (a.side === "long") return same ? "Long Straddle" : "Long Strangle";
+          return same ? "Short Straddle" : "Short Strangle";
+        }
+        // Opposite sides.
+        if (eq(a.strike, b.strike)) return calls[0].side === "long" ? "Synthetic Long" : "Synthetic Short";
+        return "Risk Reversal";
+      }
+      // Vertical spreads — two calls.
+      if (calls.length === 2 && a.side !== b.side) return a.side === "long" ? "Bull Call Spread" : "Bear Call Spread";
+      // Vertical spreads — two puts (label by the higher-strike leg).
+      if (puts.length === 2 && a.side !== b.side) return b.side === "short" ? "Bull Put Spread" : "Bear Put Spread";
+    }
+
+    // Four legs: iron condor / iron butterfly.
+    if (opt.length === 4 && calls.length === 2 && puts.length === 2) {
+      const iron =
+        puts[0].side === "long" && puts[1].side === "short" &&
+        calls[0].side === "short" && calls[1].side === "long";
+      if (iron) return eq(puts[1].strike, calls[0].strike) ? "Iron Butterfly" : "Iron Condor";
+    }
+  }
+
+  // Generic fallback by composition.
+  const n = legs.length;
+  if (calls.length && !puts.length && !stock.length) return `Call combo · ${n} legs`;
+  if (puts.length && !calls.length && !stock.length) return `Put combo · ${n} legs`;
+  return `Custom · ${n} legs`;
+}

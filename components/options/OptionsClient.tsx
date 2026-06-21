@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChainResponse } from "@/app/api/options/chain/route";
-import { buildLeg, instantiateStrategy, strategyById } from "@/lib/option-strategies";
+import { buildLeg, instantiateStrategy, recognizeStrategy, strategyById } from "@/lib/option-strategies";
 import {
   aggregatePayoff,
   netGreeks,
@@ -15,12 +15,15 @@ import {
   type PayoffSummary,
 } from "@/lib/options-math";
 import { PayoffChart } from "./PayoffChart";
+import { PnlHeatmap } from "./PnlHeatmap";
+import { PnlMatrixModal } from "./PnlMatrixModal";
 import { StrategyPicker } from "./StrategyPicker";
 import { LegEditor } from "./LegEditor";
 import { OptionChainTable } from "./OptionChainTable";
 
 type View = "loading" | "ready" | "error";
 type Mode = "strategy" | "custom";
+type PayoffView = "matrix" | "line";
 
 const DEFAULT_STRATEGY = "long-call";
 
@@ -30,11 +33,16 @@ export function OptionsClient() {
   const [tickerInput, setTickerInput] = useState<string>("");
   const [chain, setChain] = useState<ChainResponse | null>(null);
   const [mode, setMode] = useState<Mode>("strategy");
+  const [payoffView, setPayoffView] = useState<PayoffView>("matrix");
   const [strategyId, setStrategyId] = useState<string>(DEFAULT_STRATEGY);
   const [legs, setLegs] = useState<Leg[]>([]);
   const [view, setView] = useState<View>("loading");
   const [error, setError] = useState<string>("");
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
+  const [matrixOpen, setMatrixOpen] = useState(false);
+  const [earningsDate, setEarningsDate] = useState<string | null>(null);
+  // In strategy mode, which leg the chain clicks reposition. Reset whenever the legs reseed.
+  const [activeLegIdx, setActiveLegIdx] = useState(0);
 
   const loadChain = useCallback(async (t: string, opts: { mode: Mode; stratId: string; expiry?: number }) => {
     setView("loading");
@@ -51,6 +59,7 @@ export function OptionsClient() {
         return;
       }
       setChain(data);
+      setActiveLegIdx(0);
       // Seed legs from the active strategy; custom mode starts empty.
       if (opts.mode === "strategy") {
         const def = strategyById(opts.stratId) ?? strategyById(DEFAULT_STRATEGY)!;
@@ -89,6 +98,7 @@ export function OptionsClient() {
 
   const selectStrategy = (id: string) => {
     setStrategyId(id);
+    setActiveLegIdx(0);
     if (chain) {
       const def = strategyById(id)!;
       setLegs(instantiateStrategy(def, chain.strikes, chain.spot, chain.expiry));
@@ -98,6 +108,7 @@ export function OptionsClient() {
   const switchMode = (m: Mode) => {
     if (m === mode) return;
     setMode(m);
+    setActiveLegIdx(0);
     if (m === "strategy" && chain) {
       const def = strategyById(strategyId)!;
       setLegs(instantiateStrategy(def, chain.strikes, chain.spot, chain.expiry));
@@ -140,6 +151,24 @@ export function OptionsClient() {
     setLegs((prev) => prev.map((l) => (l.type === t && l.strike === strike ? { ...l, side: l.side === "long" ? "short" : "long" } : l)));
   }, []);
 
+  /* ── strategy-mode strike picking: click a chain cell to move a leg there ──
+     Targets the active leg when its type matches the click, otherwise the
+     nearest existing leg of that type (so a single click always lands). */
+  const placeStrike = useCallback((strike: number, type: "CALL" | "PUT") => {
+    if (!chain) return;
+    const t = type.toLowerCase() as "call" | "put";
+    const candidates = legs.map((l, i) => ({ l, i })).filter(({ l }) => l.type === t);
+    if (candidates.length === 0) return; // strategy has no leg of this type
+    const active = candidates.find((c) => c.i === activeLegIdx);
+    const target = active ?? candidates.reduce((best, cur) =>
+      Math.abs(cur.l.strike - strike) < Math.abs(best.l.strike - strike) ? cur : best);
+    const row = chain.strikes.find((r) => r.strike === strike);
+    if (!row) return;
+    const moved = buildLeg(t, target.l.side, row, target.l.qty, chain.spot, chain.expiry);
+    setLegs((prev) => prev.map((l, j) => (j === target.i ? moved : l)));
+    setActiveLegIdx(target.i);
+  }, [chain, legs, activeLegIdx]);
+
   // Strike→side map so the chain table can show leg dots in either mode.
   const legMap = useMemo(() => {
     const m = new Map<string, "BUY" | "SELL">();
@@ -148,6 +177,20 @@ export function OptionsClient() {
     }
     return m;
   }, [legs]);
+
+  // Option types the current legs use (which chain sides are clickable in strategy mode).
+  const legTypes = useMemo(() => {
+    const s = new Set<"call" | "put">();
+    for (const l of legs) if (l.type === "call" || l.type === "put") s.add(l.type);
+    return s;
+  }, [legs]);
+
+  // The active leg's chain cell, so the table can ring it.
+  const activeKey = useMemo(() => {
+    const l = legs[activeLegIdx];
+    if (!l || l.type === "stock") return undefined;
+    return `${l.strike}-${l.type.toUpperCase()}`;
+  }, [legs, activeLegIdx]);
 
   /* ── Derived analytics ── */
   const analytics = useMemo(() => {
@@ -165,6 +208,21 @@ export function OptionsClient() {
     }
     return { points, summary, greeks, pop };
   }, [chain, legs]);
+
+  /* ── Earnings date for the matrix marker (best-effort, per ticker) ── */
+  useEffect(() => {
+    if (!ticker) { setEarningsDate(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/options/earnings?ticker=${encodeURIComponent(ticker)}`);
+        if (!res.ok) return;
+        const { date } = await res.json();
+        if (!cancelled) setEarningsDate(date ?? null);
+      } catch { /* ignore — marker just won't show */ }
+    })();
+    return () => { cancelled = true; };
+  }, [ticker]);
 
   return (
     <main className="flex-1 flex flex-col overflow-hidden">
@@ -287,9 +345,16 @@ export function OptionsClient() {
               </div>
             )}
             {mode === "custom" && (
-              <span className="text-xs text-muted-foreground pb-1.5">
-                Click a call or put in the chain to add a leg · click its dot to flip Buy/Sell
-              </span>
+              legs.length > 0 ? (
+                <span className="text-xs pb-1.5">
+                  <span className="text-muted-foreground">Detected: </span>
+                  <span className="font-medium" style={{ color: "var(--primary)" }}>{recognizeStrategy(legs)}</span>
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground pb-1.5">
+                  Click a call or put in the chain to add a leg · click its dot to flip Buy/Sell
+                </span>
+              )
             )}
           </div>
 
@@ -301,8 +366,10 @@ export function OptionsClient() {
                 spot={chain.spot}
                 loading={false}
                 customMap={legMap}
-                onToggle={mode === "custom" ? toggleLeg : undefined}
-                onToggleSide={mode === "custom" ? flipLeg : undefined}
+                onToggle={mode === "custom" ? toggleLeg : placeStrike}
+                onToggleSide={flipLeg}
+                activeKey={mode === "strategy" ? activeKey : undefined}
+                clickableTypes={mode === "strategy" ? legTypes : undefined}
               />
             </div>
 
@@ -310,13 +377,31 @@ export function OptionsClient() {
               {analytics ? (
                 <>
                   <div className="rounded-md border border-border bg-card p-4">
-                    <div className="flex items-baseline justify-between mb-2">
-                      <h3 className="text-sm font-medium text-foreground">
-                        {mode === "strategy" ? strategyById(strategyId)?.name : `${legs.length} leg${legs.length === 1 ? "" : "s"}`}
+                    <div className="flex items-center justify-between mb-2 gap-2">
+                      <h3 className="text-sm font-medium text-foreground truncate">
+                        {mode === "strategy" ? strategyById(strategyId)?.name : recognizeStrategy(legs) ?? "Build a position"}
                       </h3>
-                      <span className="text-xs text-muted-foreground">Payoff at expiry</span>
+                      <div className="flex rounded-sm overflow-hidden border border-border text-[11px] font-medium shrink-0">
+                        {([["matrix", "Over time"], ["line", "At expiry"]] as [PayoffView, string][]).map(([v, label]) => {
+                          const active = payoffView === v;
+                          return (
+                            <button
+                              key={v}
+                              onClick={() => setPayoffView(v)}
+                              className="px-2.5 py-1 transition-colors"
+                              style={{ background: active ? "var(--primary)" : "transparent", color: active ? "oklch(0.08 0 0)" : "var(--muted-foreground)" }}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <PayoffChart points={analytics.points} spot={chain.spot} breakevens={analytics.summary.breakevens} />
+                    {payoffView === "matrix" ? (
+                      <PnlHeatmap legs={legs} spot={chain.spot} expiry={chain.expiry} onExpand={() => setMatrixOpen(true)} />
+                    ) : (
+                      <PayoffChart points={analytics.points} spot={chain.spot} breakevens={analytics.summary.breakevens} />
+                    )}
                     <SummaryStrip a={analytics} />
                     <GreeksRow g={analytics.greeks} />
                     <p className="mt-3 text-[10px] text-muted-foreground leading-relaxed">
@@ -324,8 +409,21 @@ export function OptionsClient() {
                     </p>
                   </div>
                   <div>
-                    <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Legs</span>
-                    <LegEditor legs={legs} strikes={chain.strikes} spot={chain.spot} expiry={chain.expiry} onLegsChange={setLegs} />
+                    <div className="flex items-baseline justify-between mb-1">
+                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Legs</span>
+                      {mode === "strategy" && (
+                        <span className="text-[10px] text-muted-foreground">Select a leg, then click a strike in the chain</span>
+                      )}
+                    </div>
+                    <LegEditor
+                      legs={legs}
+                      strikes={chain.strikes}
+                      spot={chain.spot}
+                      expiry={chain.expiry}
+                      onLegsChange={setLegs}
+                      activeIdx={mode === "strategy" ? activeLegIdx : undefined}
+                      onSelectLeg={mode === "strategy" ? setActiveLegIdx : undefined}
+                    />
                   </div>
                 </>
               ) : (
@@ -340,6 +438,20 @@ export function OptionsClient() {
             </div>
           </div>
         </div>
+      )}
+
+      {chain && analytics && (
+        <PnlMatrixModal
+          open={matrixOpen}
+          onClose={() => setMatrixOpen(false)}
+          title={`${ticker} · ${mode === "strategy" ? strategyById(strategyId)?.name ?? "Strategy" : recognizeStrategy(legs) ?? "Custom"}`}
+          legs={legs}
+          spot={chain.spot}
+          expiry={chain.expiry}
+          netCost={analytics.summary.netCost}
+          maxLoss={analytics.summary.maxLoss}
+          earningsDate={earningsDate}
+        />
       )}
     </main>
   );

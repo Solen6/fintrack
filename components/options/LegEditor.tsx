@@ -3,19 +3,32 @@
 import { buildLeg, type ChainStrike } from "@/lib/option-strategies";
 import type { Leg, OptionType, Side } from "@/lib/options-math";
 
+/** Call ITM below spot, put ITM above. */
+function moneyness(type: "call" | "put", strike: number, spot: number): "ITM" | "ATM" | "OTM" {
+  if (Math.abs(strike - spot) < 1e-9) return "ATM";
+  if (type === "call") return strike < spot ? "ITM" : "OTM";
+  return strike > spot ? "ITM" : "OTM";
+}
+
 export function LegEditor({
   legs,
   strikes,
   spot,
   expiry,
   onLegsChange,
+  activeIdx,
+  onSelectLeg,
 }: {
   legs: Leg[];
   strikes: ChainStrike[];
   spot: number;
   expiry: number;
   onLegsChange: (legs: Leg[]) => void;
+  /** When set, the strike is picked from the chain (strategy mode) — this leg is highlighted. */
+  activeIdx?: number;
+  onSelectLeg?: (i: number) => void;
 }) {
+  const selectable = !!onSelectLeg;
   const update = (i: number, patch: Partial<Pick<Leg, "type" | "side" | "strike" | "qty">>) => {
     const cur = legs[i];
     const type = patch.type ?? cur.type;
@@ -35,8 +48,17 @@ export function LegEditor({
 
   return (
     <div className="flex flex-col gap-2">
-      {legs.map((leg, i) => (
-        <div key={i} className="rounded-sm border border-border bg-card px-3 py-2.5">
+      {legs.map((leg, i) => {
+        const isActive = selectable && activeIdx === i;
+        return (
+        <div
+          key={i}
+          className="rounded-sm border bg-card px-3 py-2.5 transition-colors"
+          style={{
+            borderColor: isActive ? "var(--primary)" : "var(--border)",
+            boxShadow: isActive ? "0 0 0 1px var(--primary)" : undefined,
+          }}
+        >
           {leg.type === "stock" ? (
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -66,18 +88,33 @@ export function LegEditor({
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <label className="flex-1">
+                <div className="flex-1">
                   <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Strike</span>
-                  <select
-                    value={leg.strike}
-                    onChange={(e) => update(i, { strike: parseFloat(e.target.value) })}
-                    className="w-full h-8 px-2 text-sm font-mono rounded-sm border border-border bg-background text-foreground focus:outline-none focus:border-primary"
-                  >
-                    {strikes.map((s) => (
-                      <option key={s.strike} value={s.strike}>{s.strike}</option>
-                    ))}
-                  </select>
-                </label>
+                  {selectable ? (
+                    <button
+                      type="button"
+                      onClick={() => onSelectLeg?.(i)}
+                      className="w-full h-8 px-2 flex items-center justify-between gap-2 text-sm font-mono rounded-sm border bg-background text-foreground focus:outline-none transition-colors"
+                      style={{ borderColor: isActive ? "var(--primary)" : "var(--border)" }}
+                      title="Click, then pick a strike in the chain"
+                    >
+                      <span>${leg.strike}</span>
+                      <span className="text-[10px] uppercase tracking-wider" style={{ color: isActive ? "var(--primary)" : "var(--muted-foreground)" }}>
+                        {isActive ? "pick in chain ↑" : moneyness(leg.type as "call" | "put", leg.strike, spot)}
+                      </span>
+                    </button>
+                  ) : (
+                    <select
+                      value={leg.strike}
+                      onChange={(e) => update(i, { strike: parseFloat(e.target.value) })}
+                      className="w-full h-8 px-2 text-sm font-mono rounded-sm border border-border bg-background text-foreground focus:outline-none focus:border-primary"
+                    >
+                      {strikes.map((s) => (
+                        <option key={s.strike} value={s.strike}>{s.strike}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
                 <label className="w-20">
                   <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Qty</span>
                   <input
@@ -92,7 +129,8 @@ export function LegEditor({
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -167,6 +167,30 @@ export function payoffAt(legs: Leg[], S_T: number): number {
   return pl;
 }
 
+/**
+ * Total position P/L ($) if the underlying is at `S` at calendar time `tSec`
+ * (unix seconds). Before expiry, option legs are valued with Black-Scholes on
+ * their *remaining* time, so this captures time decay — the basis for the
+ * price×date P/L matrix. At/after a leg's expiry it falls back to intrinsic
+ * value, so at expiry this equals payoffAt().
+ */
+export function payoffAtTime(legs: Leg[], S: number, tSec: number, r = RISK_FREE, ivScale = 1): number {
+  let pl = 0;
+  for (const l of legs) {
+    let value: number;
+    if (l.type === "stock") {
+      value = S;
+    } else {
+      const T = Math.max((l.expiry - tSec) / (365 * 86400), 0);
+      // ivScale lets the UI model an IV shift (e.g. post-earnings crush). The
+      // entry premium is unchanged — only the live mark re-prices.
+      value = bsPrice({ type: l.type, S, K: l.strike, T, r, sigma: l.iv * ivScale });
+    }
+    pl += sign(l.side) * (value - l.premium) * mult(l);
+  }
+  return pl;
+}
+
 /** Build a payoff curve from S_T = 0 up to `hi` over `steps` points. */
 export function aggregatePayoff(legs: Leg[], hi: number, steps = 240): PayoffPoint[] {
   const out: PayoffPoint[] = [];
