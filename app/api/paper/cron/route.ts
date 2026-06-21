@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { captureSnapshot, evaluateFills } from "@/lib/paper-engine";
+import { captureSnapshot, evaluateFills, expireOptions } from "@/lib/paper-engine";
 
 /**
  * Scheduled trigger: fills pending limit/stop orders and snapshots equity for
@@ -24,15 +24,17 @@ async function run() {
   const userIds = [...new Set((accts ?? []).map((a) => a.user_id as string))];
 
   let filled = 0;
+  let expired = 0;
   for (const uid of userIds) {
     try {
+      expired += await expireOptions(db, uid);
       filled += await evaluateFills(db, uid);
       await captureSnapshot(db, uid);
     } catch {
       // Skip a failing user rather than abort the whole run.
     }
   }
-  return { users: userIds.length, filled };
+  return { users: userIds.length, filled, expired };
 }
 
 export async function GET(request: NextRequest) {

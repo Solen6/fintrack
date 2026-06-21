@@ -24,7 +24,7 @@ import {
 
 /* ── Types ── */
 interface ExpiryOption { iso: string; unix: number }
-interface RawStrike { strike: number; mark: number; iv: number | null }
+interface RawStrike { strike: number; mark: number | null; iv: number | null }
 
 interface ChainRow {
   strike: number;

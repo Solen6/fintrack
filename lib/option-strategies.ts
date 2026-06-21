@@ -17,6 +17,9 @@ export interface ChainStrike {
   putAsk: number;
   putIV: number; // decimal
   putOI: number;
+  // Optional day volume — surfaced by the chain explorer; ignored by the math engine.
+  callVol?: number;
+  putVol?: number;
 }
 
 export type StrategyCategory = "Single" | "Vertical" | "Volatility" | "Advanced";

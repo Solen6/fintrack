@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { fetchOptionChain } from "@/lib/yahoo";
 import { optionMark } from "@/lib/paper-pricing";
+import { impliedVol, RISK_FREE } from "@/lib/options-math";
 
 /**
  * Option-chain helper for the trade ticket.
@@ -28,13 +29,36 @@ export async function GET(request: NextRequest) {
     if (!match) return NextResponse.json({ error: "Expiry not available." }, { status: 404 });
 
     const chain = match.iso === expiries[0].iso ? base : await fetchOptionChain(underlying, match.unix);
+    const T = Math.max((match.unix - Date.now() / 1000) / (365 * 86400), 0);
+
     const map = (arr: typeof chain.calls, type: "CALL" | "PUT") =>
-      arr.map((c) => ({
-        strike: c.strike,
-        type,
-        mark: parseFloat(optionMark(c).toFixed(2)),
-        iv: c.impliedVolatility ? parseFloat((c.impliedVolatility * 100).toFixed(1)) : null,
-      })).filter((c) => c.mark > 0);
+      arr
+        .map((c) => {
+          const m = parseFloat(optionMark(c).toFixed(2));
+          // Prefer the feed's IV; fall back to inverting Black-Scholes from the
+          // mark so a quoted strike never shows a blank IV.
+          let ivPct =
+            c.impliedVolatility && c.impliedVolatility > 0 ? c.impliedVolatility * 100 : null;
+          if (ivPct == null && m > 0 && spot > 0 && T > 0) {
+            const computed = impliedVol({
+              type: type === "CALL" ? "call" : "put",
+              S: spot,
+              K: c.strike,
+              T,
+              r: RISK_FREE,
+              price: m,
+            });
+            if (computed != null) ivPct = computed * 100;
+          }
+          return {
+            strike: c.strike,
+            type,
+            mark: m > 0 ? m : null, // null → table shows "—", click-to-add stays disabled
+            iv: ivPct != null ? parseFloat(ivPct.toFixed(1)) : null,
+          };
+        })
+        // Keep any strike that carries at least a mark or an IV; drop the rest.
+        .filter((c) => c.mark != null || c.iv != null);
 
     return NextResponse.json({
       underlying,

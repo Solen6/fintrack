@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChainResponse } from "@/app/api/options/chain/route";
-import { instantiateStrategy, strategyById } from "@/lib/option-strategies";
+import { buildLeg, instantiateStrategy, strategyById } from "@/lib/option-strategies";
 import {
   aggregatePayoff,
   netGreeks,
@@ -17,8 +17,10 @@ import {
 import { PayoffChart } from "./PayoffChart";
 import { StrategyPicker } from "./StrategyPicker";
 import { LegEditor } from "./LegEditor";
+import { OptionChainTable } from "./OptionChainTable";
 
 type View = "loading" | "ready" | "error";
+type Mode = "strategy" | "custom";
 
 const DEFAULT_STRATEGY = "long-call";
 
@@ -27,18 +29,19 @@ export function OptionsClient() {
   const [ticker, setTicker] = useState<string>("");
   const [tickerInput, setTickerInput] = useState<string>("");
   const [chain, setChain] = useState<ChainResponse | null>(null);
+  const [mode, setMode] = useState<Mode>("strategy");
   const [strategyId, setStrategyId] = useState<string>(DEFAULT_STRATEGY);
   const [legs, setLegs] = useState<Leg[]>([]);
   const [view, setView] = useState<View>("loading");
   const [error, setError] = useState<string>("");
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
 
-  const loadChain = useCallback(async (t: string, stratId: string, expiry?: number) => {
+  const loadChain = useCallback(async (t: string, opts: { mode: Mode; stratId: string; expiry?: number }) => {
     setView("loading");
     setError("");
     try {
       const qs = new URLSearchParams({ ticker: t });
-      if (expiry) qs.set("expiry", String(expiry));
+      if (opts.expiry) qs.set("expiry", String(opts.expiry));
       const res = await fetch(`/api/options/chain?${qs}`);
       const data: ChainResponse = await res.json();
       if (!res.ok || data.error || !data.strikes?.length) {
@@ -47,9 +50,14 @@ export function OptionsClient() {
         setView("error");
         return;
       }
-      const def = strategyById(stratId) ?? strategyById(DEFAULT_STRATEGY)!;
       setChain(data);
-      setLegs(instantiateStrategy(def, data.strikes, data.spot, data.expiry));
+      // Seed legs from the active strategy; custom mode starts empty.
+      if (opts.mode === "strategy") {
+        const def = strategyById(opts.stratId) ?? strategyById(DEFAULT_STRATEGY)!;
+        setLegs(instantiateStrategy(def, data.strikes, data.spot, data.expiry));
+      } else {
+        setLegs([]);
+      }
       setRefreshedAt(new Date());
       setView("ready");
     } catch {
@@ -75,7 +83,7 @@ export function OptionsClient() {
       }
       setTicker(first);
       setTickerInput(first);
-      loadChain(first, DEFAULT_STRATEGY);
+      loadChain(first, { mode: "strategy", stratId: DEFAULT_STRATEGY });
     })();
   }, [loadChain]);
 
@@ -87,19 +95,59 @@ export function OptionsClient() {
     }
   };
 
+  const switchMode = (m: Mode) => {
+    if (m === mode) return;
+    setMode(m);
+    if (m === "strategy" && chain) {
+      const def = strategyById(strategyId)!;
+      setLegs(instantiateStrategy(def, chain.strikes, chain.spot, chain.expiry));
+    } else {
+      setLegs([]); // custom starts from a clean slate; build by clicking the chain
+    }
+  };
+
   const submitTicker = (e: React.FormEvent) => {
     e.preventDefault();
     const t = tickerInput.trim().toUpperCase();
     if (!t || t === ticker) return;
     setTicker(t);
-    loadChain(t, strategyId);
+    loadChain(t, { mode, stratId: strategyId });
   };
 
   const pickTicker = (t: string) => {
     setTicker(t);
     setTickerInput(t);
-    loadChain(t, strategyId);
+    loadChain(t, { mode, stratId: strategyId });
   };
+
+  const changeExpiry = (expiry: number) => loadChain(ticker, { mode, stratId: strategyId, expiry });
+
+  /* ── custom-mode leg picking (mutates the single `legs` model) ── */
+  const toggleLeg = useCallback((strike: number, type: "CALL" | "PUT") => {
+    if (!chain) return;
+    const t = type.toLowerCase() as "call" | "put";
+    setLegs((prev) => {
+      const idx = prev.findIndex((l) => l.type === t && l.strike === strike);
+      if (idx >= 0) return prev.filter((_, j) => j !== idx);
+      const row = chain.strikes.find((r) => r.strike === strike);
+      if (!row) return prev;
+      return [...prev, buildLeg(t, "long", row, 1, chain.spot, chain.expiry)];
+    });
+  }, [chain]);
+
+  const flipLeg = useCallback((strike: number, type: "CALL" | "PUT") => {
+    const t = type.toLowerCase();
+    setLegs((prev) => prev.map((l) => (l.type === t && l.strike === strike ? { ...l, side: l.side === "long" ? "short" : "long" } : l)));
+  }, []);
+
+  // Strike→side map so the chain table can show leg dots in either mode.
+  const legMap = useMemo(() => {
+    const m = new Map<string, "BUY" | "SELL">();
+    for (const l of legs) {
+      if (l.type !== "stock") m.set(`${l.strike}-${l.type.toUpperCase()}`, l.side === "long" ? "BUY" : "SELL");
+    }
+    return m;
+  }, [legs]);
 
   /* ── Derived analytics ── */
   const analytics = useMemo(() => {
@@ -117,8 +165,6 @@ export function OptionsClient() {
     }
     return { points, summary, greeks, pop };
   }, [chain, legs]);
-
-  const strat = strategyById(strategyId);
 
   return (
     <main className="flex-1 flex flex-col overflow-hidden">
@@ -152,7 +198,7 @@ export function OptionsClient() {
             </span>
           )}
           <button
-            onClick={() => loadChain(ticker, strategyId, chain?.expiry)}
+            onClick={() => loadChain(ticker, { mode, stratId: strategyId, expiry: chain?.expiry })}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-sm hover:bg-accent"
           >
             Refresh
@@ -194,54 +240,103 @@ export function OptionsClient() {
       )}
 
       {view === "ready" && chain && (
-        <div className="flex-1 overflow-y-auto">
-          <div className="px-6 py-4">
-            <StrategyPicker selectedId={strategyId} onSelect={selectStrategy} />
-          </div>
+        <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-4">
+          {/* Controls: expiry · mode · strategy picker */}
+          <div className="flex flex-wrap items-end gap-4">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Expiry</span>
+              <select
+                value={chain.expiry}
+                onChange={(e) => changeExpiry(parseInt(e.target.value, 10))}
+                className="h-8 px-2 text-sm font-mono rounded-sm border border-border bg-background text-foreground focus:outline-none focus:border-primary"
+                style={{ width: 168 }}
+              >
+                {chain.expirations.map((ts) => {
+                  const dte = Math.round((ts - Date.now() / 1000) / 86400);
+                  return (
+                    <option key={ts} value={ts}>
+                      {new Date(ts * 1000).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "2-digit" })} · {dte}d
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
 
-          <div className="px-6 pb-6 grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-5">
-            {/* Left: payoff + summary */}
-            <div className="rounded-sm border border-border bg-card p-4 min-w-0">
-              <div className="flex items-baseline justify-between mb-2">
-                <h3 className="text-sm font-medium text-foreground">{strat?.name}</h3>
-                <span className="text-xs text-muted-foreground">Payoff at expiry</span>
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Build by</span>
+              <div className="flex rounded-sm overflow-hidden border border-border text-xs font-medium h-8">
+                {(["strategy", "custom"] as Mode[]).map((m) => {
+                  const active = mode === m;
+                  return (
+                    <button
+                      key={m}
+                      onClick={() => switchMode(m)}
+                      className="px-3 transition-colors capitalize"
+                      style={{ background: active ? "var(--primary)" : "transparent", color: active ? "oklch(0.08 0 0)" : "var(--muted-foreground)" }}
+                    >
+                      {m === "strategy" ? "Strategy" : "Click chain"}
+                    </button>
+                  );
+                })}
               </div>
-              {analytics && (
-                <>
-                  <PayoffChart points={analytics.points} spot={chain.spot} breakevens={analytics.summary.breakevens} />
-                  <SummaryStrip a={analytics} />
-                  <GreeksRow g={analytics.greeks} />
-                  <p className="mt-3 text-[10px] text-muted-foreground leading-relaxed">
-                    Model estimate · Black-Scholes, no dividends, r = 4.3% · premiums = bid/ask mid. Greeks &amp; probability are approximations, not advice.
-                  </p>
-                </>
-              )}
             </div>
 
-            {/* Right: expiry + legs */}
-            <div className="flex flex-col gap-3 min-w-0">
-              <label className="block">
-                <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Expiry</span>
-                <select
-                  value={chain.expiry}
-                  onChange={(e) => loadChain(ticker, strategyId, parseInt(e.target.value, 10))}
-                  className="w-full h-8 px-2 text-sm font-mono rounded-sm border border-border bg-background text-foreground focus:outline-none focus:border-primary"
-                >
-                  {chain.expirations.map((ts) => {
-                    const dte = Math.round((ts - Date.now() / 1000) / 86400);
-                    return (
-                      <option key={ts} value={ts}>
-                        {new Date(ts * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" })} · {dte}d
-                      </option>
-                    );
-                  })}
-                </select>
-              </label>
-
-              <div>
-                <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Legs</span>
-                <LegEditor legs={legs} strikes={chain.strikes} spot={chain.spot} expiry={chain.expiry} onLegsChange={setLegs} />
+            {mode === "strategy" && (
+              <div className="flex-1 min-w-[280px]">
+                <StrategyPicker selectedId={strategyId} onSelect={selectStrategy} />
               </div>
+            )}
+            {mode === "custom" && (
+              <span className="text-xs text-muted-foreground pb-1.5">
+                Click a call or put in the chain to add a leg · click its dot to flip Buy/Sell
+              </span>
+            )}
+          </div>
+
+          {/* Chain explorer + payoff/analytics */}
+          <div className="grid grid-cols-1 xl:grid-cols-5 gap-4 items-start">
+            <div className="xl:col-span-3 rounded-md border border-border bg-card overflow-hidden">
+              <OptionChainTable
+                rows={chain.strikes}
+                spot={chain.spot}
+                loading={false}
+                customMap={legMap}
+                onToggle={mode === "custom" ? toggleLeg : undefined}
+                onToggleSide={mode === "custom" ? flipLeg : undefined}
+              />
+            </div>
+
+            <div className="xl:col-span-2 flex flex-col gap-4">
+              {analytics ? (
+                <>
+                  <div className="rounded-md border border-border bg-card p-4">
+                    <div className="flex items-baseline justify-between mb-2">
+                      <h3 className="text-sm font-medium text-foreground">
+                        {mode === "strategy" ? strategyById(strategyId)?.name : `${legs.length} leg${legs.length === 1 ? "" : "s"}`}
+                      </h3>
+                      <span className="text-xs text-muted-foreground">Payoff at expiry</span>
+                    </div>
+                    <PayoffChart points={analytics.points} spot={chain.spot} breakevens={analytics.summary.breakevens} />
+                    <SummaryStrip a={analytics} />
+                    <GreeksRow g={analytics.greeks} />
+                    <p className="mt-3 text-[10px] text-muted-foreground leading-relaxed">
+                      Model estimate · Black-Scholes, no dividends, r = 4.3% · premiums = bid/ask mid. Greeks &amp; probability are approximations, not advice.
+                    </p>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Legs</span>
+                    <LegEditor legs={legs} strikes={chain.strikes} spot={chain.spot} expiry={chain.expiry} onLegsChange={setLegs} />
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-md border border-border bg-card p-8 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    {mode === "custom"
+                      ? "Click a strike in the chain to start building a position"
+                      : "Select a strategy to see its payoff"}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>

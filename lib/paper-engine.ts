@@ -429,6 +429,59 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
   };
 }
 
+/* ─── Expire options past their expiry date ─── */
+
+/**
+ * Close all OPTION positions whose expiry has passed. Sells at market price if
+ * still quoted (ITM), otherwise expires worthless at $0.
+ * Returns the number of positions expired.
+ */
+export async function expireOptions(db: DB, userId: string): Promise<number> {
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+  }).format(new Date());
+
+  const { data } = await db
+    .from("paper_positions")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("asset_class", "OPTION")
+    .lt("expiry", today);
+
+  const expired = (data ?? []) as PositionRow[];
+
+  // Also cancel any PENDING orders for expired options.
+  await db
+    .from("paper_orders")
+    .update({ status: "CANCELLED" })
+    .eq("user_id", userId)
+    .eq("asset_class", "OPTION")
+    .eq("status", "PENDING")
+    .lt("expiry", today);
+
+  if (expired.length === 0) return 0;
+
+  let count = 0;
+  for (const pos of expired) {
+    const ref = rowToRef(pos);
+    const priced = await priceInstrument(ref);
+    const closePrice = priced?.price ?? 0;
+
+    const account = await resolveAccount(db, userId, pos.account_id);
+    try {
+      await executeFill(db, account, ref, "SELL", Number(pos.shares), closePrice);
+      count++;
+    } catch {
+      // If sell fails (shouldn't for long-only options), delete the position
+      // at $0 so it doesn't linger.
+      await db.from("paper_positions").delete().eq("id", pos.id);
+      count++;
+    }
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  return count;
+}
+
 /* ─── Pending-order evaluation (triggered fills) ─── */
 
 function isTriggered(o: OrderRow, price: number): boolean {

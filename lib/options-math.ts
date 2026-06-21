@@ -100,6 +100,32 @@ export function bsPrice(args: BSInputs): number {
     : disc * normCdf(-d2) - S * normCdf(-d1);
 }
 
+/**
+ * Recover implied volatility from an option's market price by inverting
+ * Black-Scholes (bisection — no derivative, robust at the wings). Used as a
+ * fallback when the data feed doesn't supply IV for a contract. Returns null if
+ * the price sits outside the no-arbitrage band or it fails to converge.
+ */
+export function impliedVol(args: { type: "call" | "put"; S: number; K: number; T: number; r: number; price: number }): number | null {
+  const { type, S, K, T, r, price } = args;
+  if (T <= 0 || price <= 0 || S <= 0 || K <= 0) return null;
+  const disc = K * Math.exp(-r * T);
+  const intrinsic = type === "call" ? Math.max(S - disc, 0) : Math.max(disc - S, 0);
+  const upper = type === "call" ? S : disc; // call ≤ S, put ≤ discounted strike
+  if (price <= intrinsic + 1e-6 || price >= upper) return null;
+
+  const f = (sigma: number) => bsPrice({ type, S, K, T, r, sigma }) - price;
+  let lo = 1e-4, hi = 5; // 0.01% … 500% vol
+  if (f(lo) > 0 || f(hi) < 0) return null; // price not bracketed
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    const fm = f(mid);
+    if (Math.abs(fm) < 1e-5) return mid;
+    if (fm > 0) hi = mid; else lo = mid;
+  }
+  return (lo + hi) / 2;
+}
+
 /** Per-share Greeks for one option (theta in $/day, vega per 1% vol). */
 export function bsGreeks(args: BSInputs): Greeks {
   const { type, S, K, T, r, sigma } = args;
