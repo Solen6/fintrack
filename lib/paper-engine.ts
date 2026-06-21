@@ -17,10 +17,17 @@ import {
   multiplierFor,
   notionalUsd,
   pnlUsd,
+  shortAllowed,
   FUTURES_SPECS,
   FOREX_SPECS,
 } from "./contract-specs";
 import { priceInstrument } from "./paper-pricing";
+import {
+  aggregatePayoff,
+  priceAxisMax,
+  summarize,
+  type Leg as MathLeg,
+} from "./options-math";
 import type {
   AssetClass,
   Direction,
@@ -60,6 +67,7 @@ interface PositionRow {
   multiplier: number;
   direction: Direction;
   margin_held: number;
+  combo_id: string | null;
 }
 interface OrderRow {
   id: string;
@@ -98,6 +106,49 @@ function rowToRef(r: PositionRow | OrderRow): InstrumentRef {
 
 export function isMarginAsset(ac: AssetClass): boolean {
   return ac === "FUTURE" || ac === "FOREX";
+}
+
+const isoToUnix = (iso: string | null): number =>
+  iso ? Math.floor(new Date(`${iso}T00:00:00Z`).getTime() / 1000) : 0;
+
+/** The options-math Leg view of a position row (premium = entry cost basis). */
+function rowToMathLeg(p: PositionRow): MathLeg {
+  const side = p.direction === "LONG" ? "long" : "short";
+  if (p.asset_class === "STOCK") {
+    return { type: "stock", side, strike: Number(p.avg_cost), expiry: 0, qty: Number(p.shares), premium: Number(p.avg_cost), iv: 0 };
+  }
+  return {
+    type: p.option_type === "CALL" ? "call" : "put",
+    side,
+    strike: Number(p.strike),
+    expiry: isoToUnix(p.expiry),
+    qty: Number(p.shares),
+    premium: Number(p.avg_cost),
+    iv: 0,
+  };
+}
+
+/**
+ * Collateral to reserve for a (possibly multi-leg) option strategy.
+ *  - Net-debit positions reserve nothing — the debit you paid IS the max risk.
+ *  - Defined-risk credit positions reserve their max loss (e.g. a credit spread
+ *    holds width − credit + the credit = the spread width; a cash-secured put
+ *    holds strike × 100).
+ *  - Naked (unbounded) shorts fall back to a Reg-T-style 20%-of-strike estimate.
+ */
+export function comboMarginUsd(legs: MathLeg[], spot: number): number {
+  const optLegs = legs.filter((l) => l.type !== "stock");
+  if (optLegs.length === 0) return 0;
+  const points = aggregatePayoff(legs, priceAxisMax(legs, spot));
+  const summary = summarize(legs, points);
+  const credit = Math.max(0, -summary.netCost);
+  if (!Number.isFinite(summary.maxLoss)) {
+    let m = 0;
+    for (const l of optLegs) if (l.side === "short") m += 0.2 * l.strike * 100 * l.qty;
+    return m + credit;
+  }
+  if (summary.netCost > 0) return 0;                  // net debit — risk already paid
+  return Math.abs(summary.maxLoss) + credit;          // net credit — reserve full liability
 }
 
 /** Human label for a position/order. */
@@ -174,17 +225,35 @@ function computeFill(
   let newQtyAbs = Math.abs(newSigned);
 
   if (!margin) {
-    // Long-only cash asset.
-    if (newSigned < -EPS) throw new Error("Shorting is not supported for stocks/options — you can't sell more than you hold.");
-    if (orderSigned > 0) {
-      cashDelta = -notionalUsd(ref, price, qty);
-      newAvg = current ? (current.shares * current.avg_cost + qty * price) / (current.shares + qty) : price;
-    } else {
-      cashDelta = notionalUsd(ref, price, qty);
-      if (current) realized = pnlUsd(ref, "LONG", current.avg_cost, price, qty);
-      newAvg = current?.avg_cost ?? price;
+    // Cash-settled asset. Stocks are long-only; options can be sold-to-open.
+    if (!shortAllowed(ref.assetClass) && newSigned < -EPS) {
+      throw new Error("Shorting is not supported for stocks — you can't sell more than you hold.");
     }
-    newDir = "LONG";
+    // Every buy pays cash, every sell receives cash (open or close alike).
+    cashDelta = side === "BUY" ? -notionalUsd(ref, price, qty) : notionalUsd(ref, price, qty);
+
+    const sameSign = curSigned !== 0 && Math.sign(orderSigned) === Math.sign(curSigned);
+    if (curSigned === 0) {
+      newAvg = price;
+      newDir = newSigned > 0 ? "LONG" : "SHORT";
+    } else if (sameSign) {
+      newAvg = (current!.shares * current!.avg_cost + qty * price) / (current!.shares + qty);
+      newDir = current!.direction;
+    } else {
+      // Opposite side: realize P/L on the closed portion (and maybe flip).
+      const closeQty = Math.min(current!.shares, qty);
+      realized = pnlUsd(ref, current!.direction, current!.avg_cost, price, closeQty);
+      if (Math.abs(newSigned) < EPS) {
+        newQtyAbs = 0;
+      } else if (Math.sign(newSigned) === Math.sign(curSigned)) {
+        newAvg = current!.avg_cost;      // partial close, same direction
+        newDir = current!.direction;
+      } else {
+        newAvg = price;                   // flipped
+        newDir = newSigned > 0 ? "LONG" : "SHORT";
+      }
+    }
+    // Option collateral is held at the combo level, not per-leg.
     return { newQtyAbs, newAvg, newDir, newMargin: 0, cashDelta, realized, marginDelta: 0 };
   }
 
@@ -228,7 +297,8 @@ export async function executeFill(
   ref: InstrumentRef,
   side: Side,
   qty: number,
-  price: number
+  price: number,
+  comboId?: string
 ): Promise<{ realized: number; notional: number }> {
   // Fresh account read (avoid stale cash/margin under concurrent fills).
   const { data: acc } = await db.from("paper_accounts").select("*").eq("id", account.id).single();
@@ -283,6 +353,9 @@ export async function executeFill(
       multiplier: multiplierFor(ref.assetClass, ref.symbol),
       direction: plan.newDir,
       margin_held: plan.newMargin,
+      // Only reference combo_id for actual combos, so single-asset trades keep
+      // working before the paper-combo migration is run.
+      ...(comboId ? { combo_id: comboId } : {}),
     }));
   }
   if (writeErr) throw new Error(`Position write failed: ${writeErr.message}`);
@@ -343,9 +416,11 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
   const positions: PaperPosition[] = posRows.map((p) => {
     const ref = rowToRef(p);
     const mark = priceMap.get(p.symbol)!;
+    const dirSign = p.direction === "LONG" ? 1 : -1;
     const unrealized = pnlUsd(ref, p.direction, Number(p.avg_cost), mark.price, Number(p.shares));
     const cost = Math.abs(notionalUsd(ref, Number(p.avg_cost), Number(p.shares)));
-    const marketValue = isMarginAsset(p.asset_class) ? 0 : notionalUsd(ref, mark.price, Number(p.shares));
+    // Long positions are assets (+); a short option is a liability (−).
+    const marketValue = isMarginAsset(p.asset_class) ? 0 : dirSign * notionalUsd(ref, mark.price, Number(p.shares));
     positionsValue += marketValue;
     unrealizedTotal += unrealized;
     marginUsed += Number(p.margin_held);
@@ -354,6 +429,7 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
     }
     return {
       id: p.id,
+      comboId: p.combo_id ?? undefined,
       assetClass: p.asset_class,
       symbol: p.symbol,
       underlying: p.underlying ?? undefined,
@@ -373,6 +449,25 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
       livePrice: mark.livePrice,
     };
   });
+
+  // Option collateral is reserved per strategy (combo), not per leg. Group the
+  // option legs (and any stock leg that's part of a combo) and reserve max loss.
+  const comboGroups = new Map<string, PositionRow[]>();
+  for (const p of posRows) {
+    if (p.asset_class === "OPTION" || (p.asset_class === "STOCK" && p.combo_id)) {
+      const key = p.combo_id ?? `solo:${p.id}`;
+      const arr = comboGroups.get(key) ?? [];
+      arr.push(p);
+      comboGroups.set(key, arr);
+    }
+  }
+  for (const legsRows of comboGroups.values()) {
+    const legs = legsRows.map(rowToMathLeg);
+    const spotProxy = Math.max(1, ...legs.map((l) => l.strike));
+    const m = comboMarginUsd(legs, spotProxy);
+    marginUsed += m;
+    maintenanceTotal += m;   // defined-risk: you can't lose more than the reserve
+  }
 
   const cash = Number(account.cash);
   const equity = cash + positionsValue + posRows
@@ -466,20 +561,151 @@ export async function expireOptions(db: DB, userId: string): Promise<number> {
     const ref = rowToRef(pos);
     const priced = await priceInstrument(ref);
     const closePrice = priced?.price ?? 0;
+    // Close toward zero: a long is sold, a short is bought back (worthless = $0,
+    // so a short option that expires OTM keeps the full premium).
+    const closeSide: Side = pos.direction === "LONG" ? "SELL" : "BUY";
 
     const account = await resolveAccount(db, userId, pos.account_id);
     try {
-      await executeFill(db, account, ref, "SELL", Number(pos.shares), closePrice);
+      await executeFill(db, account, ref, closeSide, Number(pos.shares), closePrice, pos.combo_id ?? undefined);
       count++;
     } catch {
-      // If sell fails (shouldn't for long-only options), delete the position
-      // at $0 so it doesn't linger.
+      // If the fill fails, delete the position so it doesn't linger.
       await db.from("paper_positions").delete().eq("id", pos.id);
       count++;
     }
     await new Promise((r) => setTimeout(r, 40));
   }
   return count;
+}
+
+/* ─── Multi-leg option combos (open + close as one strategy) ─── */
+
+export interface ComboLegInput {
+  ref: InstrumentRef;       // OPTION or STOCK
+  side: Side;               // BUY (long) / SELL (short) to OPEN
+  qty: number;
+}
+
+export interface ComboResult {
+  comboId: string;
+  legs: { symbol: string; side: Side; qty: number; price: number }[];
+  margin: number;
+  netCost: number;          // >0 net debit paid, <0 net credit received
+}
+
+/**
+ * Open a multi-leg strategy atomically-ish: prices every leg live, validates the
+ * whole combo's buying-power need (net debit + reserved max-loss collateral) up
+ * front, then fills each leg tagged with one combo_id. Throws before any fill if
+ * the combo can't be priced or afforded.
+ */
+export async function openCombo(
+  db: DB,
+  account: AccountRow,
+  legInputs: ComboLegInput[],
+  comboId: string
+): Promise<ComboResult> {
+  if (legInputs.length === 0) throw new Error("No legs to trade.");
+
+  // Price every leg first; bail out if any leg has no live quote.
+  const priced: { input: ComboLegInput; price: number }[] = [];
+  for (const input of legInputs) {
+    const p = await priceInstrument(input.ref);
+    if (!p) throw new Error(`No live price for ${instrumentName(input.ref)} — can't fill the strategy.`);
+    priced.push({ input, price: p.price });
+    await new Promise((r) => setTimeout(r, 40));
+  }
+
+  // Compute net debit/credit and reserved collateral from the live fill prices.
+  const mathLegs: MathLeg[] = priced.map(({ input, price }) => ({
+    type: input.ref.assetClass === "STOCK" ? "stock" : input.ref.optionType === "CALL" ? "call" : "put",
+    side: input.side === "BUY" ? "long" : "short",
+    strike: input.ref.assetClass === "STOCK" ? price : Number(input.ref.strike),
+    expiry: isoToUnix(input.ref.expiry ?? null),
+    qty: input.qty,
+    premium: price,
+    iv: 0,
+  }));
+  const netCost = priced.reduce(
+    (s, { input, price }) =>
+      s + (input.side === "BUY" ? 1 : -1) * price * multiplierFor(input.ref.assetClass, input.ref.symbol) * input.qty,
+    0
+  );
+  const spotProxy = Math.max(1, ...mathLegs.map((l) => l.strike));
+  const margin = comboMarginUsd(mathLegs, spotProxy);
+
+  // Buying-power check on the whole combo before any cash moves.
+  const { data: acc } = await db.from("paper_accounts").select("*").eq("id", account.id).single();
+  const a = acc as AccountRow;
+  const buyingPower = Number(a.cash) - Number(a.margin_used);
+  const need = Math.max(0, netCost) + margin;
+  if (need > buyingPower + EPS) {
+    throw new Error(`Insufficient buying power for this strategy: need $${need.toFixed(2)}, have $${buyingPower.toFixed(2)}.`);
+  }
+
+  // Fill BUY legs first (cash out) then SELL legs (cash in) so intermediate cash
+  // never dips below what the leg-level check allows.
+  const ordered = [...priced].sort((x, y) => (x.input.side === y.input.side ? 0 : x.input.side === "BUY" ? -1 : 1));
+  const legs: ComboResult["legs"] = [];
+  for (const { input, price } of ordered) {
+    await executeFill(db, account, input.ref, input.side, input.qty, price, comboId);
+    legs.push({ symbol: input.ref.symbol, side: input.side, qty: input.qty, price });
+  }
+
+  return { comboId, legs, margin, netCost };
+}
+
+/** Close every leg of a combo (or a single tagged leg) at live marks. */
+export async function closeCombo(db: DB, userId: string, comboId: string): Promise<{ realized: number; legs: number }> {
+  const { data } = await db
+    .from("paper_positions")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("combo_id", comboId);
+  const rows = (data ?? []) as PositionRow[];
+  if (rows.length === 0) return { realized: 0, legs: 0 };
+
+  let realized = 0;
+  let closed = 0;
+  for (const pos of rows) {
+    const ref = rowToRef(pos);
+    const priced = await priceInstrument(ref);
+    const closePrice = priced?.price ?? 0;
+    const closeSide: Side = pos.direction === "LONG" ? "SELL" : "BUY";
+    const account = await resolveAccount(db, userId, pos.account_id);
+    try {
+      const r = await executeFill(db, account, ref, closeSide, Number(pos.shares), closePrice, comboId);
+      realized += r.realized;
+      closed++;
+      // Record the closing leg in order history.
+      await db.from("paper_orders").insert({
+        user_id: userId,
+        account_id: pos.account_id,
+        combo_id: comboId,
+        ticker: ref.symbol,
+        asset_class: ref.assetClass,
+        symbol: ref.symbol,
+        underlying: ref.underlying ?? null,
+        expiry: ref.expiry ?? null,
+        strike: ref.strike ?? null,
+        option_type: ref.optionType ?? null,
+        side: closeSide,
+        direction: closeSide === "BUY" ? "LONG" : "SHORT",
+        shares: Number(pos.shares),
+        multiplier: Number(pos.multiplier),
+        order_type: "MARKET",
+        status: "FILLED",
+        price: closePrice,
+        filled_at: new Date().toISOString(),
+      });
+    } catch {
+      await db.from("paper_positions").delete().eq("id", pos.id);
+      closed++;
+    }
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  return { realized, legs: closed };
 }
 
 /* ─── Pending-order evaluation (triggered fills) ─── */

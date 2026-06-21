@@ -151,7 +151,9 @@ export function pnlUsd(
   }
 }
 
-/** Whether shorting is allowed for an asset class in this sim. */
+/** Whether shorting is allowed for an asset class in this sim.
+ *  Options can now be sold-to-open (covered calls, credit spreads, etc.); the
+ *  collateral for a short option is held at the combo level (see paper-engine). */
 export function shortAllowed(assetClass: AssetClass): boolean {
-  return assetClass === "FUTURE" || assetClass === "FOREX";
+  return assetClass === "FUTURE" || assetClass === "FOREX" || assetClass === "OPTION";
 }

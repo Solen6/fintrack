@@ -2,10 +2,27 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/format";
+import { recognizeStrategy } from "@/lib/option-strategies";
+import type { Leg } from "@/lib/options-math";
 import { TradeTicket } from "./TradeTicket";
-import { OptionsChain } from "./OptionsChain";
+import { OptionsBuilder } from "@/components/options/OptionsBuilder";
 import { EquityCurve } from "./EquityCurve";
 import type { AssetClass, MarginSummary, PaperAccountMeta, PaperOrder, PaperPosition } from "@/lib/paper-types";
+
+/** Reconstruct a recognizable label for a combo from its position legs. */
+function comboLabel(rows: PaperPosition[]): string {
+  const underlying = rows[0]?.underlying ?? rows[0]?.symbol ?? "";
+  const legs: Leg[] = rows.map((r) => ({
+    type: r.assetClass === "STOCK" ? "stock" : r.optionType === "CALL" ? "call" : "put",
+    side: r.direction === "LONG" ? "long" : "short",
+    strike: r.strike ?? r.avgCost,
+    expiry: 0,
+    qty: r.qty,
+    premium: r.avgCost,
+    iv: 0,
+  }));
+  return `${underlying} · ${recognizeStrategy(legs) ?? "Strategy"}`;
+}
 
 interface State {
   account: PaperAccountMeta;
@@ -123,6 +140,44 @@ export function PaperClient() {
     } finally { setBusy(false); }
   }
 
+  /* ── Place a multi-leg option strategy as one combo (Options builder) ── */
+  const placeStrategy = useCallback(
+    async (legs: Leg[], info: { underlying: string; strategyName: string; netCost: number }) => {
+      try {
+        const res = await fetch("/api/paper/combo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            accountId,
+            underlying: info.underlying,
+            strategyName: info.strategyName,
+            legs: legs.map((l) => ({ type: l.type, side: l.side, strike: l.strike, qty: l.qty, expiry: l.expiry })),
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok) return { ok: false, msg: json.error ?? "Trade rejected." };
+        reload();
+        const c = json.combo;
+        const cost = c.netCost < 0 ? `+${formatCurrency(Math.abs(c.netCost))} credit` : `${formatCurrency(c.netCost)} debit`;
+        const reserved = c.margin > 0 ? ` · ${formatCurrency(c.margin)} reserved` : "";
+        return { ok: true, msg: `${info.strategyName} placed · ${cost}${reserved}.` };
+      } catch (e) {
+        return { ok: false, msg: e instanceof Error ? e.message : "Trade failed." };
+      }
+    },
+    [accountId, reload],
+  );
+
+  async function closeStrategy(comboId: string, label: string) {
+    if (!state || !window.confirm(`Close ${label} at market?`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/paper/combo?comboId=${encodeURIComponent(comboId)}`, { method: "DELETE" });
+      if (!res.ok) { alert((await res.json()).error); return; }
+      reload();
+    } finally { setBusy(false); }
+  }
+
   if (loading && !state) {
     return (
       <div className="flex-1 overflow-y-auto px-6 py-6">
@@ -151,8 +206,21 @@ export function PaperClient() {
   const s = state.summary;
   const pending = state.orders.filter((o) => o.status === "PENDING");
   const history = state.orders.filter((o) => o.status !== "PENDING");
+  // Combos (multi-leg strategies) render together; everything else groups by class.
+  const comboMap = new Map<string, PaperPosition[]>();
+  const singles: PaperPosition[] = [];
+  for (const p of state.positions) {
+    if (p.comboId) {
+      const arr = comboMap.get(p.comboId) ?? [];
+      arr.push(p);
+      comboMap.set(p.comboId, arr);
+    } else {
+      singles.push(p);
+    }
+  }
+  const combos = [...comboMap.entries()].map(([id, rows]) => ({ id, rows }));
   const grouped = CLASS_ORDER
-    .map((c) => ({ cls: c, rows: state.positions.filter((p) => p.assetClass === c) }))
+    .map((c) => ({ cls: c, rows: singles.filter((p) => p.assetClass === c) }))
     .filter((g) => g.rows.length > 0);
 
   return (
@@ -212,15 +280,19 @@ export function PaperClient() {
         </div>
 
         {assetClass === "OPTION" ? (
-          /* ── Options: full-width chain builder ── */
+          /* ── Options: the same strategy builder as the Options tab, now tradeable ── */
           <div className="flex flex-col gap-4">
-            <OptionsChain accountId={state.account.id} onPlaced={reload} />
+            <div className="rounded-md border border-border overflow-hidden flex flex-col" style={{ height: 820 }}>
+              <OptionsBuilder trade={{ onPlaceTrade: placeStrategy }} />
+            </div>
             <PositionsAndOrders
+              combos={combos}
               grouped={grouped}
               pending={pending}
               history={history}
               busy={busy}
               closePosition={closePosition}
+              closeStrategy={closeStrategy}
               cancelOrder={cancelOrder}
             />
           </div>
@@ -233,11 +305,13 @@ export function PaperClient() {
             <div className="lg:col-span-2 flex flex-col gap-4">
               <EquityCurve accountId={state.account.id} refreshKey={refreshKey} />
               <PositionsAndOrders
+                combos={combos}
                 grouped={grouped}
                 pending={pending}
                 history={history}
                 busy={busy}
                 closePosition={closePosition}
+                closeStrategy={closeStrategy}
                 cancelOrder={cancelOrder}
               />
             </div>
@@ -249,18 +323,22 @@ export function PaperClient() {
 }
 
 function PositionsAndOrders({
+  combos,
   grouped,
   pending,
   history,
   busy,
   closePosition,
+  closeStrategy,
   cancelOrder,
 }: {
+  combos: { id: string; rows: PaperPosition[] }[];
   grouped: { cls: AssetClass; rows: PaperPosition[] }[];
   pending: PaperOrder[];
   history: PaperOrder[];
   busy: boolean;
   closePosition: (p: PaperPosition) => void;
+  closeStrategy: (comboId: string, label: string) => void;
   cancelOrder: (id: string) => void;
 }) {
   return (
@@ -268,10 +346,45 @@ function PositionsAndOrders({
       {/* positions */}
       <section className="rounded-md border border-border bg-card p-4">
         <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Open Positions</h2>
-        {grouped.length === 0 ? (
+        {combos.length === 0 && grouped.length === 0 ? (
           <p className="text-sm text-muted-foreground py-2">No open positions — place your first paper trade.</p>
         ) : (
           <div className="overflow-x-auto flex flex-col gap-4">
+            {/* multi-leg strategies */}
+            {combos.map((c) => {
+              const label = comboLabel(c.rows);
+              const unreal = c.rows.reduce((sum, r) => sum + r.unrealized, 0);
+              return (
+                <div key={c.id} className="rounded-sm border border-border/70" style={{ background: "oklch(0.11 0 0)" }}>
+                  <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-border/60">
+                    <span className="text-sm font-medium text-foreground truncate">{label}</span>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-xs font-mono" style={{ color: unreal >= 0 ? "var(--positive)" : "var(--negative)" }}>
+                        {formatCurrency(unreal)}
+                      </span>
+                      <button onClick={() => closeStrategy(c.id, label)} disabled={busy} className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">Close strategy</button>
+                    </div>
+                  </div>
+                  <table className="w-full text-sm">
+                    <tbody>
+                      {c.rows.map((r) => (
+                        <tr key={r.id} className="border-b border-border/40 last:border-0">
+                          <td className="py-2 px-3 font-mono text-foreground">{r.name}</td>
+                          <td className="py-2 px-2 text-right font-mono text-xs" style={{ color: r.direction === "LONG" ? "var(--positive)" : "var(--negative)" }}>{r.direction}</td>
+                          <td className="py-2 px-2 text-right font-mono text-muted-foreground">×{r.qty}</td>
+                          <td className="py-2 px-2 text-right font-mono text-muted-foreground">{formatCurrency(r.avgCost)}</td>
+                          <td className="py-2 px-2 text-right font-mono text-foreground">
+                            {formatCurrency(r.price)}{!r.livePrice && <span className="text-xs text-muted-foreground" title="Live quote unavailable"> *</span>}
+                          </td>
+                          <td className="py-2 px-3 text-right font-mono" style={{ color: r.unrealized >= 0 ? "var(--positive)" : "var(--negative)" }}>{formatCurrency(r.unrealized)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+            {/* single-leg positions, grouped by asset class */}
             {grouped.map((g) => (
               <div key={g.cls}>
                 <p className="text-xs font-medium text-muted-foreground mb-1">{CLASS_LABEL[g.cls]}</p>

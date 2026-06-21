@@ -23,6 +23,7 @@ export interface InstrumentRef {
 /** A position row as returned to the client (marked to market). */
 export interface PaperPosition extends InstrumentRef {
   id: string;
+  comboId?: string;      // legs of one multi-leg strategy share this
   name: string;
   qty: number;           // shares / contracts / units
   avgCost: number;       // per-unit entry price (premium for options)
