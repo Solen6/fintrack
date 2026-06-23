@@ -13,7 +13,6 @@ const NAV_TABS = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/accounts",  label: "Accounts"  },
   { href: "/news",      label: "News"      },
-  { href: "/market",    label: "Market"    },
   { href: "/calendar",  label: "Calendar"  },
   { href: "/paper",     label: "Paper"     },
   { href: "/options",   label: "Options"   },
