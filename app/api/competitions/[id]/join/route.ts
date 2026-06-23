@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { competitionStatus, joinCompetition, type CompetitionRow } from "@/lib/competitions";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -13,7 +14,12 @@ export async function POST(request: NextRequest, { params }: Ctx) {
 
   const body = await request.json().catch(() => ({}));
 
-  const { data } = await supabase.from("competitions").select("*").eq("id", id).maybeSingle();
+  // Load via service-role: a not-yet-member can't read a private competition
+  // under RLS, but they may join it by presenting the correct invite code
+  // (validated below). The entry/account inserts below run under the user's
+  // own RLS, so this read can't be used to write anyone else's data.
+  const admin = createAdminClient();
+  const { data } = await admin.from("competitions").select("*").eq("id", id).maybeSingle();
   const comp = data as CompetitionRow | null;
   if (!comp) return NextResponse.json({ error: "Competition not found." }, { status: 404 });
   if (competitionStatus(comp) === "ended") {

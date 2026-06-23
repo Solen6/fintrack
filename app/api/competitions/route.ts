@@ -1,11 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { randomBytes } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { careerStandings, joinCompetition, serializeCompetition, type CompetitionRow } from "@/lib/competitions";
 import type { AssetClass } from "@/lib/paper-types";
 
 const ASSET_CLASSES: AssetClass[] = ["STOCK", "OPTION", "FUTURE", "FOREX"];
-const genCode = () => randomBytes(4).toString("hex").toUpperCase().slice(0, 6);
+// 8 hex chars (~4.3B space) — wide enough that guessing an invite code is
+// impractical even without per-endpoint rate limiting.
+const genCode = () => randomBytes(4).toString("hex").toUpperCase();
 
 /* ─── GET: list global competitions + the ones I created/joined, or ?code=lookup ─── */
 export async function GET(request: NextRequest) {
@@ -13,10 +16,13 @@ export async function GET(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  // Invite-code preview (join-by-code flow).
+  // Invite-code preview (join-by-code flow). Resolved with the service-role
+  // client because private competitions are not readable by a not-yet-member
+  // under RLS; possession of the correct code is the authorization here.
   const code = request.nextUrl.searchParams.get("code");
   if (code) {
-    const { data } = await supabase
+    const admin = createAdminClient();
+    const { data } = await admin
       .from("competitions")
       .select("*")
       .eq("invite_code", code.trim().toUpperCase())

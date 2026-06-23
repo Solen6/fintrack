@@ -67,11 +67,25 @@ create index if not exists competitions_scope_idx on competitions (scope);
 
 alter table competitions enable row level security;
 
--- Anyone signed in can browse competitions (needed to discover global contests
--- and to resolve a private invite code). Only the creator can mutate.
+-- Private competitions must NOT be world-readable. invite_code lives on this row,
+-- so a "using (true)" policy would let any signed-in user harvest every private
+-- contest's code via a raw PostgREST select and join uninvited. A user may read a
+-- competition only if it is global, they created it, or they have joined it. The
+-- join-by-code flow (a not-yet-member resolving a private contest) is the one path
+-- that must read an unjoined private row; it does so server-side with the
+-- service-role client (see /api/competitions ?code= and /api/competitions/[id]/join),
+-- which validates the code before exposing anything. Only the creator can mutate.
+-- (No recursion risk: competition_entries' SELECT policy does not reference competitions.)
 drop policy if exists "Public read competitions" on competitions;
-create policy "Public read competitions" on competitions
-  for select using (true);
+drop policy if exists "Read own, global, or joined competitions" on competitions;
+create policy "Read own, global, or joined competitions" on competitions
+  for select using (
+    scope = 'global'
+    or auth.uid() = creator_id
+    or id in (
+      select competition_id from competition_entries where user_id = auth.uid()
+    )
+  );
 
 drop policy if exists "Users create competitions" on competitions;
 create policy "Users create competitions" on competitions
