@@ -98,7 +98,7 @@ function ProfileMenu() {
   const signOut = async () => {
     const supabase = createClient();
     await supabase.auth.signOut();
-    window.location.href = "/login";
+    window.location.href = "/";
   };
 
   return (

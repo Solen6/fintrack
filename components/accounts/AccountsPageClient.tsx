@@ -115,7 +115,7 @@ export function AccountsPageClient() {
       }
       const supabase = createClient();
       await supabase.auth.signOut();
-      window.location.href = "/login";
+      window.location.href = "/";
     } catch {
       setDeleteError("An unexpected error occurred.");
       setDeleting(false);
@@ -322,7 +322,7 @@ export function AccountsPageClient() {
               onClick={async () => {
                 const supabase = createClient();
                 await supabase.auth.signOut();
-                window.location.href = "/login";
+                window.location.href = "/";
               }}
             >
               Sign out
