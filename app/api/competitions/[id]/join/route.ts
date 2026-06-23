@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { checkRateLimit, clientIp, tooManyRequests } from "@/lib/rate-limit";
 import { competitionStatus, joinCompetition, type CompetitionRow } from "@/lib/competitions";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -11,6 +12,10 @@ export async function POST(request: NextRequest, { params }: Ctx) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  // Throttle join attempts per IP — blocks invite-code brute-forcing via join.
+  const rl = await checkRateLimit("invite", `join:${clientIp(request)}`);
+  if (!rl.ok) return tooManyRequests(rl.retryAfterSec);
 
   const body = await request.json().catch(() => ({}));
 

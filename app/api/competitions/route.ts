@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { randomBytes } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { checkRateLimit, clientIp, tooManyRequests } from "@/lib/rate-limit";
 import { careerStandings, joinCompetition, serializeCompetition, type CompetitionRow } from "@/lib/competitions";
 import type { AssetClass } from "@/lib/paper-types";
 
@@ -21,6 +22,10 @@ export async function GET(request: NextRequest) {
   // under RLS; possession of the correct code is the authorization here.
   const code = request.nextUrl.searchParams.get("code");
   if (code) {
+    // Throttle invite-code lookups per IP to kill brute-force guessing.
+    const rl = await checkRateLimit("invite", `code:${clientIp(request)}`);
+    if (!rl.ok) return tooManyRequests(rl.retryAfterSec);
+
     const admin = createAdminClient();
     const { data } = await admin
       .from("competitions")
@@ -89,6 +94,10 @@ export async function POST(request: NextRequest) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  // Anti-spam: cap how many competitions one user can create per hour.
+  const rl = await checkRateLimit("createCompetition", `create:${user.id}`);
+  if (!rl.ok) return tooManyRequests(rl.retryAfterSec);
 
   const body = await request.json();
   const name = String(body.name ?? "").trim().slice(0, 60);
