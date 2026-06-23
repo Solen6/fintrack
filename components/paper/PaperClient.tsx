@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { recognizeStrategy } from "@/lib/option-strategies";
@@ -27,6 +28,7 @@ function comboLabel(rows: PaperPosition[]): string {
 interface State {
   account: PaperAccountMeta;
   accounts: PaperAccountMeta[];
+  competitionAccounts: { id: string; name: string; competitionId: string }[];
   positions: PaperPosition[];
   orders: PaperOrder[];
   realizedTotal: number;
@@ -42,7 +44,7 @@ const ASSET_TABS: { key: AssetClass; label: string }[] = [
   { key: "FOREX", label: "Forex" },
 ];
 
-export function PaperClient() {
+export function PaperClient({ initialAccountId }: { initialAccountId?: string | null } = {}) {
   const [state, setState] = useState<State | null>(null);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -68,7 +70,7 @@ export function PaperClient() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(initialAccountId ?? undefined); }, [load, initialAccountId]);
 
   const reload = useCallback(() => { load(accountId); setRefreshKey((k) => k + 1); }, [load, accountId]);
 
@@ -204,6 +206,10 @@ export function PaperClient() {
   }
 
   const s = state.summary;
+  // A competition sandbox isn't in the (main-only) account list — selecting one
+  // shows a COMPETITION badge and hides account management (no reset/delete).
+  const isComp = !state.accounts.some((a) => a.id === state.account.id);
+  const compId = state.competitionAccounts.find((a) => a.id === state.account.id)?.competitionId;
   const pending = state.orders.filter((o) => o.status === "PENDING");
   const history = state.orders.filter((o) => o.status !== "PENDING");
   // Combos (multi-leg strategies) render together; everything else groups by class.
@@ -226,7 +232,7 @@ export function PaperClient() {
   return (
     <div className="flex-1 overflow-y-auto px-6 py-6">
       <div className="mx-auto max-w-[1400px] flex flex-col gap-5">
-        {/* header: account switcher + actions */}
+        {/* header: account switcher (main + competition accounts) + actions */}
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={state.account.id}
@@ -234,14 +240,28 @@ export function PaperClient() {
             disabled={busy}
             className="rounded-sm border border-input bg-card px-3 py-1.5 text-sm font-medium text-foreground outline-none focus:border-ring"
           >
-            {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            <optgroup label="Accounts">
+              {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </optgroup>
+            {state.competitionAccounts.length > 0 && (
+              <optgroup label="Competitions">
+                {state.competitionAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </optgroup>
+            )}
           </select>
-          <div className="flex items-center gap-1 text-xs">
-            <HdrBtn onClick={createAccount} disabled={busy}>New</HdrBtn>
-            <HdrBtn onClick={renameAccount} disabled={busy}>Rename</HdrBtn>
-            <HdrBtn onClick={resetAccount} disabled={busy}>Reset</HdrBtn>
-            <HdrBtn onClick={deleteAccount} disabled={busy || state.accounts.length <= 1}>Delete</HdrBtn>
-          </div>
+          {isComp ? (
+            <>
+              <span className="text-[10px] font-medium px-2 py-0.5 rounded-sm" style={{ background: "oklch(0.16 0.04 74)", color: "var(--primary)" }}>COMPETITION</span>
+              {compId && <Link href={`/competitions?id=${compId}`} className="text-xs text-muted-foreground hover:text-foreground transition-colors">View standings →</Link>}
+            </>
+          ) : (
+            <div className="flex items-center gap-1 text-xs">
+              <HdrBtn onClick={createAccount} disabled={busy}>New</HdrBtn>
+              <HdrBtn onClick={renameAccount} disabled={busy}>Rename</HdrBtn>
+              <HdrBtn onClick={resetAccount} disabled={busy}>Reset</HdrBtn>
+              <HdrBtn onClick={deleteAccount} disabled={busy || state.accounts.length <= 1}>Delete</HdrBtn>
+            </div>
+          )}
           {s.marginCall && (
             <span className="ml-auto text-xs font-medium px-2.5 py-1 rounded-sm" style={{ background: "oklch(0.16 0.05 25)", color: "var(--negative)" }}>
               ⚠ Margin Call — equity below maintenance

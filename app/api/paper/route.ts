@@ -1,14 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { priceInstrument } from "@/lib/paper-pricing";
 import { multiplierFor } from "@/lib/contract-specs";
 import {
   evaluateFills,
   executeFill,
   instrumentName,
   loadAccountState,
+  priceForOrder,
   resolveAccount,
 } from "@/lib/paper-engine";
+import { assertTradeAllowed, refreshEntryScore } from "@/lib/competitions";
 import type { AssetClass, InstrumentRef, OptionType, OrderType, Side } from "@/lib/paper-types";
 
 const ASSET_CLASSES: AssetClass[] = ["STOCK", "OPTION", "FUTURE", "FOREX"];
@@ -33,6 +34,13 @@ export async function GET(request: NextRequest) {
     const accountId = request.nextUrl.searchParams.get("account");
     const account = await resolveAccount(supabase, user.id, accountId);
     const state = await loadAccountState(supabase, user.id, account);
+
+    // Keep the leaderboard fresh between daily cron runs: snapshot + rescore this
+    // entry from the equity we just computed. Non-fatal if the service role isn't set.
+    if (account.competition_id) {
+      try { await refreshEntryScore(account, state.summary.equity, state.summary.cash); } catch { /* non-fatal */ }
+    }
+
     return NextResponse.json(state);
   } catch (e) {
     return tablesMissing(e instanceof Error ? e.message : "Unknown error");
@@ -87,6 +95,14 @@ export async function POST(request: NextRequest) {
 
   try {
     const account = await resolveAccount(supabase, user.id, body.accountId);
+
+    // If this is a competition sandbox, enforce its window + allowed asset classes.
+    try {
+      await assertTradeAllowed(supabase, account, assetClass);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Trade not allowed." }, { status: 422 });
+    }
+
     const direction = side === "BUY" ? "LONG" : "SHORT";
     const multiplier = multiplierFor(assetClass, ref.symbol);
 
@@ -107,12 +123,17 @@ export async function POST(request: NextRequest) {
     };
 
     if (orderType === "MARKET") {
-      const priced = await priceInstrument(ref);
-      if (!priced) return NextResponse.json({ error: `No live price for "${ref.symbol}" — check the symbol/contract.` }, { status: 422 });
+      // Side-aware fill price; also rejects opening an illiquid option contract.
+      let fillPrice: number;
+      try {
+        fillPrice = await priceForOrder(supabase, account.id, ref, side, qty);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : `No live price for "${ref.symbol}".` }, { status: 422 });
+      }
 
       let result;
       try {
-        result = await executeFill(supabase, account, ref, side, qty, priced.price);
+        result = await executeFill(supabase, account, ref, side, qty, fillPrice);
       } catch (e) {
         return NextResponse.json({ error: e instanceof Error ? e.message : "Order rejected." }, { status: 422 });
       }
@@ -121,14 +142,14 @@ export async function POST(request: NextRequest) {
         ...orderBase,
         order_type: "MARKET",
         status: "FILLED",
-        price: priced.price,
+        price: fillPrice,
         filled_at: new Date().toISOString(),
       }).select().single();
       if (orderErr) throw new Error(orderErr.message);
 
       return NextResponse.json({
         filled: {
-          id: order?.id, symbol: ref.symbol, side, qty, price: priced.price,
+          id: order?.id, symbol: ref.symbol, side, qty, price: fillPrice,
           notional: result.notional, realized: result.realized,
         },
       });

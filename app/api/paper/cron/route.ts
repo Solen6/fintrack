@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { captureSnapshot, evaluateFills, expireOptions } from "@/lib/paper-engine";
+import { finalizeEndedCompetitions, scoreUserEntries } from "@/lib/competitions";
 
 /**
  * Scheduled trigger: fills pending limit/stop orders and snapshots equity for
@@ -25,16 +26,25 @@ async function run() {
 
   let filled = 0;
   let expired = 0;
+  let scored = 0;
   for (const uid of userIds) {
     try {
       expired += await expireOptions(db, uid);
       filled += await evaluateFills(db, uid);
       await captureSnapshot(db, uid);
+      // Score competition entries AFTER the snapshot so it reads today's equity.
+      scored += await scoreUserEntries(db, uid);
     } catch {
       // Skip a failing user rather than abort the whole run.
     }
   }
-  return { users: userIds.length, filled, expired };
+
+  // Finalize any ended competitions AFTER scoring, so champions/records use the
+  // freshest returns. Runs once per competition (guarded by finalized_at).
+  let finalized = 0;
+  try { finalized = await finalizeEndedCompetitions(db); } catch { /* non-fatal */ }
+
+  return { users: userIds.length, filled, expired, scored, finalized };
 }
 
 export async function GET(request: NextRequest) {

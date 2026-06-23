@@ -21,7 +21,8 @@ import {
   FUTURES_SPECS,
   FOREX_SPECS,
 } from "./contract-specs";
-import { priceInstrument } from "./paper-pricing";
+import { priceInstrument, priceInstrumentForFill, assessOptionLiquidity } from "./paper-pricing";
+import { mapLimit } from "./async";
 import {
   aggregatePayoff,
   priceAxisMax,
@@ -50,6 +51,7 @@ export interface AccountRow {
   cash: number;
   starting_cash: number;
   margin_used: number;
+  competition_id: string | null;   // null = a normal/main account
 }
 interface PositionRow {
   id: string;
@@ -163,8 +165,25 @@ export function instrumentName(ref: InstrumentRef): string {
 }
 
 /* ─── Accounts ─── */
+
+/**
+ * The user's MAIN (non-competition) accounts — what the Paper UI shows, the
+ * account-limit counts, and reset/delete operate on. Auto-creates "Main" the
+ * first time. Competition sandboxes are deliberately excluded so they can't be
+ * reset (anti-restart), deleted, or pollute the account switcher.
+ */
 export async function listAccounts(db: DB, userId: string): Promise<AccountRow[]> {
-  const { data } = await db.from("paper_accounts").select("*").eq("user_id", userId).order("created_at");
+  let { data, error } = await db
+    .from("paper_accounts")
+    .select("*")
+    .eq("user_id", userId)
+    .is("competition_id", null)
+    .order("created_at");
+  // Pre-competitions migration the competition_id column doesn't exist yet —
+  // fall back to all accounts so normal paper trading keeps working.
+  if (error) {
+    ({ data } = await db.from("paper_accounts").select("*").eq("user_id", userId).order("created_at"));
+  }
   let rows = (data ?? []) as AccountRow[];
   if (rows.length === 0) {
     const { data: created, error } = await db
@@ -183,13 +202,28 @@ export async function listAccounts(db: DB, userId: string): Promise<AccountRow[]
   return rows;
 }
 
-/** Resolve a requested account id to one the user owns, else their first (Main). */
+/** Every account for a user, including competition sandboxes (for the cron). */
+export async function listAllAccounts(db: DB, userId: string): Promise<AccountRow[]> {
+  const { data } = await db.from("paper_accounts").select("*").eq("user_id", userId).order("created_at");
+  return (data ?? []) as AccountRow[];
+}
+
+/**
+ * Resolve a requested account id to one the user owns (main OR competition),
+ * else default to their first main account. Looking the id up directly (rather
+ * than scanning main accounts) is what lets competition sandboxes be traded.
+ */
 export async function resolveAccount(db: DB, userId: string, accountId?: string | null): Promise<AccountRow> {
-  const accounts = await listAccounts(db, userId);
   if (accountId) {
-    const match = accounts.find((a) => a.id === accountId);
-    if (match) return match;
+    const { data } = await db
+      .from("paper_accounts")
+      .select("*")
+      .eq("id", accountId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (data) return data as AccountRow;
   }
+  const accounts = await listAccounts(db, userId);
   return accounts[0];
 }
 
@@ -284,6 +318,54 @@ function computeFill(
   const newMargin = newQtyAbs < EPS ? 0 : initialMarginFor(ref, price, newQtyAbs);
   const marginDelta = newMargin - (current?.margin_held ?? 0);
   return { newQtyAbs, newAvg, newDir, newMargin, cashDelta, realized, marginDelta };
+}
+
+/* ─── Order pricing + options liquidity guard ─── */
+
+async function getPositionRow(db: DB, accountId: string, symbol: string): Promise<PositionRow | null> {
+  const { data } = await db
+    .from("paper_positions")
+    .select("*")
+    .eq("account_id", accountId)
+    .eq("symbol", symbol)
+    .maybeSingle();
+  return (data as PositionRow | null) ?? null;
+}
+
+/** Does an order OPEN or INCREASE exposure (vs purely reduce/close an existing one)? */
+function increasesExposure(current: PositionRow | null, side: Side, qty: number): boolean {
+  if (!current) return true;
+  const curSigned = current.direction === "LONG" ? current.shares : -current.shares;
+  const orderSigned = side === "BUY" ? qty : -qty;
+  if (Math.sign(orderSigned) === Math.sign(curSigned)) return true;   // adding to the same side
+  return qty > current.shares + EPS;                                   // opposite side, big enough to flip → new exposure
+}
+
+/**
+ * Price an order for execution. Options fill side-aware (buy lifts the ask, sell
+ * hits the bid, plus slippage); other assets fill at their single live quote.
+ * When the order OPENS option exposure the contract must clear the liquidity
+ * guard, else the fill is rejected — this is what stops a thin/stale contract
+ * from being bought at a fantasy mid and marked into instant P/L. Closing and
+ * expiring an existing position is never blocked (you can always exit).
+ */
+export async function priceForOrder(
+  db: DB,
+  accountId: string,
+  ref: InstrumentRef,
+  side: Side,
+  qty: number
+): Promise<number> {
+  const priced = await priceInstrumentForFill(ref, side);
+  if (!priced) throw new Error(`No live price for "${ref.symbol}" — check the symbol/contract.`);
+  if (ref.assetClass === "OPTION" && priced.contract) {
+    const current = await getPositionRow(db, accountId, ref.symbol);
+    if (increasesExposure(current, side, qty)) {
+      const a = assessOptionLiquidity(priced.contract);
+      if (!a.ok) throw new Error(`Can't open ${instrumentName(ref)} — ${a.reason}.`);
+    }
+  }
+  return priced.price;
 }
 
 /**
@@ -385,6 +467,7 @@ export async function executeFill(
 export interface AccountState {
   account: PaperAccountMeta;
   accounts: PaperAccountMeta[];
+  competitionAccounts: { id: string; name: string; competitionId: string }[];
   positions: PaperPosition[];
   orders: PaperOrder[];
   realizedTotal: number;
@@ -394,6 +477,22 @@ export interface AccountState {
 export async function loadAccountState(db: DB, userId: string, account: AccountRow): Promise<AccountState> {
   const allAccounts = await listAccounts(db, userId);
 
+  // Competition sandboxes, surfaced separately so the Paper account switcher can
+  // offer them (under their own group) without letting them be reset/deleted.
+  let competitionAccounts: { id: string; name: string; competitionId: string }[] = [];
+  {
+    const { data, error } = await db
+      .from("paper_accounts")
+      .select("id, name, competition_id")
+      .eq("user_id", userId)
+      .not("competition_id", "is", null)
+      .order("created_at");
+    if (!error) {
+      competitionAccounts = ((data ?? []) as { id: string; name: string; competition_id: string }[])
+        .map((a) => ({ id: a.id, name: a.name, competitionId: a.competition_id }));
+    }
+  }
+
   const [{ data: posData }, { data: orderData }, { data: realizedData }] = await Promise.all([
     db.from("paper_positions").select("*").eq("account_id", account.id).order("asset_class").order("symbol"),
     db.from("paper_orders").select("*").eq("account_id", account.id).order("created_at", { ascending: false }).limit(80),
@@ -401,12 +500,14 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
   ]);
 
   const posRows = (posData ?? []) as PositionRow[];
+  // Mark every position in parallel — this is a pure read, so order doesn't
+  // matter. (Was a sequential loop with a 40ms sleep per position, which made a
+  // 10-leg account take seconds instead of one round-trip.)
   const priceMap = new Map<string, { price: number; livePrice: boolean }>();
-  for (const p of posRows) {
-    const priced = await priceInstrument(rowToRef(p));
-    priceMap.set(p.symbol, priced ?? { price: Number(p.avg_cost), livePrice: false });
-    await new Promise((r) => setTimeout(r, 40));
-  }
+  const priced = await mapLimit(posRows, 8, (p) => priceInstrument(rowToRef(p)));
+  posRows.forEach((p, i) => {
+    priceMap.set(p.symbol, priced[i] ?? { price: Number(p.avg_cost), livePrice: false });
+  });
 
   let positionsValue = 0;
   let unrealizedTotal = 0;
@@ -517,6 +618,7 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
   return {
     account: { id: account.id, name: account.name },
     accounts: allAccounts.map((a) => ({ id: a.id, name: a.name })),
+    competitionAccounts,
     positions,
     orders,
     realizedTotal,
@@ -559,11 +661,12 @@ export async function expireOptions(db: DB, userId: string): Promise<number> {
   let count = 0;
   for (const pos of expired) {
     const ref = rowToRef(pos);
-    const priced = await priceInstrument(ref);
-    const closePrice = priced?.price ?? 0;
     // Close toward zero: a long is sold, a short is bought back (worthless = $0,
-    // so a short option that expires OTM keeps the full premium).
+    // so a short option that expires OTM keeps the full premium). Side-aware
+    // exit price; never liquidity-guarded — a forced expiry must always settle.
     const closeSide: Side = pos.direction === "LONG" ? "SELL" : "BUY";
+    const priced = await priceInstrumentForFill(ref, closeSide);
+    const closePrice = priced?.price ?? 0;
 
     const account = await resolveAccount(db, userId, pos.account_id);
     try {
@@ -608,11 +711,17 @@ export async function openCombo(
 ): Promise<ComboResult> {
   if (legInputs.length === 0) throw new Error("No legs to trade.");
 
-  // Price every leg first; bail out if any leg has no live quote.
+  // Price every leg first (side-aware: long legs lift the ask, short legs hit
+  // the bid). A combo always OPENS exposure, so every option leg must clear the
+  // liquidity guard; bail out before any fill if a leg has no price or is too thin.
   const priced: { input: ComboLegInput; price: number }[] = [];
   for (const input of legInputs) {
-    const p = await priceInstrument(input.ref);
+    const p = await priceInstrumentForFill(input.ref, input.side);
     if (!p) throw new Error(`No live price for ${instrumentName(input.ref)} — can't fill the strategy.`);
+    if (input.ref.assetClass === "OPTION" && p.contract) {
+      const a = assessOptionLiquidity(p.contract);
+      if (!a.ok) throw new Error(`Can't open ${instrumentName(input.ref)} — ${a.reason}.`);
+    }
     priced.push({ input, price: p.price });
     await new Promise((r) => setTimeout(r, 40));
   }
@@ -670,9 +779,9 @@ export async function closeCombo(db: DB, userId: string, comboId: string): Promi
   let closed = 0;
   for (const pos of rows) {
     const ref = rowToRef(pos);
-    const priced = await priceInstrument(ref);
-    const closePrice = priced?.price ?? 0;
     const closeSide: Side = pos.direction === "LONG" ? "SELL" : "BUY";
+    const priced = await priceInstrumentForFill(ref, closeSide);  // side-aware exit; no open-guard on closes
+    const closePrice = priced?.price ?? 0;
     const account = await resolveAccount(db, userId, pos.account_id);
     try {
       const r = await executeFill(db, account, ref, closeSide, Number(pos.shares), closePrice, comboId);
@@ -733,19 +842,22 @@ export async function evaluateFills(db: DB, userId: string): Promise<number> {
   let filled = 0;
   for (const o of pending) {
     const ref = rowToRef(o);
-    const priced = await priceInstrument(ref);
-    if (!priced) continue;
-    if (!isTriggered(o, priced.price)) continue;
+    // Trigger off the MARK; fill at the side-aware price. priceForOrder also
+    // rejects an opening option leg whose contract is too illiquid.
+    const mark = await priceInstrument(ref);
+    if (!mark) continue;
+    if (!isTriggered(o, mark.price)) continue;
 
     const account = await resolveAccount(db, userId, o.account_id);
     try {
-      await executeFill(db, account, ref, o.side, Number(o.shares), priced.price);
+      const fillPrice = await priceForOrder(db, account.id, ref, o.side, Number(o.shares));
+      await executeFill(db, account, ref, o.side, Number(o.shares), fillPrice);
       await db.from("paper_orders").update({
-        status: "FILLED", price: priced.price, filled_at: new Date().toISOString(),
+        status: "FILLED", price: fillPrice, filled_at: new Date().toISOString(),
       }).eq("id", o.id);
       filled++;
     } catch {
-      // Couldn't fill (e.g. buying power) — reject so it stops re-trying.
+      // Couldn't fill (buying power, or too illiquid to open) — reject so it stops re-trying.
       await db.from("paper_orders").update({ status: "REJECTED" }).eq("id", o.id);
     }
     await new Promise((r) => setTimeout(r, 40));
@@ -755,7 +867,9 @@ export async function evaluateFills(db: DB, userId: string): Promise<number> {
 
 /* ─── Equity snapshots (per account, idempotent per day) ─── */
 export async function captureSnapshot(db: DB, userId: string): Promise<void> {
-  const accounts = await listAccounts(db, userId);
+  // ALL accounts, including competition sandboxes — their equity curve is what
+  // the leaderboard's return + risk-adjusted scores are computed from.
+  const accounts = await listAllAccounts(db, userId);
   // Key to the US market day (Eastern), not UTC — an evening capture in a US
   // timezone would otherwise roll over to "tomorrow" and plot a phantom date.
   const today = new Intl.DateTimeFormat("en-CA", {

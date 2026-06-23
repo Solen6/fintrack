@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { yahooNextDividend } from "@/lib/yahoo";
+import { mapLimit } from "@/lib/async";
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
 
@@ -18,8 +19,10 @@ export interface CalendarEvent {
 // Per-user in-memory cache
 const earningsCache = new Map<string, { events: CalendarEvent[]; ts: number }>();
 const dividendCache = new Map<string, { events: CalendarEvent[]; ts: number }>();
+const splitCache = new Map<string, { events: CalendarEvent[]; ts: number }>();
 const EARNINGS_TTL = 30 * 60 * 1000;
 const DIVIDEND_TTL = 60 * 60 * 1000;
+const SPLIT_TTL = 6 * 60 * 60 * 1000; // splits rarely change; was uncached → re-fetched every load
 
 // ── Macro calendar (live from TradingView) ─────────────────────────────────
 // importance: 1 = high, 0 = medium, -1 = low
@@ -150,44 +153,32 @@ export async function GET() {
   const today = new Date().toISOString().split("T")[0];
   const endDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
 
-  // Earnings — 30 min cache per user
-  let earningsEvents: CalendarEvent[] = [];
-  const earningsCached = earningsCache.get(user.id);
-  if (earningsCached && Date.now() - earningsCached.ts < EARNINGS_TTL) {
-    earningsEvents = earningsCached.events;
-  } else {
-    for (const ticker of tickers) {
-      const events = await fetchEarnings(ticker, today, endDate, nameMap[ticker] ?? ticker);
-      earningsEvents.push(...events);
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    earningsCache.set(user.id, { events: earningsEvents, ts: Date.now() });
-  }
+  // Reads a per-user cache, else fans the per-ticker fetch out in parallel
+  // (was three sequential loops with a 50ms sleep each — the main slowness).
+  const cachedOrFetch = async (
+    cache: Map<string, { events: CalendarEvent[]; ts: number }>,
+    ttl: number,
+    fetchOne: (ticker: string) => Promise<CalendarEvent[]>,
+  ): Promise<CalendarEvent[]> => {
+    const hit = cache.get(user.id);
+    if (hit && Date.now() - hit.ts < ttl) return hit.events;
+    const lists = await mapLimit(tickers, 8, fetchOne);
+    const events = lists.flat();
+    cache.set(user.id, { events, ts: Date.now() });
+    return events;
+  };
 
-  // Dividends — 1 hr cache per user. Yahoo quoteSummary forward ex/pay date.
-  // ETF distributions (SPDR sector funds) aren't in any free feed, so they only
-  // appear once Yahoo posts the ex-date around ex-day — accepted free-data lag.
-  let dividendEvents: CalendarEvent[] = [];
-  const dividendCached = dividendCache.get(user.id);
-  if (dividendCached && Date.now() - dividendCached.ts < DIVIDEND_TTL) {
-    dividendEvents = dividendCached.events;
-  } else {
-    for (const ticker of tickers) {
-      dividendEvents.push(...(await fetchDividends(ticker, today, endDate)));
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    dividendCache.set(user.id, { events: dividendEvents, ts: Date.now() });
-  }
-
-  const macroEvents = await fetchMacroEvents(today, endDate);
-
-  // Splits / consolidations (Yahoo events). Surfaces effective/declared actions
-  // in the window; the daily cron applies them to holdings on the day they hit.
-  const splitEvents: CalendarEvent[] = [];
-  for (const ticker of tickers) {
-    splitEvents.push(...(await fetchSplits(ticker, today, endDate)));
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  // Run all four groups concurrently (they were sequential).
+  // Dividends: Yahoo quoteSummary forward ex/pay date. ETF distributions (SPDR
+  // sector funds) aren't in any free feed, so they only appear once Yahoo posts
+  // the ex-date around ex-day — accepted free-data lag.
+  // Splits: the daily cron applies them to holdings on the day they hit.
+  const [earningsEvents, dividendEvents, macroEvents, splitEvents] = await Promise.all([
+    cachedOrFetch(earningsCache, EARNINGS_TTL, (t) => fetchEarnings(t, today, endDate, nameMap[t] ?? t)),
+    cachedOrFetch(dividendCache, DIVIDEND_TTL, (t) => fetchDividends(t, today, endDate)),
+    fetchMacroEvents(today, endDate),
+    cachedOrFetch(splitCache, SPLIT_TTL, (t) => fetchSplits(t, today, endDate)),
+  ]);
 
   const all = [...macroEvents, ...earningsEvents, ...dividendEvents, ...splitEvents].sort((a, b) =>
     a.date.localeCompare(b.date)

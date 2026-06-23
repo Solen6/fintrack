@@ -18,6 +18,7 @@ const NAV_TABS = [
   { href: "/paper",     label: "Paper"     },
   { href: "/options",   label: "Options"   },
   { href: "/futures",   label: "Futures"   },
+  { href: "/competitions", label: "Competitions" },
 ];
 
 export function TopNav() {

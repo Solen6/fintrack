@@ -9,7 +9,8 @@ import {
   resolveAccount,
   type ComboLegInput,
 } from "@/lib/paper-engine";
-import type { InstrumentRef, OptionType, Side } from "@/lib/paper-types";
+import { assertTradeAllowed } from "@/lib/competitions";
+import type { AssetClass, InstrumentRef, OptionType, Side } from "@/lib/paper-types";
 
 /* Shape of a leg sent from the strategy builder (options-math Leg). */
 interface BuilderLeg {
@@ -71,6 +72,11 @@ export async function POST(request: NextRequest) {
 
   try {
     const account = await resolveAccount(supabase, user.id, body.accountId);
+
+    // Competition sandbox: enforce window + allowed asset classes for every leg.
+    const classes = new Set<AssetClass>(legInputs.map((l) => l.ref.assetClass));
+    for (const ac of classes) await assertTradeAllowed(supabase, account, ac);
+
     const comboId = randomUUID();
     const result = await openCombo(supabase, account, legInputs, comboId);
 

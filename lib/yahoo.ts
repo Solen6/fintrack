@@ -134,8 +134,18 @@ export interface YahooChain {
   puts: YahooContract[];
 }
 
+/** Short-TTL chain cache. A multi-leg position prices several contracts off the
+ *  same (underlying, expiry) chain — without this each leg re-downloads the full
+ *  chain (with its own cookie/crumb handshake). Keyed by symbol+date. */
+const chainCache = new Map<string, { data: YahooChain; ts: number }>();
+const CHAIN_TTL = 30_000;
+
 /** Fetch one option chain for a symbol; pass a unix-second `date` to pick an expiry. */
 export async function fetchOptionChain(symbol: string, date?: number): Promise<YahooChain> {
+  const cacheKey = `${symbol.trim().toUpperCase()}:${date ?? "first"}`;
+  const hit = chainCache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < CHAIN_TTL) return hit.data;
+
   const dateParam = date ? `&date=${date}` : "";
   const build = (crumb: string) =>
     `https://query1.finance.yahoo.com/v7/finance/options/${encodeURIComponent(symbol)}?crumb=${encodeURIComponent(crumb)}${dateParam}`;
@@ -152,12 +162,14 @@ export async function fetchOptionChain(symbol: string, date?: number): Promise<Y
   const result = json?.optionChain?.result?.[0];
   if (!result) throw new Error(`No option chain for ${symbol}`);
   const opt = result.options?.[0] ?? {};
-  return {
+  const chain: YahooChain = {
     quote: result.quote ?? {},
     expirationDates: result.expirationDates ?? [],
     calls: opt.calls ?? [],
     puts: opt.puts ?? [],
   };
+  chainCache.set(cacheKey, { data: chain, ts: Date.now() });
+  return chain;
 }
 
 /* ─── Fund (ETF / mutual-fund) category ───

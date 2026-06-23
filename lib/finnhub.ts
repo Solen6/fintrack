@@ -8,6 +8,8 @@
  * price displayed by Fidelity and most retail brokerages.
  */
 
+import { mapLimit } from "./async";
+
 const UA = "Mozilla/5.0 (compatible; fintrack/1.0)";
 
 export interface FinnhubQuote {
@@ -71,13 +73,10 @@ export async function fetchQuote(ticker: string): Promise<FinnhubQuote | null> {
   }
 }
 
-/** Fetch many quotes with a small stagger (rate-limit safety). */
+/** Fetch many quotes in parallel (bounded concurrency; 60s cache absorbs repeats). */
 export async function fetchQuotes(tickers: string[]): Promise<Record<string, FinnhubQuote>> {
   const quotes: Record<string, FinnhubQuote> = {};
-  for (const t of tickers.slice(0, 30)) {
-    const q = await fetchQuote(t);
-    if (q) quotes[q.ticker] = q;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  const results = await mapLimit(tickers.slice(0, 30), 8, (t) => fetchQuote(t));
+  for (const q of results) if (q) quotes[q.ticker] = q;
   return quotes;
 }

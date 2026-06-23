@@ -7,7 +7,7 @@ import { NextResponse, type NextRequest } from "next/server";
 const LOGIN_ANCHOR = "ft_login_at";
 const MAX_SESSION_MS = 12 * 60 * 60 * 1000;
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
