@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isMarketDay } from "@/lib/market-calendar";
-import { applyCorporateActions } from "@/lib/corporate-actions";
+import { applyCorporateActions, applyCorporateActionsWindow } from "@/lib/corporate-actions";
 
 /**
  * Apply splits / consolidations / dividends effective today to all users'
@@ -10,7 +10,9 @@ import { applyCorporateActions } from "@/lib/corporate-actions";
  * is NOT scheduled separately (keeps us under Hobby-tier cron limits).
  *
  * Secured by CRON_SECRET. Optional ?date=YYYY-MM-DD overrides "today" (for
- * back-testing a known action); ?force=1 ignores the market-closed guard.
+ * back-testing a known action); ?force=1 ignores the market-closed guard;
+ * ?days=N re-scans the N trading days before the target date too (to recover a
+ * dividend Yahoo posted late). Default is the single target date only.
  */
 function authorized(request: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
@@ -26,6 +28,7 @@ export async function GET(request: NextRequest) {
   const url = new URL(request.url);
   const override = url.searchParams.get("date");
   const force = url.searchParams.get("force") === "1";
+  const days = Math.max(0, Math.trunc(Number(url.searchParams.get("days") ?? "0")) || 0);
   const today =
     override ??
     new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
@@ -36,7 +39,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const db = createAdminClient();
-    const summary = await applyCorporateActions(db, today);
+    const summary =
+      days > 0
+        ? await applyCorporateActionsWindow(db, today, days)
+        : await applyCorporateActions(db, today);
     return NextResponse.json({ ok: true, ...summary });
   } catch (e) {
     return NextResponse.json(

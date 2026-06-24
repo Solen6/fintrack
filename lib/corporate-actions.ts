@@ -10,6 +10,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchQuote } from "@/lib/finnhub";
+import { isMarketDay } from "@/lib/market-calendar";
 
 export interface SplitDue {
   ratio: number; // new shares per old share. 2:1 → 2, 1:10 reverse → 0.1
@@ -303,4 +304,44 @@ export async function applyCorporateActions(
   }
 
   return summary;
+}
+
+/**
+ * Re-scan a trailing window of trading days ending at `endDate` (inclusive) and
+ * apply every action effective on each one. Our free data source (Yahoo) often
+ * posts an ETF's ex-dividend 1-2 days AFTER the ex-date, so a same-day-only
+ * check misses it permanently — the dividend lands in the feed on a day no cron
+ * run will ever look at again. Re-checking recent days closes that gap; the
+ * applied_corporate_actions ledger keeps it idempotent (each action hits a
+ * holding once, keyed on its true ex-date), so overlapping daily windows never
+ * double-count. Only real market days are scanned — ex-dates never fall on
+ * weekends or holidays, so other dates are pure waste.
+ */
+export async function applyCorporateActionsWindow(
+  db: SupabaseClient,
+  endDate: string,
+  lookbackDays: number,
+): Promise<CorporateActionSummary & { datesScanned: string[] }> {
+  const end = new Date(`${endDate}T00:00:00Z`).getTime();
+  const dates: string[] = [];
+  for (let i = lookbackDays; i >= 0; i--) {
+    const d = new Date(end - i * 86_400_000).toISOString().slice(0, 10);
+    if (isMarketDay(d)) dates.push(d);
+  }
+  const agg = {
+    date: endDate,
+    splits: 0,
+    dividendsReinvested: 0,
+    dividendsToCash: 0,
+    errors: 0,
+    datesScanned: dates,
+  };
+  for (const d of dates) {
+    const s = await applyCorporateActions(db, d);
+    agg.splits += s.splits;
+    agg.dividendsReinvested += s.dividendsReinvested;
+    agg.dividendsToCash += s.dividendsToCash;
+    agg.errors += s.errors;
+  }
+  return agg;
 }

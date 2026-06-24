@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { fetchQuotes } from "@/lib/finnhub";
 import { isMarketDay } from "@/lib/market-calendar";
-import { applyCorporateActions } from "@/lib/corporate-actions";
+import { applyCorporateActionsWindow } from "@/lib/corporate-actions";
 
 /**
  * Scheduled trigger: captures a daily portfolio_snapshots row for every user
@@ -38,12 +38,14 @@ async function run() {
 
   const db = createAdminClient();
 
-  // Apply any splits/consolidations/dividends effective today FIRST, so the
-  // snapshot below reflects post-action shares + cash. Never abort the snapshot
-  // run if this fails.
+  // Apply any splits/consolidations/dividends effective recently FIRST, so the
+  // snapshot below reflects post-action shares + cash. We re-scan the last week
+  // of trading days, not just today, because Yahoo posts ETF ex-dividends a day
+  // or two late — a same-day-only check drops them for good. The ledger keeps
+  // this idempotent. Never abort the snapshot run if this fails.
   let corporateActions = null;
   try {
-    corporateActions = await applyCorporateActions(db, today);
+    corporateActions = await applyCorporateActionsWindow(db, today, 7);
   } catch {
     corporateActions = { error: "corporate actions failed" };
   }
