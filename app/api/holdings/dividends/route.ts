@@ -6,12 +6,9 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  // Recorded dividends from the corporate-actions ledger. Self-contained: ticker/
-  // name/amount/reinvested are stored on the row (not joined from holdings), so
-  // the history persists after a position is closed or deleted.
   const { data, error } = await supabase
     .from("applied_corporate_actions")
-    .select("holding_id, effective_date, detail, ticker, name, amount, reinvested")
+    .select("id, holding_id, effective_date, detail, ticker, name, amount, reinvested, shares_delta, cash_delta, account, is_manual")
     .eq("user_id", user.id)
     .eq("action_type", "dividend")
     .order("effective_date", { ascending: false });
@@ -24,13 +21,19 @@ export async function GET() {
   }
 
   const dividends = (data ?? []).map((r) => ({
-    id: `${r.holding_id}-${r.effective_date}`,
+    // Use real UUID if available (post-migration), fall back to composite key.
+    id: (r.id as string | null) ?? `${r.holding_id}-${r.effective_date}`,
+    holdingId: r.holding_id as string,
     date: r.effective_date as string,
     ticker: (r.ticker as string | null) ?? "—",
     name: (r.name as string | null) ?? null,
     amount: (r.amount as number | null) ?? null,
     reinvested: (r.reinvested as boolean | null) ?? null,
     detail: (r.detail as string | null) ?? null,
+    sharesDelta: (r.shares_delta as number | null) ?? 0,
+    cashDelta: (r.cash_delta as number | null) ?? 0,
+    account: (r.account as string | null) ?? null,
+    isManual: (r.is_manual as boolean | null) ?? false,
   }));
 
   return NextResponse.json({ dividends });

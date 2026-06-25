@@ -133,11 +133,13 @@ export async function applyCorporateActions(
   const holdings = (holdingsRaw ?? []) as Holding[];
   if (holdings.length === 0) return summary;
 
-  // What's already been applied for this date (skip those).
+  // What's already been applied for this date (skip those). Exclude manual
+  // entries — they have no idempotency constraint and shouldn't block the cron.
   const { data: appliedRows } = await db
     .from("applied_corporate_actions")
     .select("holding_id,action_type")
-    .eq("effective_date", date);
+    .eq("effective_date", date)
+    .eq("is_manual", false);
   const applied = new Set((appliedRows ?? []).map((r) => `${r.holding_id}|${r.action_type}`));
 
   // Detect actions once per unique ticker.
@@ -171,13 +173,18 @@ export async function applyCorporateActions(
     let shares = Number(h.shares);
     let costBasis = Number(h.cost_basis);
     let changed = false;
+    const account = (h.account ?? "").trim() || "Unassigned";
     const ledger: {
       action_type: "split" | "dividend";
       detail: string;
       ticker?: string;
       name?: string | null;
-      amount?: number; // total cash value of a dividend event
+      amount?: number;
       reinvested?: boolean;
+      shares_delta?: number;
+      cash_delta?: number;
+      price_per_share?: number;
+      account?: string;
     }[] = [];
 
     // 1. Split / consolidation first (so a same-day dividend uses post-split shares).
@@ -195,13 +202,11 @@ export async function applyCorporateActions(
     // 2. Dividend.
     if (dividend && !applied.has(`${h.id}|dividend`)) {
       const total = dividend.amount * shares;
-      const account = (h.account ?? "").trim() || "Unassigned";
       if (h.drip) {
         const price = await priceFor(t);
         if (price && price > 0) {
           const bought = total / price;
           const newShares = shares + bought;
-          // New avg cost: prior cost + dividend cash spent, over new share count.
           costBasis = (shares * costBasis + total) / newShares;
           shares = newShares;
           changed = true;
@@ -213,9 +218,13 @@ export async function applyCorporateActions(
             name: h.name,
             amount: total,
             reinvested: true,
+            shares_delta: bought,
+            cash_delta: 0,
+            price_per_share: price,
+            account,
           });
         } else {
-          // No price → don't lose the dividend; fall back to cash so it's not skipped.
+          // No price → fall back to cash so the dividend isn't lost.
           const key = `${h.user_id}|${account}`;
           const cur = cashDelta.get(key) ?? { user_id: h.user_id, account, amount: 0 };
           cur.amount += total;
@@ -227,7 +236,10 @@ export async function applyCorporateActions(
             ticker: t,
             name: h.name,
             amount: total,
-            reinvested: false, // intended DRIP but fell back to cash
+            reinvested: false,
+            shares_delta: 0,
+            cash_delta: total,
+            account,
           });
         }
       } else {
@@ -243,6 +255,9 @@ export async function applyCorporateActions(
           name: h.name,
           amount: total,
           reinvested: false,
+          shares_delta: 0,
+          cash_delta: total,
+          account,
         });
       }
     }
@@ -270,10 +285,14 @@ export async function applyCorporateActions(
       name: l.name ?? null,
       amount: l.amount ?? null,
       reinvested: l.reinvested ?? null,
+      shares_delta: l.shares_delta ?? 0,
+      cash_delta: l.cash_delta ?? 0,
+      price_per_share: l.price_per_share ?? null,
+      account: l.account ?? null,
+      is_manual: false,
     }));
     let { error: ledErr } = await db.from("applied_corporate_actions").insert(fullRows);
-    // If the dividend-history columns haven't been migrated yet, fall back to the
-    // base columns so the idempotency record still lands (action won't re-apply).
+    // If new columns aren't migrated yet, fall back so the idempotency row still lands.
     if (ledErr && /column|schema cache|PGRST204/i.test(ledErr.message ?? "")) {
       ({ error: ledErr } = await db.from("applied_corporate_actions").insert(baseRows));
     }
