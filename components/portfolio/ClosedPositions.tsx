@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { formatCurrency, formatShares } from "@/lib/format";
+import { formatCurrency, formatShares, formatPercent } from "@/lib/format";
 
 interface ClosedPosition {
   id: string;
@@ -44,6 +44,8 @@ export function ClosedPositions() {
   }
 
   const totalGain = positions.reduce((s, p) => s + p.realized_gain, 0);
+  const totalCost = positions.reduce((s, p) => s + p.cost_basis * p.shares, 0);
+  const totalPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0;
 
   return (
     <div className="flex-1 overflow-auto">
@@ -55,7 +57,7 @@ export function ClosedPositions() {
           className="text-xs font-mono font-medium"
           style={{ color: totalGain >= 0 ? "var(--positive)" : "var(--negative)" }}
         >
-          Total realized: {totalGain >= 0 ? "+" : ""}{formatCurrency(totalGain)}
+          Total realized: {totalGain >= 0 ? "+" : ""}{formatCurrency(totalGain)} ({formatPercent(totalPct)})
         </span>
       </div>
       <table className="w-full text-sm border-collapse min-w-[700px]">
@@ -67,6 +69,7 @@ export function ClosedPositions() {
             <th className="px-4 py-3 text-xs text-muted-foreground font-medium text-right">Cost Basis</th>
             <th className="px-4 py-3 text-xs text-muted-foreground font-medium text-right">Sale Price</th>
             <th className="px-4 py-3 text-xs text-muted-foreground font-medium text-right">Realized P/L</th>
+            <th className="px-4 py-3 text-xs text-muted-foreground font-medium text-right">Return %</th>
             <th className="px-4 py-3 text-xs text-muted-foreground font-medium text-center">Account</th>
             <th className="px-4 py-3 text-xs text-muted-foreground font-medium text-right">Closed</th>
           </tr>
@@ -75,6 +78,7 @@ export function ClosedPositions() {
           {positions.map((p) => {
             const gain = p.realized_gain;
             const color = gain >= 0 ? "var(--positive)" : "var(--negative)";
+            const returnPct = p.cost_basis > 0 ? ((p.sale_price - p.cost_basis) / p.cost_basis) * 100 : 0;
             return (
               <tr key={p.id} className="border-b border-border/50">
                 <td className="px-4 py-3 font-mono font-semibold text-foreground">{p.ticker}</td>
@@ -84,6 +88,9 @@ export function ClosedPositions() {
                 <td className="px-4 py-3 text-right font-mono text-foreground">{formatCurrency(p.sale_price)}</td>
                 <td className="px-4 py-3 text-right font-mono" style={{ color }}>
                   {gain >= 0 ? "+" : ""}{formatCurrency(gain)}
+                </td>
+                <td className="px-4 py-3 text-right font-mono" style={{ color }}>
+                  {formatPercent(returnPct)}
                 </td>
                 <td className="px-4 py-3 text-center">
                   <span

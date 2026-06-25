@@ -9,15 +9,22 @@ const HoldingsTreemap = nextDynamic(
   { ssr: false, loading: () => <div className="skeleton h-full w-full rounded-sm" /> }
 );
 
+interface CashBalance {
+  account: string;
+  label: string;
+  balance: number;
+}
+
 interface Props {
   holdings: HoldingWithMetrics[];
+  cash?: CashBalance[];
   account: string;
 }
 
 const EMERALD = "0.72 0.15 152";
 const RUBY = "0.66 0.19 25";
 
-export function HoldingsHeatmap({ holdings, account }: Props) {
+export function HoldingsHeatmap({ holdings, cash = [], account }: Props) {
   const [colorBy, setColorBy] = useState<"daily" | "total">("daily");
   const [includeCash, setIncludeCash] = useState(true);
 
@@ -29,7 +36,7 @@ export function HoldingsHeatmap({ holdings, account }: Props) {
 
     // 2. Cash filter
     if (!includeCash) {
-      list = list.filter((h) => {
+      return list.filter((h) => {
         const t = h.ticker.toUpperCase();
         const s = h.sector.toLowerCase();
         const a = h.account.toLowerCase();
@@ -38,8 +45,27 @@ export function HoldingsHeatmap({ holdings, account }: Props) {
       });
     }
 
-    return list;
-  }, [holdings, account, includeCash]);
+    // 3. Real cash balances → synthetic neutral tiles in their own "Cash" group.
+    const cashList = (account === "all" ? cash : cash.filter((c) => c.account === account))
+      .filter((c) => c.balance > 0);
+    const cashLeaves: HoldingWithMetrics[] = cashList.map((c) => ({
+      id: `cash-${c.account}`,
+      ticker: "CASH",
+      name: c.label || `${c.account} Cash`,
+      sector: "Cash",
+      shares: c.balance,
+      costBasis: 1,
+      currentPrice: 1,
+      account: c.account,
+      value: c.balance,
+      costTotal: c.balance,
+      gainDollar: 0,
+      gainPercent: 0,
+      todayChangePct: 0,
+    }));
+
+    return [...list, ...cashLeaves];
+  }, [holdings, cash, account, includeCash]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden min-h-[400px]">

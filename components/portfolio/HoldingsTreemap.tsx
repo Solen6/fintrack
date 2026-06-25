@@ -7,6 +7,7 @@ import type { HoldingWithMetrics } from "@/lib/types";
 const BG = "oklch(0.08 0 0)";
 const EMERALD = "0.72 0.15 152";
 const RUBY = "0.66 0.19 25";
+const AMBER = "0.72 0.14 74"; // brand primary — cash tiles
 const SECTOR_FRAME = "oklch(0.42 0 0)"; // graphite frame around each sector group
 
 // Dark halo behind tile text so labels stay legible over any cell color.
@@ -22,8 +23,9 @@ interface LeafNode {
   ticker: string;
   changePct: number;
   size: number;
+  isCash?: boolean; // cash tiles render in brand amber, no gain coloring
   groupLabel?: string; // sector name, set on the sector's largest holding
-  [key: string]: string | number | undefined;
+  [key: string]: string | number | boolean | undefined;
 }
 
 interface SectorNode {
@@ -48,6 +50,7 @@ export function HoldingsTreemap({ holdings, colorBy }: Props) {
       ticker: h.ticker,
       changePct: colorBy === "daily" ? h.todayChangePct : h.gainPercent,
       size: Math.max(h.value, 1),
+      isCash: h.ticker === "CASH" && h.sector === "Cash",
     };
     const list = bySector.get(sector);
     if (list) list.push(leaf);
@@ -87,9 +90,10 @@ function TreemapCell(props: {
   ticker?: string;
   value?: number;
   changePct?: number;
+  isCash?: boolean;
   groupLabel?: string;
 }) {
-  const { colorBy, depth = 0, x = 0, y = 0, width = 0, height = 0, name, ticker, value, changePct, groupLabel } = props;
+  const { colorBy, depth = 0, x = 0, y = 0, width = 0, height = 0, name, ticker, value, changePct, isCash, groupLabel } = props;
 
   if (width <= 0 || height <= 0) return null;
 
@@ -115,7 +119,11 @@ function TreemapCell(props: {
 
   const isNeutral = changePct === 0;
   const hue = isNeutral ? "0.30 0 0" : changePct >= 0 ? EMERALD : RUBY;
-  const bgFill = isNeutral ? `oklch(0.16 0 0)` : `oklch(${hue} / ${alpha})`;
+  const bgFill = isCash
+    ? `oklch(${AMBER} / 0.85)`
+    : isNeutral
+    ? `oklch(0.16 0 0)`
+    : `oklch(${hue} / ${alpha})`;
 
   // Sector tag only on the group's largest cell, and only when it fits.
   const showSector = !!groupLabel && width > 42 && height > 46;
@@ -124,7 +132,7 @@ function TreemapCell(props: {
   const valueY = showSector ? y + 53 : y + 44;
 
   const showTicker = width > 35 && height > (showSector ? 34 : 24);
-  const showPct = width > 45 && height > (showSector ? 48 : 38);
+  const showPct = !isCash && width > 45 && height > (showSector ? 48 : 38);
   const showValue = width > 60 && height > (showSector ? 60 : 50) && value !== undefined;
   const pctLabel = `${changePct >= 0 ? "+" : ""}${changePct.toFixed(1)}%`;
 

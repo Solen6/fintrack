@@ -225,6 +225,12 @@ export function PortfolioClient() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={loadData}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-sm hover:bg-accent mr-1"
+            >
+              Refresh prices
+            </button>
             <div className="flex items-center rounded-sm border border-border overflow-hidden mr-2">
               <button
                 onClick={() => setSubView("table")}
@@ -267,12 +273,6 @@ export function PortfolioClient() {
                 Dividends
               </button>
             </div>
-            <button
-              onClick={loadData}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-sm hover:bg-accent"
-            >
-              Refresh prices
-            </button>
             <button
               onClick={() => setManagingDividends(true)}
               className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
@@ -327,7 +327,7 @@ export function PortfolioClient() {
           />
         )}
         {subView === "heatmap" && (
-          <HoldingsHeatmap holdings={holdings} account={selectedAccount} />
+          <HoldingsHeatmap holdings={holdings} cash={cash} account={selectedAccount} />
         )}
         {subView === "closed" && <ClosedPositions />}
         {subView === "dividends" && <DividendHistory />}

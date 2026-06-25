@@ -57,5 +57,27 @@ export async function POST(request: NextRequest) {
     await supabase.from("holdings").update({ shares: remaining }).eq("id", holdingId).eq("user_id", user.id);
   }
 
-  return NextResponse.json({ ok: true, remaining });
+  // Sale proceeds land in the account's cash balance (creating the row if needed).
+  // Non-fatal if cash_balances isn't migrated yet — the close still succeeds.
+  const proceeds = Math.round(sharesToClose * salePrice * 100) / 100;
+  const { data: existingCash } = await supabase
+    .from("cash_balances")
+    .select("balance,label")
+    .eq("user_id", user.id)
+    .eq("account", holding.account)
+    .maybeSingle();
+
+  const newBalance = Math.round((Number(existingCash?.balance ?? 0) + proceeds) * 100) / 100;
+  await supabase.from("cash_balances").upsert(
+    {
+      user_id: user.id,
+      account: holding.account,
+      label: existingCash?.label ?? "Cash",
+      balance: newBalance,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id,account" },
+  );
+
+  return NextResponse.json({ ok: true, remaining, proceeds, cashBalance: newBalance });
 }
