@@ -13,6 +13,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchQuote } from "@/lib/finnhub";
+import { fetchExDateClose } from "@/lib/corporate-actions";
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -47,19 +48,26 @@ export async function POST(req: NextRequest) {
   const account = ((holding.account as string | null) ?? "").trim() || "Unassigned";
   const total = amountPerShare * shares;
 
+  // Price of the security on the chosen ex-date — used for a DRIP buy now and
+  // recorded so a later cash↔DRIP switch reinvests at the historical price.
+  const exClose = await fetchExDateClose(ticker, effectiveDate);
+
   let detail: string;
   let sharesDelta = 0;
   let cashDelta = 0;
-  let pricePerShare: number | null = null;
+  let pricePerShare: number | null = exClose ?? null;
   let newReinvested = reinvested ?? false;
 
   if (reinvested) {
-    // DRIP: buy shares at current market price.
-    const quote = await fetchQuote(ticker);
-    const price = quote?.price ?? null;
+    // DRIP: buy shares at the ex-date close (fall back to the live quote).
+    let price = exClose && exClose > 0 ? exClose : null;
+    if (!price) {
+      const quote = await fetchQuote(ticker);
+      price = quote?.price && quote.price > 0 ? quote.price : null;
+    }
 
     if (!price || price <= 0) {
-      return NextResponse.json({ error: "Could not fetch live price for DRIP. Try again or use Cash." }, { status: 503 });
+      return NextResponse.json({ error: "Could not determine a price for DRIP. Try again or use Cash." }, { status: 503 });
     }
 
     const bought = total / price;

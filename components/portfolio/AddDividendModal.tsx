@@ -164,7 +164,7 @@ export function AddDividendModal({ onClose, onAdded }: Props) {
             </div>
             {reinvested && (
               <p className="text-xs text-muted-foreground">
-                Shares will be bought at the current market price.
+                Shares will be bought at the security&apos;s closing price on the ex-dividend date.
               </p>
             )}
           </div>

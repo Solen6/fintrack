@@ -11,6 +11,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchQuote } from "@/lib/finnhub";
 import { isMarketDay } from "@/lib/market-calendar";
+import { yahooDailyHistory } from "@/lib/yahoo";
 
 export interface SplitDue {
   ratio: number; // new shares per old share. 2:1 → 2, 1:10 reverse → 0.1
@@ -90,6 +91,29 @@ export async function fetchDividendDue(ticker: string, date: string): Promise<Di
   }
 }
 
+/**
+ * The security's closing price on (or just before) `date` — the price at which a
+ * dividend paid on that ex-date would reinvest. Pulled from Yahoo daily history
+ * (the same free source as dividend detection), so it's available even for the
+ * sector ETFs Finnhub doesn't quote reliably. We store this on every dividend
+ * row so a later cash↔DRIP switch reinvests at the historical ex-date price,
+ * never today's price. Returns the close on the exact date, else the nearest
+ * prior trading day, else null.
+ */
+export async function fetchExDateClose(ticker: string, date: string): Promise<number | null> {
+  const anchor = Math.floor(new Date(`${date}T00:00:00Z`).getTime() / 1000);
+  const from = anchor - 8 * 86400; // ~5 trading days of slack for the prior-close fallback
+  const to = anchor + 2 * 86400;
+  const hist = await yahooDailyHistory(ticker, from, to);
+  if (hist.length === 0) return null;
+  const exact = hist.find((h) => h.date === date);
+  if (exact) return exact.close;
+  // yahooDailyHistory is ascending by date → last on-or-before `date` is nearest prior.
+  const prior = hist.filter((h) => h.date <= date);
+  if (prior.length) return prior[prior.length - 1].close;
+  return hist[0].close;
+}
+
 interface Holding {
   id: string;
   user_id: string;
@@ -151,7 +175,15 @@ export async function applyCorporateActions(
     divByTicker.set(t, await fetchDividendDue(t, date));
   }
 
-  // Price cache for DRIP reinvestment (only fetched if needed).
+  // Ex-date close per dividend-paying ticker — the price a reinvested dividend
+  // buys at, recorded on every dividend row (cash or DRIP) so a later switch
+  // uses the historical price. Fetched once per ticker that has a dividend.
+  const exCloseByTicker = new Map<string, number | null>();
+  for (const t of tickers) {
+    if (divByTicker.get(t)) exCloseByTicker.set(t, await fetchExDateClose(t, date));
+  }
+
+  // Live-price fallback for DRIP only if the ex-date close is unavailable.
   const priceCache = new Map<string, number | null>();
   const priceFor = async (t: string): Promise<number | null> => {
     if (priceCache.has(t)) return priceCache.get(t)!;
@@ -202,8 +234,12 @@ export async function applyCorporateActions(
     // 2. Dividend.
     if (dividend && !applied.has(`${h.id}|dividend`)) {
       const total = dividend.amount * shares;
+      // Ex-date close = the price a reinvested dividend buys at. Recorded on
+      // every row (cash too) so a later cash↔DRIP switch uses this, not today's
+      // price. Fall back to the live quote only if Yahoo has no close.
+      const exClose = exCloseByTicker.get(t) ?? null;
       if (h.drip) {
-        const price = await priceFor(t);
+        const price = exClose && exClose > 0 ? exClose : await priceFor(t);
         if (price && price > 0) {
           const bought = total / price;
           const newShares = shares + bought;
@@ -232,13 +268,14 @@ export async function applyCorporateActions(
           summary.dividendsToCash++;
           ledger.push({
             action_type: "dividend",
-            detail: `DRIP $${dividend.amount}/sh — no live price, credited $${total.toFixed(2)} to cash instead`,
+            detail: `DRIP $${dividend.amount}/sh — no price, credited $${total.toFixed(2)} to cash instead`,
             ticker: t,
             name: h.name,
             amount: total,
             reinvested: false,
             shares_delta: 0,
             cash_delta: total,
+            price_per_share: exClose ?? undefined,
             account,
           });
         }
@@ -257,6 +294,7 @@ export async function applyCorporateActions(
           reinvested: false,
           shares_delta: 0,
           cash_delta: total,
+          price_per_share: exClose ?? undefined, // ex-date price for a later DRIP switch
           account,
         });
       }
