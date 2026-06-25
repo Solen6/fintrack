@@ -9,8 +9,6 @@ const FuturesTreemap = nextDynamic(
   { ssr: false, loading: () => <div className="skeleton h-full w-full rounded-sm" /> }
 );
 
-type ViewMode = "grid" | "treemap";
-
 const TF_OPTIONS: FuturesTimeframe[] = ["1D", "1W", "1M", "YTD"];
 
 // % move that maps to full color intensity, per timeframe
@@ -21,38 +19,12 @@ const FULL_SCALE: Record<FuturesTimeframe, number> = {
   "YTD": 40,
 };
 
-const CATEGORY_ORDER = ["Energy", "Metals", "Agriculture", "Indices", "Rates", "Currencies"];
-
 const EMERALD = "0.72 0.15 152";
 const RUBY = "0.66 0.19 25";
-
-function cellStyle(changePct: number, tf: FuturesTimeframe): React.CSSProperties {
-  const scale = FULL_SCALE[tf];
-  // Power curve + raised floor so even small moves read clearly as green/red.
-  const intensity = Math.min(1, Math.abs(changePct) / scale) ** 0.7;
-  const alpha = (0.22 + intensity * 0.58).toFixed(3);
-  const hue = changePct >= 0 ? EMERALD : RUBY;
-  return {
-    background: `oklch(${hue} / ${alpha})`,
-    borderColor: `oklch(${hue} / ${(Number(alpha) + 0.18).toFixed(3)})`,
-    // Dark shadow keeps text legible over the colored tile.
-    textShadow: "0 1px 2px oklch(0.08 0 0 / 0.85)",
-  };
-}
-
-function fmtPrice(n: number): string {
-  return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
-}
-
-function fmtChange(n: number): string {
-  const sign = n >= 0 ? "+" : "";
-  return `${sign}${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
-}
 
 export function FuturesHeatmap() {
   const [cells, setCells] = useState<FutureCell[]>([]);
   const [timeframe, setTimeframe] = useState<FuturesTimeframe>("1D");
-  const [view, setView] = useState<ViewMode>("grid");
   const [loading, setLoading] = useState(true);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [tfOpen, setTfOpen] = useState(false);
@@ -78,22 +50,6 @@ export function FuturesHeatmap() {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
 
-  // Group by category; valid cells sorted by move size (desc), errored cells last.
-  const grouped = useMemo(() => {
-    const map = new Map<string, { valid: FutureCell[]; errored: FutureCell[] }>();
-    for (const c of cells) {
-      if (!map.has(c.category)) map.set(c.category, { valid: [], errored: [] });
-      const bucket = map.get(c.category)!;
-      if (c.error) bucket.errored.push(c);
-      else bucket.valid.push(c);
-    }
-    return CATEGORY_ORDER.filter((cat) => map.has(cat)).map((cat) => {
-      const { valid, errored } = map.get(cat)!;
-      valid.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
-      return { category: cat, items: [...valid, ...errored] };
-    });
-  }, [cells]);
-
   // Biggest movers across all valid cells
   const movers = useMemo(() => {
     const valid = cells.filter((c) => !c.error);
@@ -107,14 +63,14 @@ export function FuturesHeatmap() {
   return (
     <main className="flex-1 flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-border shrink-0 flex items-center gap-3 flex-wrap">
+      <div className="px-6 py-3.5 border-b border-border shrink-0 flex items-center gap-4 flex-wrap">
         <h2 className="text-lg font-medium text-foreground leading-none">Futures</h2>
 
         {/* Timeframe selector */}
         <div className="relative" ref={tfRef}>
           <button
             onClick={() => setTfOpen((o) => !o)}
-            className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded-sm border border-border text-foreground hover:border-foreground/30 transition-colors duration-150"
+            className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded-sm border border-border text-foreground hover:border-foreground/40 transition-colors duration-150"
             aria-haspopup="listbox"
             aria-expanded={tfOpen}
           >
@@ -143,32 +99,16 @@ export function FuturesHeatmap() {
           )}
         </div>
 
-        {/* View toggle */}
-        <div className="flex items-center rounded-sm border border-border overflow-hidden">
-          {(["grid", "treemap"] as ViewMode[]).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className="text-xs px-2.5 py-1 transition-colors duration-150 capitalize"
-              style={{
-                background: view === v ? "oklch(0.16 0 0)" : "transparent",
-                color: view === v ? "var(--primary)" : "oklch(0.64 0.008 74)",
-              }}
-              aria-pressed={view === v}
-            >
-              {v}
-            </button>
-          ))}
-        </div>
+        {/* Spacer */}
+        <div className="flex-1 hidden sm:block" />
 
-        <p className="text-xs text-muted-foreground">% change · colored by move</p>
-
-        {/* Color legend */}
+        {/* Legend */}
         <Legend tf={timeframe} />
 
+        {/* Timestamp */}
         {lastRefreshed && (
-          <p className="ml-auto text-xs text-muted-foreground">
-            As of {lastRefreshed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          <p className="text-xs text-muted-foreground whitespace-nowrap">
+            as of {lastRefreshed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </p>
         )}
       </div>
@@ -181,34 +121,16 @@ export function FuturesHeatmap() {
         </div>
       )}
 
-      {/* Grid / Treemap */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        {loading ? (
-          <LoadingSkeleton />
-        ) : view === "treemap" ? (
-          <div className="h-full min-h-[480px]">
-            <FuturesTreemap cells={cells} tf={timeframe} />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-6">
-            {grouped.map(({ category, items }) => (
-              <section key={category}>
-                <p className="text-xs font-medium text-muted-foreground mb-2.5" style={{ letterSpacing: "0.04em" }}>
-                  {category}
-                </p>
-                <div
-                  className="grid gap-2"
-                  style={{ gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))" }}
-                >
-                  {items.map((c) => (
-                    <FutureTile key={c.symbol} c={c} tf={timeframe} />
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Treemap */}
+      {loading ? (
+        <div className="flex-1 min-h-0 p-px">
+          <div className="skeleton h-full w-full rounded-sm" />
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0">
+          <FuturesTreemap cells={cells} tf={timeframe} />
+        </div>
+      )}
     </main>
   );
 }
@@ -262,65 +184,3 @@ function MoversGroup({ label, items }: { label: string; items: FutureCell[] }) {
   );
 }
 
-/* ─── Skeleton tiles ─── */
-function LoadingSkeleton() {
-  return (
-    <div className="flex flex-col gap-6">
-      {[8, 5].map((count, i) => (
-        <section key={i}>
-          <div className="skeleton h-3 w-20 mb-2.5 rounded-sm" />
-          <div
-            className="grid gap-2"
-            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))" }}
-          >
-            {Array.from({ length: count }).map((_, j) => (
-              <div key={j} className="skeleton rounded-sm" style={{ height: 64 }} />
-            ))}
-          </div>
-        </section>
-      ))}
-    </div>
-  );
-}
-
-function FutureTile({ c, tf }: { c: FutureCell; tf: FuturesTimeframe }) {
-  if (c.error) {
-    return (
-      <div
-        className="rounded-sm border border-dashed px-3 py-2.5 flex flex-col gap-1 opacity-60"
-        style={{ borderColor: "oklch(0.26 0 0)", background: "oklch(0.11 0 0)" }}
-        title={`${c.name} (${c.symbol}) — no data`}
-      >
-        <div className="flex items-baseline justify-between gap-1">
-          <span className="text-sm font-medium text-muted-foreground truncate">{c.name}</span>
-          <span className="font-mono text-muted-foreground" style={{ fontSize: "0.6rem" }}>
-            {c.symbol}
-          </span>
-        </div>
-        <span className="text-xs text-muted-foreground">no data</span>
-      </div>
-    );
-  }
-
-  const positive = c.changePct >= 0;
-  return (
-    <div
-      className="rounded-sm border px-3 py-2.5 flex flex-col gap-1"
-      style={cellStyle(c.changePct, tf)}
-      title={`${c.name} (${c.symbol})\nPrice ${fmtPrice(c.price)}\nChange ${fmtChange(c.change)} (${positive ? "+" : ""}${c.changePct.toFixed(2)}%)`}
-    >
-      <div className="flex items-baseline justify-between gap-1">
-        <span className="text-sm font-semibold text-foreground truncate">{c.name}</span>
-        <span className="font-mono text-foreground/70 shrink-0" style={{ fontSize: "0.6rem" }}>
-          {c.symbol}
-        </span>
-      </div>
-      <div className="flex items-baseline justify-between gap-1">
-        <span className="text-xs font-mono text-foreground/70">{fmtPrice(c.price)}</span>
-        <span className="text-sm font-mono font-semibold text-foreground">
-          {positive ? "+" : ""}{c.changePct.toFixed(2)}%
-        </span>
-      </div>
-    </div>
-  );
-}
