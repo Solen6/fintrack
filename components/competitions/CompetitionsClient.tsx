@@ -780,7 +780,7 @@ function JoinCodeModal({ busy, onClose, onLookup, onJoin }: {
     <Modal title="Join by invite code" onClose={onClose}>
       <div className="flex flex-col gap-3">
         <div className="flex gap-2">
-          <input className={inputCls + " font-mono tracking-wider"} value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="ABC123" maxLength={6} autoFocus />
+          <input className={inputCls + " font-mono tracking-wider"} value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="A1B2C3D4" maxLength={8} autoFocus />
           <button onClick={lookup} disabled={looking} className="text-xs px-3 py-1.5 rounded-sm border border-border text-muted-foreground hover:text-foreground transition-colors shrink-0">Find</button>
         </div>
         {error && <p className="text-xs" style={{ color: "var(--negative)" }}>{error}</p>}
