@@ -18,43 +18,56 @@ export interface FuturesSpec {
   symbol: string;
   name: string;
   category: string;
-  multiplier: number;        // $ per 1.00 price move per contract
+  multiplier: number;        // $ per 1.00 price move per contract (= point value)
+  tickSize: number;          // minimum price increment
   initialMargin: number;     // USD per contract
   maintenanceMargin: number; // USD per contract
 }
 
-/** Yahoo futures symbols → contract specs. Margins are representative round numbers. */
+/** Yahoo futures symbols → contract specs. Margins are representative round numbers.
+ *  tickSize × multiplier = tick value (e.g. ES: 0.25 × 50 = $12.50). */
 export const FUTURES_SPECS: Record<string, FuturesSpec> = {
   // Energy
-  "CL=F": { symbol: "CL=F", name: "WTI Crude",    category: "Energy", multiplier: 1000,  initialMargin: 6000,  maintenanceMargin: 5400 },
-  "BZ=F": { symbol: "BZ=F", name: "Brent Crude",  category: "Energy", multiplier: 1000,  initialMargin: 6000,  maintenanceMargin: 5400 },
-  "NG=F": { symbol: "NG=F", name: "Nat Gas",      category: "Energy", multiplier: 10000, initialMargin: 3500,  maintenanceMargin: 3000 },
-  "RB=F": { symbol: "RB=F", name: "Gasoline",     category: "Energy", multiplier: 42000, initialMargin: 7000,  maintenanceMargin: 6300 },
-  "HO=F": { symbol: "HO=F", name: "Heating Oil",  category: "Energy", multiplier: 42000, initialMargin: 7000,  maintenanceMargin: 6300 },
+  "CL=F": { symbol: "CL=F", name: "WTI Crude",    category: "Energy", multiplier: 1000,  tickSize: 0.01,   initialMargin: 6000,  maintenanceMargin: 5400 },
+  "BZ=F": { symbol: "BZ=F", name: "Brent Crude",  category: "Energy", multiplier: 1000,  tickSize: 0.01,   initialMargin: 6000,  maintenanceMargin: 5400 },
+  "NG=F": { symbol: "NG=F", name: "Nat Gas",      category: "Energy", multiplier: 10000, tickSize: 0.001,  initialMargin: 3500,  maintenanceMargin: 3000 },
+  "RB=F": { symbol: "RB=F", name: "Gasoline",     category: "Energy", multiplier: 42000, tickSize: 0.0001, initialMargin: 7000,  maintenanceMargin: 6300 },
+  "HO=F": { symbol: "HO=F", name: "Heating Oil",  category: "Energy", multiplier: 42000, tickSize: 0.0001, initialMargin: 7000,  maintenanceMargin: 6300 },
   // Metals
-  "GC=F": { symbol: "GC=F", name: "Gold",         category: "Metals", multiplier: 100,   initialMargin: 11000, maintenanceMargin: 10000 },
-  "SI=F": { symbol: "SI=F", name: "Silver",       category: "Metals", multiplier: 5000,  initialMargin: 16000, maintenanceMargin: 14500 },
-  "HG=F": { symbol: "HG=F", name: "Copper",       category: "Metals", multiplier: 25000, initialMargin: 6000,  maintenanceMargin: 5400 },
-  "PL=F": { symbol: "PL=F", name: "Platinum",     category: "Metals", multiplier: 50,    initialMargin: 4000,  maintenanceMargin: 3600 },
-  "PA=F": { symbol: "PA=F", name: "Palladium",    category: "Metals", multiplier: 100,   initialMargin: 9000,  maintenanceMargin: 8100 },
+  "GC=F": { symbol: "GC=F", name: "Gold",         category: "Metals", multiplier: 100,   tickSize: 0.10,    initialMargin: 11000, maintenanceMargin: 10000 },
+  "SI=F": { symbol: "SI=F", name: "Silver",       category: "Metals", multiplier: 5000,  tickSize: 0.005,   initialMargin: 16000, maintenanceMargin: 14500 },
+  "HG=F": { symbol: "HG=F", name: "Copper",       category: "Metals", multiplier: 25000, tickSize: 0.0005,  initialMargin: 6000,  maintenanceMargin: 5400 },
+  "PL=F": { symbol: "PL=F", name: "Platinum",     category: "Metals", multiplier: 50,    tickSize: 0.10,    initialMargin: 4000,  maintenanceMargin: 3600 },
+  "PA=F": { symbol: "PA=F", name: "Palladium",    category: "Metals", multiplier: 100,   tickSize: 0.10,    initialMargin: 9000,  maintenanceMargin: 8100 },
   // Indices
-  "ES=F":  { symbol: "ES=F",  name: "S&P 500",      category: "Indices", multiplier: 50, initialMargin: 13200, maintenanceMargin: 12000 },
-  "NQ=F":  { symbol: "NQ=F",  name: "Nasdaq 100",   category: "Indices", multiplier: 20, initialMargin: 19000, maintenanceMargin: 17000 },
-  "YM=F":  { symbol: "YM=F",  name: "Dow",          category: "Indices", multiplier: 5,  initialMargin: 9500,  maintenanceMargin: 8600 },
-  "RTY=F": { symbol: "RTY=F", name: "Russell 2000", category: "Indices", multiplier: 50, initialMargin: 7000,  maintenanceMargin: 6300 },
+  "ES=F":  { symbol: "ES=F",  name: "S&P 500",      category: "Indices", multiplier: 50, tickSize: 0.25, initialMargin: 13200, maintenanceMargin: 12000 },
+  "NQ=F":  { symbol: "NQ=F",  name: "Nasdaq 100",   category: "Indices", multiplier: 20, tickSize: 0.25, initialMargin: 19000, maintenanceMargin: 17000 },
+  "YM=F":  { symbol: "YM=F",  name: "Dow",          category: "Indices", multiplier: 5,  tickSize: 1,    initialMargin: 9500,  maintenanceMargin: 8600 },
+  "RTY=F": { symbol: "RTY=F", name: "Russell 2000", category: "Indices", multiplier: 50, tickSize: 0.10, initialMargin: 7000,  maintenanceMargin: 6300 },
   // Rates
-  "ZB=F": { symbol: "ZB=F", name: "30Y T-Bond",  category: "Rates", multiplier: 1000, initialMargin: 4500, maintenanceMargin: 4000 },
-  "ZN=F": { symbol: "ZN=F", name: "10Y T-Note",  category: "Rates", multiplier: 1000, initialMargin: 2000, maintenanceMargin: 1800 },
-  "ZF=F": { symbol: "ZF=F", name: "5Y T-Note",   category: "Rates", multiplier: 1000, initialMargin: 1300, maintenanceMargin: 1150 },
-  "ZT=F": { symbol: "ZT=F", name: "2Y T-Note",   category: "Rates", multiplier: 2000, initialMargin: 1000, maintenanceMargin: 900 },
+  "ZB=F": { symbol: "ZB=F", name: "30Y T-Bond",  category: "Rates", multiplier: 1000, tickSize: 0.03125,   initialMargin: 4500, maintenanceMargin: 4000 },
+  "ZN=F": { symbol: "ZN=F", name: "10Y T-Note",  category: "Rates", multiplier: 1000, tickSize: 0.015625,  initialMargin: 2000, maintenanceMargin: 1800 },
+  "ZF=F": { symbol: "ZF=F", name: "5Y T-Note",   category: "Rates", multiplier: 1000, tickSize: 0.0078125, initialMargin: 1300, maintenanceMargin: 1150 },
+  "ZT=F": { symbol: "ZT=F", name: "2Y T-Note",   category: "Rates", multiplier: 2000, tickSize: 0.00390625, initialMargin: 1000, maintenanceMargin: 900 },
   // Agriculture
-  "ZC=F": { symbol: "ZC=F", name: "Corn",     category: "Agriculture", multiplier: 50,    initialMargin: 2000,  maintenanceMargin: 1800 },
-  "ZW=F": { symbol: "ZW=F", name: "Wheat",    category: "Agriculture", multiplier: 50,    initialMargin: 2700,  maintenanceMargin: 2400 },
-  "ZS=F": { symbol: "ZS=F", name: "Soybeans", category: "Agriculture", multiplier: 50,    initialMargin: 3500,  maintenanceMargin: 3150 },
-  "KC=F": { symbol: "KC=F", name: "Coffee",   category: "Agriculture", multiplier: 37500, initialMargin: 12000, maintenanceMargin: 10800 },
-  "SB=F": { symbol: "SB=F", name: "Sugar",    category: "Agriculture", multiplier: 1120,  initialMargin: 1500,  maintenanceMargin: 1350 },
-  "CT=F": { symbol: "CT=F", name: "Cotton",   category: "Agriculture", multiplier: 500,   initialMargin: 3000,  maintenanceMargin: 2700 },
+  "ZC=F": { symbol: "ZC=F", name: "Corn",     category: "Agriculture", multiplier: 50,    tickSize: 0.25,   initialMargin: 2000,  maintenanceMargin: 1800 },
+  "ZW=F": { symbol: "ZW=F", name: "Wheat",    category: "Agriculture", multiplier: 50,    tickSize: 0.25,   initialMargin: 2700,  maintenanceMargin: 2400 },
+  "ZS=F": { symbol: "ZS=F", name: "Soybeans", category: "Agriculture", multiplier: 50,    tickSize: 0.25,   initialMargin: 3500,  maintenanceMargin: 3150 },
+  "KC=F": { symbol: "KC=F", name: "Coffee",   category: "Agriculture", multiplier: 37500, tickSize: 0.0005, initialMargin: 12000, maintenanceMargin: 10800 },
+  "SB=F": { symbol: "SB=F", name: "Sugar",    category: "Agriculture", multiplier: 1120,  tickSize: 0.01,   initialMargin: 1500,  maintenanceMargin: 1350 },
+  "CT=F": { symbol: "CT=F", name: "Cotton",   category: "Agriculture", multiplier: 500,   tickSize: 0.01,   initialMargin: 3000,  maintenanceMargin: 2700 },
 };
+
+/** Point value ($ per 1.00 price move per contract) for a futures symbol. */
+export function pointValueFor(symbol: string): number {
+  return FUTURES_SPECS[symbol]?.multiplier ?? 0;
+}
+
+/** Tick value ($ per minimum price increment per contract) for a futures symbol. */
+export function tickValueFor(symbol: string): number {
+  const s = FUTURES_SPECS[symbol];
+  return s ? s.tickSize * s.multiplier : 0;
+}
 
 export interface ForexSpec {
   symbol: string;   // canonical, e.g. "EURUSD"
@@ -72,6 +85,24 @@ export const FOREX_SPECS: Record<string, ForexSpec> = {
   USDCHF: { symbol: "USDCHF", name: "US Dollar / Swiss Franc", usdBase: true },
   USDCAD: { symbol: "USDCAD", name: "US Dollar / Canadian",    usdBase: true },
 };
+
+/** Pip size for an FX pair (JPY pairs quote to 2dp → 0.01, others 0.0001). */
+export function pipSizeFor(symbol: string): number {
+  return symbol.includes("JPY") ? 0.01 : 0.0001;
+}
+
+/**
+ * USD value of one pip for `lot` units at the given rate.
+ *  - xxxUSD (USD is quote): pip value is already USD → pip × lot.
+ *  - USDxxx (USD is base) : pip value is in the quote ccy → (pip × lot) / rate.
+ */
+export function pipValueUsd(symbol: string, price: number, lot: number = FOREX_STANDARD_LOT): number {
+  const spec = FOREX_SPECS[symbol];
+  const pip = pipSizeFor(symbol);
+  const raw = pip * lot;
+  if (!spec) return raw;
+  return spec.usdBase ? (price > 0 ? raw / price : 0) : raw;
+}
 
 /** Per-unit/contract multiplier for an instrument. */
 export function multiplierFor(assetClass: AssetClass, symbol: string): number {

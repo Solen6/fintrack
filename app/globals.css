@@ -115,6 +115,11 @@
   .skeleton { animation: none; opacity: 0.45; }
 }
 
+/* Keyboard focus ring for clickable portfolio-heatmap leaves (SVG <g>):
+   draw an amber stroke on the tile rect on focus-visible (amber = focus use). */
+.hm-leaf:focus-visible { outline: none; }
+.hm-leaf:focus-visible rect { stroke: oklch(0.72 0.14 74); stroke-width: 2.5; }
+
 /* ─── Modal dialog (native <dialog>) ─── */
 @keyframes dialog-pop {
   from { opacity: 0; transform: scale(0.96); }

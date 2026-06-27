@@ -37,9 +37,11 @@ interface SectorNode {
 interface Props {
   holdings: HoldingWithMetrics[];
   colorBy: "daily" | "total";
+  onSelect?: (ticker: string) => void;
+  selected?: string;
 }
 
-export function HoldingsTreemap({ holdings, colorBy }: Props) {
+export function HoldingsTreemap({ holdings, colorBy, onSelect, selected }: Props) {
   // Group holdings by sector → nested treemap. Sectors sized by their total
   // value and ordered largest-first; holdings within each sector likewise.
   const bySector = new Map<string, LeafNode[]>();
@@ -73,7 +75,7 @@ export function HoldingsTreemap({ holdings, colorBy }: Props) {
         dataKey="size"
         stroke={BG}
         isAnimationActive={false}
-        content={<TreemapCell colorBy={colorBy} />}
+        content={<TreemapCell colorBy={colorBy} onSelect={onSelect} selected={selected} />}
       />
     </ResponsiveContainer>
   );
@@ -81,6 +83,8 @@ export function HoldingsTreemap({ holdings, colorBy }: Props) {
 
 function TreemapCell(props: {
   colorBy?: "daily" | "total";
+  onSelect?: (ticker: string) => void;
+  selected?: string;
   depth?: number;
   x?: number;
   y?: number;
@@ -93,7 +97,7 @@ function TreemapCell(props: {
   isCash?: boolean;
   groupLabel?: string;
 }) {
-  const { colorBy, depth = 0, x = 0, y = 0, width = 0, height = 0, name, ticker, value, changePct, isCash, groupLabel } = props;
+  const { colorBy, onSelect, selected, depth = 0, x = 0, y = 0, width = 0, height = 0, name, ticker, value, changePct, isCash, groupLabel } = props;
 
   if (width <= 0 || height <= 0) return null;
 
@@ -136,10 +140,29 @@ function TreemapCell(props: {
   const showValue = width > 60 && height > (showSector ? 60 : 50) && value !== undefined;
   const pctLabel = `${changePct >= 0 ? "+" : ""}${changePct.toFixed(1)}%`;
 
+  // Non-cash leaves with a real ticker can be selected to drive the price chart.
+  const selectable = !!onSelect && !!ticker && !isCash;
+  const isSelected = !!selected && ticker === selected;
+  const handleSelect = selectable ? () => onSelect!(ticker!) : undefined;
+
   return (
-    <g>
+    <g
+      className={selectable ? "hm-leaf" : undefined}
+      onClick={handleSelect}
+      onKeyDown={selectable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleSelect!(); } } : undefined}
+      tabIndex={selectable ? 0 : undefined}
+      role={selectable ? "button" : undefined}
+      aria-label={selectable ? `${name ?? ticker}, ${pctLabel}, select to chart` : undefined}
+      aria-pressed={selectable ? isSelected : undefined}
+      style={{ cursor: selectable ? "pointer" : "default", outline: "none" }}
+    >
       <title>{`${name ?? ""} (${ticker ?? ""})\nSector: ${groupLabel ?? "—"}\nValue: ${value !== undefined ? formatCurrency(value) : ""}\nChange: ${pctLabel}`}</title>
-      <rect x={x} y={y} width={width} height={height} rx={2} fill={bgFill} stroke={BG} strokeWidth={1} />
+      <rect
+        x={x} y={y} width={width} height={height} rx={2}
+        fill={bgFill}
+        stroke={isSelected ? `oklch(${AMBER})` : BG}
+        strokeWidth={isSelected ? 2.5 : 1}
+      />
       {showSector && (
         <text
           x={x + 6}
@@ -156,7 +179,9 @@ function TreemapCell(props: {
       )}
       {showTicker && (
         <text x={x + 6} y={tickerY} fontSize={11} fontWeight={700} fontFamily="var(--font-mono)" fill="oklch(0.98 0.005 74)" {...halo(2.6)}>
-          {ticker}
+          {/* When the % label is too small to fit, prepend a ▲/▼ shape so
+              direction is never conveyed by color alone (color-not-only). */}
+          {(!showPct && !isCash && !isNeutral ? `${changePct >= 0 ? "▲" : "▼"} ` : "") + (ticker ?? "")}
         </text>
       )}
       {showPct && (

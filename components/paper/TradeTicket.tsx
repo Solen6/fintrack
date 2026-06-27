@@ -18,10 +18,21 @@ export function TradeTicket({
   accountId,
   onPlaced,
   assetClass,
+  futureSymbol,
+  onFutureSymbolChange,
+  fxSymbol,
+  onFxSymbolChange,
 }: {
   accountId: string;
   onPlaced: () => void;
   assetClass: Exclude<AssetClass, "OPTION">;
+  /** When provided, the FUTURE contract is controlled externally (the deck's
+   *  picker + market map). The internal contract dropdown is hidden. */
+  futureSymbol?: string;
+  onFutureSymbolChange?: (s: string) => void;
+  /** Same, for the FOREX pair (the forex deck's picker + heat grid). */
+  fxSymbol?: string;
+  onFxSymbolChange?: (s: string) => void;
 }) {
   const [side, setSide] = useState<Side>("BUY");
   const [orderType, setOrderType] = useState<OrderType>("MARKET");
@@ -30,8 +41,17 @@ export function TradeTicket({
   const [stopPrice, setStopPrice] = useState("");
 
   const [stockSym, setStockSym] = useState("");
-  const [futSym, setFutSym] = useState("ES=F");
-  const [fxSym, setFxSym] = useState("EURUSD");
+  const [internalFutSym, setInternalFutSym] = useState("ES=F");
+  const [internalFxSym, setInternalFxSym] = useState("EURUSD");
+
+  // FUTURE / FOREX symbol may be controlled by the parent (deck) or held internally.
+  const controlledFut = futureSymbol !== undefined && onFutureSymbolChange !== undefined;
+  const futSym = controlledFut ? futureSymbol! : internalFutSym;
+  const setFutSym = controlledFut ? onFutureSymbolChange! : setInternalFutSym;
+
+  const controlledFx = fxSymbol !== undefined && onFxSymbolChange !== undefined;
+  const fxSym = controlledFx ? fxSymbol! : internalFxSym;
+  const setFxSym = controlledFx ? onFxSymbolChange! : setInternalFxSym;
 
   const [estPrice, setEstPrice] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -139,22 +159,46 @@ export function TradeTicket({
           </Field>
         )}
         {assetClass === "FUTURE" && (
-          <Field label="Contract">
-            <select value={futSym} onChange={(e) => setFutSym(e.target.value)} className={inputCls}>
-              {Object.values(FUTURES_SPECS).map((f) => (
-                <option key={f.symbol} value={f.symbol}>{f.name} ({f.symbol}) · {f.category}</option>
-              ))}
-            </select>
-          </Field>
+          controlledFut ? (
+            <Field label="Contract">
+              <div className="flex items-center justify-between gap-2 rounded-sm border border-input bg-background px-3 py-1.5">
+                <span className="text-sm font-medium text-foreground truncate">
+                  {FUTURES_SPECS[futSym]?.name ?? futSym}
+                </span>
+                <span className="text-xs font-mono text-muted-foreground shrink-0">{futSym}</span>
+              </div>
+              <span className="text-xs text-muted-foreground">Pick a contract from the map or list above.</span>
+            </Field>
+          ) : (
+            <Field label="Contract">
+              <select value={futSym} onChange={(e) => setFutSym(e.target.value)} className={inputCls}>
+                {Object.values(FUTURES_SPECS).map((f) => (
+                  <option key={f.symbol} value={f.symbol}>{f.name} ({f.symbol}) · {f.category}</option>
+                ))}
+              </select>
+            </Field>
+          )
         )}
         {assetClass === "FOREX" && (
-          <Field label="Pair">
-            <select value={fxSym} onChange={(e) => setFxSym(e.target.value)} className={inputCls}>
-              {Object.values(FOREX_SPECS).map((p) => (
-                <option key={p.symbol} value={p.symbol}>{p.symbol} · {p.name}</option>
-              ))}
-            </select>
-          </Field>
+          controlledFx ? (
+            <Field label="Pair">
+              <div className="flex items-center justify-between gap-2 rounded-sm border border-input bg-background px-3 py-1.5">
+                <span className="text-sm font-medium text-foreground truncate">
+                  {FOREX_SPECS[fxSym]?.name ?? fxSym}
+                </span>
+                <span className="text-xs font-mono text-muted-foreground shrink-0">{fxSym}</span>
+              </div>
+              <span className="text-xs text-muted-foreground">Pick a pair from the grid or list above.</span>
+            </Field>
+          ) : (
+            <Field label="Pair">
+              <select value={fxSym} onChange={(e) => setFxSym(e.target.value)} className={inputCls}>
+                {Object.values(FOREX_SPECS).map((p) => (
+                  <option key={p.symbol} value={p.symbol}>{p.symbol} · {p.name}</option>
+                ))}
+              </select>
+            </Field>
+          )
         )}
 
         {/* order type */}

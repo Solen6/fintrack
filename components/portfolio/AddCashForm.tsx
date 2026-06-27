@@ -12,7 +12,8 @@ interface Props {
 
 /* Set a cash balance on an account — a flat dollar amount (HYSA, checking,
    brokerage sweep), NOT a priced position. Writes to the cash_balances table
-   via /api/cash and tags the account type=cash so the dashboard buckets it.
+   via /api/cash. It deliberately does NOT change the account's type: a brokerage
+   with a sweep stays a brokerage (set the type explicitly in Settings if needed).
    Re-submitting for the same account overwrites its balance. */
 export function AddCashForm({ existingAccounts, cashByAccount = {}, onSaved, onCancel }: Props) {
   const initialAccount = existingAccounts[0] ?? "";
@@ -58,13 +59,11 @@ export function AddCashForm({ existingAccounts, cashByAccount = {}, onSaved, onC
 
     setSaving(true);
 
-    // Tag the account as type=cash so the dashboard buckets it correctly.
-    await fetch("/api/accounts/meta", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ account: acct, type: "cash" }),
-    }).catch(() => null);
-
+    // Note: we intentionally do NOT POST /api/accounts/meta type=cash here.
+    // Auto-tagging silently converted brokerages with a sweep into "cash"
+    // accounts (zeroing the dashboard's invested/gain). Account type is now set
+    // only explicitly in Settings; the dashboard falls back to name-based
+    // guessing for genuinely cash-named accounts (HYSA, Checking, …).
     const res = await fetch("/api/cash", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

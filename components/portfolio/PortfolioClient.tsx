@@ -4,10 +4,11 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { AccountSidebar } from "./AccountSidebar";
 import { SummaryStrip } from "./SummaryStrip";
 import { HoldingsTable } from "./HoldingsTable";
-import { HoldingsHeatmap } from "./HoldingsHeatmap";
+import { PortfolioDeck } from "./PortfolioDeck";
 import { CSVUploadPanel } from "./CSVUploadPanel";
 import { AddPositionForm } from "./AddPositionForm";
 import { AddCashForm } from "./AddCashForm";
+import { DepositForm } from "./DepositForm";
 import { ClosePositionModal } from "./ClosePositionModal";
 import { DividendManager } from "./DividendManager";
 import { ClosedPositions } from "./ClosedPositions";
@@ -27,7 +28,7 @@ interface DBHolding {
   drip: boolean | null;
 }
 
-type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "addCash" | "ready";
+type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "addCash" | "deposit" | "ready";
 
 interface CashBalance {
   account: string;
@@ -196,6 +197,17 @@ export function PortfolioClient() {
     );
   }
 
+  if (view === "deposit") {
+    return (
+      <DepositForm
+        existingAccounts={existingAccounts}
+        cashByAccount={cashByAccount}
+        onSaved={() => loadData()}
+        onCancel={() => setView("ready")}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-1 overflow-hidden">
       <AccountSidebar
@@ -286,6 +298,12 @@ export function PortfolioClient() {
               Add position
             </button>
             <button
+              onClick={() => setView("deposit")}
+              className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+            >
+              Deposit
+            </button>
+            <button
               onClick={() => setView("addCash")}
               className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
             >
@@ -327,7 +345,7 @@ export function PortfolioClient() {
           />
         )}
         {subView === "heatmap" && (
-          <HoldingsHeatmap holdings={holdings} cash={cash} account={selectedAccount} />
+          <PortfolioDeck holdings={holdings} cash={cash} />
         )}
         {subView === "closed" && <ClosedPositions />}
         {subView === "dividends" && <DividendHistory />}

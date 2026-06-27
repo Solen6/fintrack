@@ -206,7 +206,17 @@ function usePrefersReducedMotion(): boolean {
 
 interface HoverState { symbol: string; cx: number; cy: number; }
 
-export function FuturesTreemap({ cells, tf }: { cells: FutureCell[]; tf: FuturesTimeframe }) {
+export function FuturesTreemap({
+  cells,
+  tf,
+  onSelect,
+  selected,
+}: {
+  cells: FutureCell[];
+  tf: FuturesTimeframe;
+  onSelect?: (symbol: string) => void;
+  selected?: string;
+}) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState({ w: 0, h: 0 });
   const [hover, setHover] = useState<HoverState | null>(null);
@@ -327,6 +337,8 @@ export function FuturesTreemap({ cells, tf }: { cells: FutureCell[]; tf: Futures
                 tf={tf}
                 transition={transition}
                 hovered={hover?.symbol === t.item.cell.symbol}
+                selected={selected === t.item.cell.symbol}
+                onSelect={onSelect}
                 onEnter={(cx, cy) => setHover({ symbol: t.item.cell.symbol, cx, cy })}
                 onLeave={() => setHover((h) => (h?.symbol === t.item.cell.symbol ? null : h))}
               />
@@ -342,12 +354,14 @@ export function FuturesTreemap({ cells, tf }: { cells: FutureCell[]; tf: Futures
 
 /* ─── A single tile ─── */
 function Tile({
-  placed, tf, transition, hovered, onEnter, onLeave,
+  placed, tf, transition, hovered, selected, onSelect, onEnter, onLeave,
 }: {
   placed: Placed<{ cell: FutureCell }>;
   tf: FuturesTimeframe;
   transition: string;
   hovered: boolean;
+  selected?: boolean;
+  onSelect?: (symbol: string) => void;
   onEnter: (cx: number, cy: number) => void;
   onLeave: () => void;
 }) {
@@ -375,29 +389,40 @@ function Tile({
   const ariaDir = errored ? "no data" : `${positive ? "up" : "down"} ${Math.abs(cell.changePct).toFixed(2)} percent`;
   const textShadow = "0 1px 2px oklch(0.06 0 0 / 0.7)";
 
+  const selectable = !!onSelect && !errored;
+
   const handleEnter = (e: React.MouseEvent<HTMLDivElement> | React.FocusEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     onEnter(r.left + r.width / 2, r.top);
   };
+  const handleSelect = () => { if (selectable) onSelect!(cell.symbol); };
+
+  // Persistent amber ring marks the contract loaded into the ticket (selection
+  // state, distinct from the transient hover brighten + keyboard focus ring).
+  const AMBER = "0.72 0.14 74";
 
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-label={`${cell.name}, ${cell.category}, ${ariaDir}`}
+      aria-label={`${cell.name}, ${cell.category}, ${ariaDir}${selectable ? ", select to trade" : ""}`}
+      aria-pressed={onSelect ? !!selected : undefined}
       onMouseEnter={handleEnter}
       onMouseLeave={onLeave}
       onFocus={handleEnter}
       onBlur={onLeave}
+      onClick={handleSelect}
+      onKeyDown={(e) => { if (selectable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleSelect(); } }}
       className="ftile absolute flex flex-col items-center justify-center overflow-hidden cursor-pointer focus:outline-none"
       style={{
         left: x, top: y, width: tw, height: th,
         background: bg,
-        border: `1px solid ${hovered ? hoverBorder : borderColor}`,
+        border: `1px solid ${selected ? `oklch(${AMBER})` : hovered ? hoverBorder : borderColor}`,
+        boxShadow: selected ? `inset 0 0 0 2px oklch(${AMBER}), 0 0 0 1px oklch(${AMBER} / 0.5)` : "none",
         boxSizing: "border-box",
         filter: hovered && !errored ? "brightness(1.12)" : "none",
         transition,
-        zIndex: hovered ? 5 : 1,
+        zIndex: selected ? 6 : hovered ? 5 : 1,
         opacity: errored ? 0.55 : 1,
       }}
     >
