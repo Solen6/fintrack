@@ -53,6 +53,7 @@ interface CareerStat {
   userId: string;
   handle: string;
   avatar: string | null;
+  points: number;
   wins: number;
   podiums: number;
   played: number;
@@ -91,7 +92,7 @@ export function CompetitionsClient() {
   const [board, setBoard] = useState<Board>("return");
   const [detailLoading, setDetailLoading] = useState(false);
 
-  const [modal, setModal] = useState<null | "create" | "join" | "handle">(null);
+  const [modal, setModal] = useState<null | "create" | "join" | "handle" | "scoring">(null);
   const [busy, setBusy] = useState(false);
 
   /* ── loaders ── */
@@ -236,29 +237,45 @@ export function CompetitionsClient() {
 
         {listError && <p className="text-xs" style={{ color: "var(--negative)" }}>{listError}</p>}
 
-        <HallOfFame career={career} />
+        <HallOfFame career={career} onShowScoring={() => setModal("scoring")} />
 
-        <Section title="Your competitions">
-          {mine.length === 0 ? (
-            <Empty>You haven&apos;t joined any competitions yet. Join a global one below or create your own.</Empty>
+        <Section title="Your active competitions">
+          {mine.filter(c => c.status !== "ended").length === 0 ? (
+            <Empty>You haven't joined any active competitions yet. Join a global one below or create your own.</Empty>
           ) : (
             <div className="grid sm:grid-cols-2 gap-3">
-              {mine.map((c) => <CompetitionCard key={c.id} comp={c} onOpen={() => openDetail(c.id)} />)}
+              {mine.filter(c => c.status !== "ended").map((c) => <CompetitionCard key={c.id} comp={c} onOpen={() => openDetail(c.id)} />)}
             </div>
           )}
         </Section>
 
-        <Section title="Global">
-          {global.length === 0 ? (
-            <Empty>No global competitions yet — be the first to create one.</Empty>
+        <Section title="Active global">
+          {global.filter(c => c.status !== "ended").length === 0 ? (
+            <Empty>No active global competitions yet — be the first to create one.</Empty>
           ) : (
             <div className="grid sm:grid-cols-2 gap-3">
-              {global.map((c) => (
+              {global.filter(c => c.status !== "ended").map((c) => (
                 <CompetitionCard key={c.id} comp={c} onOpen={() => openDetail(c.id)} onJoin={!c.joined ? () => join(c) : undefined} busy={busy} />
               ))}
             </div>
           )}
         </Section>
+
+        {(() => {
+          const past = [...mine.filter(c => c.status === "ended"), ...global.filter(c => c.status === "ended")];
+          const uniquePast = Array.from(new Map(past.map(c => [c.id, c])).values())
+            .sort((a, b) => Date.parse(b.endsAt) - Date.parse(a.endsAt));
+          if (uniquePast.length === 0) return null;
+          return (
+            <Section title="Past competitions">
+              <div className="grid sm:grid-cols-2 gap-3 opacity-80">
+                {uniquePast.map((c) => (
+                  <CompetitionCard key={c.id} comp={c} onOpen={() => openDetail(c.id)} busy={busy} />
+                ))}
+              </div>
+            </Section>
+          );
+        })()}
       </div>
       </div>
       )}
@@ -309,15 +326,21 @@ export function CompetitionsClient() {
           }}
         />
       )}
+      {modal === "scoring" && (
+        <ScoringModal onClose={() => setModal(null)} />
+      )}
     </>
   );
 }
 
 /* ─── List pieces ─── */
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-xs uppercase tracking-wide text-muted-foreground">{title}</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-xs uppercase tracking-wide text-muted-foreground">{title}</h2>
+        {action}
+      </div>
       {children}
     </section>
   );
@@ -376,9 +399,19 @@ function CompetitionCard({ comp, onOpen, onJoin, busy }: { comp: Competition; on
 }
 
 /* ─── Hall of Fame: career podium + standings ─── */
-function HallOfFame({ career }: { career: CareerStat[] }) {
+function HallOfFame({ career, onShowScoring }: { career: CareerStat[]; onShowScoring: () => void }) {
   return (
-    <Section title="Hall of Fame">
+    <Section 
+      title="Hall of Fame"
+      action={
+        <button 
+          onClick={onShowScoring} 
+          className="text-[10px] px-2 py-0.5 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-input transition-colors"
+        >
+          How scoring works
+        </button>
+      }
+    >
       {career.length === 0 ? (
         <Empty>No champions yet — win a competition to claim the top of the podium.</Empty>
       ) : (
@@ -413,8 +446,8 @@ function Podium({ career }: { career: CareerStat[] }) {
               {p.handle}{p.isMe && <span className="text-[10px] text-muted-foreground"> (you)</span>}
             </span>
             <div className="w-full rounded-t-sm flex flex-col items-center justify-center gap-0.5 pt-2" style={{ height: slot.h, background: slot.bg, borderTop: `2px solid ${slot.color}` }}>
-              <span className="font-mono text-xl leading-none" style={{ color: slot.color }}>{p.wins}</span>
-              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{p.wins === 1 ? "win" : "wins"}</span>
+              <span className="font-mono text-xl leading-none" style={{ color: slot.color }}>{p.points}</span>
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{p.points === 1 ? "pt" : "pts"}</span>
             </div>
           </div>
         );
@@ -431,6 +464,7 @@ function CareerStandings({ career }: { career: CareerStat[] }) {
           <tr className="text-xs uppercase tracking-wide text-muted-foreground border-b border-border">
             <th className="text-left py-2.5 px-4 font-medium">#</th>
             <th className="text-left py-2.5 px-2 font-medium">Player</th>
+            <th className="text-right py-2.5 px-2 font-medium" style={{ color: "var(--primary)" }}>Points</th>
             <th className="text-right py-2.5 px-2 font-medium">Wins</th>
             <th className="text-right py-2.5 px-2 font-medium">Podiums</th>
             <th className="text-right py-2.5 px-2 font-medium">Played</th>
@@ -442,7 +476,8 @@ function CareerStandings({ career }: { career: CareerStat[] }) {
             <tr key={c.userId} className="border-b border-border/60 last:border-0" style={c.isMe ? { background: "oklch(0.16 0.04 74 / 0.25)" } : {}}>
               <td className="py-2.5 px-4 font-mono text-muted-foreground">{i + 1}</td>
               <td className="py-2.5 px-2 text-foreground truncate">{c.handle}{c.isMe && <span className="text-[10px] text-muted-foreground"> (you)</span>}</td>
-              <td className="py-2.5 px-2 text-right font-mono" style={{ color: c.wins > 0 ? "var(--primary)" : "var(--muted-foreground)" }}>{c.wins}</td>
+              <td className="py-2.5 px-2 text-right font-mono text-foreground font-semibold" style={{ color: "var(--primary)" }}>{c.points}</td>
+              <td className="py-2.5 px-2 text-right font-mono text-muted-foreground">{c.wins}</td>
               <td className="py-2.5 px-2 text-right font-mono text-foreground">{c.podiums}</td>
               <td className="py-2.5 px-2 text-right font-mono text-muted-foreground">{c.played}</td>
               <td className="py-2.5 px-4 text-right font-mono text-muted-foreground">{c.wins}–{c.played - c.wins}</td>
@@ -451,6 +486,72 @@ function CareerStandings({ career }: { career: CareerStat[] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function ScoringModal({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal title="How career scoring works" onClose={onClose}>
+      <div className="flex flex-col gap-4 text-xs text-muted-foreground">
+        <p>
+          Finishing positions in finalized competitions are awarded points using the standard 
+          <strong className="text-foreground"> Formula 1 scoring system</strong>:
+        </p>
+        
+        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-sm border border-border bg-card p-3 font-mono text-xs">
+          <div className="flex justify-between border-b border-border/40 pb-1">
+            <span className="text-foreground font-semibold">1st Place</span>
+            <span className="text-primary font-bold">25 pts</span>
+          </div>
+          <div className="flex justify-between border-b border-border/40 pb-1">
+            <span className="text-foreground">6th Place</span>
+            <span className="text-foreground">8 pts</span>
+          </div>
+          <div className="flex justify-between border-b border-border/40 pb-1">
+            <span className="text-foreground font-semibold">2nd Place</span>
+            <span className="text-foreground font-semibold">18 pts</span>
+          </div>
+          <div className="flex justify-between border-b border-border/40 pb-1">
+            <span className="text-foreground">7th Place</span>
+            <span className="text-foreground">6 pts</span>
+          </div>
+          <div className="flex justify-between border-b border-border/40 pb-1">
+            <span className="text-foreground font-semibold">3rd Place</span>
+            <span className="text-foreground font-semibold">15 pts</span>
+          </div>
+          <div className="flex justify-between border-b border-border/40 pb-1">
+            <span className="text-foreground">8th Place</span>
+            <span className="text-foreground">4 pts</span>
+          </div>
+          <div className="flex justify-between border-b border-border/40 pb-1">
+            <span className="text-foreground">4th Place</span>
+            <span className="text-foreground">12 pts</span>
+          </div>
+          <div className="flex justify-between border-b border-border/40 pb-1">
+            <span className="text-foreground">9th Place</span>
+            <span className="text-foreground">2 pts</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-foreground">5th Place</span>
+            <span className="text-foreground">10 pts</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-foreground">10th Place</span>
+            <span className="text-foreground">1 pt</span>
+          </div>
+        </div>
+
+        <p>
+          Standings are ranked primarily by <strong className="text-foreground">Total Points</strong>. Ties are broken by 1st place wins, then podium finishes, and finally by the number of competitions played.
+        </p>
+
+        <div className="flex justify-end pt-2">
+          <button onClick={onClose} className="px-3 py-1.5 rounded-sm border border-border text-muted-foreground hover:text-foreground transition-colors">
+            Close
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -586,7 +687,7 @@ function CompetitionDetail({
                   </div>
                   {myRank >= 0 && <span className="text-xs text-muted-foreground">Your rank: <span className="text-foreground font-medium">#{myRank + 1}</span></span>}
                 </div>
-                <Leaderboard ranked={ranked} board={board} loading={loading} />
+                <Leaderboard ranked={ranked} board={board} loading={loading} isEnded={comp.status === "ended"} />
               </div>
 
               {/* live feed */}
@@ -602,7 +703,7 @@ function CompetitionDetail({
   );
 }
 
-function Leaderboard({ ranked, board, loading }: { ranked: LeaderRow[]; board: Board; loading: boolean }) {
+function Leaderboard({ ranked, board, loading, isEnded }: { ranked: LeaderRow[]; board: Board; loading: boolean; isEnded: boolean }) {
   if (loading && ranked.length === 0) return <div className="skeleton rounded-md" style={{ height: 240 }} />;
   if (ranked.length === 0) return <Empty>No players yet.</Empty>;
   return (
@@ -623,6 +724,9 @@ function Leaderboard({ ranked, board, loading }: { ranked: LeaderRow[]; board: B
             <tr key={r.userId} className="border-b border-border/60 last:border-0" style={r.isMe ? { background: "oklch(0.16 0.04 74 / 0.25)" } : {}}>
               <td className="py-2.5 px-4 font-mono text-muted-foreground">{i + 1}</td>
               <td className="py-2.5 px-2 text-foreground truncate">
+                {isEnded && board === "return" && i === 0 && <span className="mr-1" title="1st Place">🥇</span>}
+                {isEnded && board === "return" && i === 1 && <span className="mr-1" title="2nd Place">🥈</span>}
+                {isEnded && board === "return" && i === 2 && <span className="mr-1" title="3rd Place">🥉</span>}
                 {r.handle}{r.isMe && <span className="text-[10px] text-muted-foreground"> (you)</span>}
               </td>
               <td className="py-2.5 px-2 text-right font-mono" style={{ color: r.returnPct >= 0 ? "var(--positive)" : "var(--negative)" }}>{formatPercent(r.returnPct)}</td>

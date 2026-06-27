@@ -346,30 +346,48 @@ export async function finalizeEndedCompetitions(db: SupabaseClient): Promise<num
   return finalized;
 }
 
+export function getF1Points(rank: number): number {
+  switch (rank) {
+    case 1: return 25;
+    case 2: return 18;
+    case 3: return 15;
+    case 4: return 12;
+    case 5: return 10;
+    case 6: return 8;
+    case 7: return 6;
+    case 8: return 4;
+    case 9: return 2;
+    case 10: return 1;
+    default: return 0;
+  }
+}
+
 export interface CareerStat {
   userId: string;
   handle: string;
   avatar: string | null;
+  points: number;     // F1-style career points
   wins: number;       // 1st-place finishes
   podiums: number;    // top-3 finishes
   played: number;     // finalized competitions entered
 }
 
 /**
- * All-time career standings from competition_results, sorted for the podium
- * (wins, then podiums, then most played). Reads public-read tables, so it works
+ * All-time career standings from competition_results, sorted by F1-style points,
+ * then wins, then podiums, then most played. Reads public-read tables, so it works
  * with the caller's authed client. Empty if the results table isn't there yet.
  */
 export async function careerStandings(db: SupabaseClient): Promise<CareerStat[]> {
   const { data, error } = await db.from("competition_results").select("user_id, final_rank");
   if (error) return [];
 
-  const agg = new Map<string, { wins: number; podiums: number; played: number }>();
+  const agg = new Map<string, { points: number; wins: number; podiums: number; played: number }>();
   for (const r of (data ?? []) as { user_id: string; final_rank: number }[]) {
-    const s = agg.get(r.user_id) ?? { wins: 0, podiums: 0, played: 0 };
+    const s = agg.get(r.user_id) ?? { points: 0, wins: 0, podiums: 0, played: 0 };
     s.played++;
     if (r.final_rank === 1) s.wins++;
     if (r.final_rank <= 3) s.podiums++;
+    s.points += getF1Points(r.final_rank);
     agg.set(r.user_id, s);
   }
   const userIds = [...agg.keys()];
@@ -389,5 +407,5 @@ export async function careerStandings(db: SupabaseClient): Promise<CareerStat[]>
       const p = profMap.get(uid);
       return { userId: uid, handle: p?.handle ?? "Anonymous", avatar: p?.avatar ?? null, ...s };
     })
-    .sort((a, b) => b.wins - a.wins || b.podiums - a.podiums || b.played - a.played);
+    .sort((a, b) => b.points - a.points || b.wins - a.wins || b.podiums - a.podiums || b.played - a.played);
 }

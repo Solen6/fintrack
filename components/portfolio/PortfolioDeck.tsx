@@ -276,6 +276,16 @@ const TYPE_LABEL: Record<ActivityType, string> = {
   INTEREST: "Interest", FEE: "Fee", TRANSFER: "Transfer", OTHER: "Other",
 };
 
+// Per-type badge colors (tinted chip: low-chroma bg + brighter same-hue text).
+// Only the four requested types are colored; everything else stays neutral.
+const NEUTRAL_BADGE = { bg: "oklch(0.16 0 0)", fg: "oklch(0.72 0.008 74)" };
+const TYPE_BADGE: Partial<Record<ActivityType, { bg: string; fg: string }>> = {
+  BUY: { bg: "oklch(0.22 0.04 240)", fg: "oklch(0.74 0.09 240)" },   // steel blue — acquiring
+  SELL: { bg: "oklch(0.22 0.05 28)", fg: "oklch(0.72 0.13 28)" },    // red — exiting
+  DIV: { bg: "oklch(0.22 0.05 74)", fg: "oklch(0.78 0.12 74)" },     // amber — income (on-brand)
+  DEPOSIT: { bg: "oklch(0.22 0.04 150)", fg: "oklch(0.74 0.10 150)" }, // green — cash in
+};
+
 function ActivityFeed({ accounts, hidden }: { accounts: string[]; hidden: Set<string> }) {
   const [items, setItems] = useState<ActivityItem[] | null>(null);
   const [hasLedger, setHasLedger] = useState(true);
@@ -359,9 +369,10 @@ function ActivityFeed({ accounts, hidden }: { accounts: string[]; hidden: Set<st
 }
 
 function TypeBadge({ type }: { type: ActivityType }) {
+  const c = TYPE_BADGE[type] ?? NEUTRAL_BADGE;
   return (
     <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-sm w-16 text-center shrink-0"
-      style={{ background: "oklch(0.16 0 0)", color: "oklch(0.72 0.008 74)" }}>
+      style={{ background: c.bg, color: c.fg }}>
       {TYPE_LABEL[type]}
     </span>
   );
