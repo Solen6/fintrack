@@ -59,6 +59,7 @@ const RANGE_MAP: Record<FuturesTimeframe, { range: string; interval: string }> =
 // Cache per symbol:timeframe — 5 min (1D moves intraday)
 type FetchResult = { price: number; change: number; changePct: number };
 const cache = new Map<string, { data: FetchResult; ts: number }>();
+const dailyClosesCache = new Map<string, { data: number[]; ts: number }>();
 const TTL = 5 * 60_000;
 
 // Cap concurrent Yahoo requests so the ~28 symbols don't fire all at once (429s).
@@ -116,16 +117,67 @@ async function fetchChange(sym: string, tf: FuturesTimeframe): Promise<FetchResu
     base = closes[0] ?? price;
   }
 
-  const change = price - base;
-  const changePct = base ? (change / base) * 100 : 0;
+  let outPrice = price;
+  let outChange = price - base;
+  let outPct = base ? (outChange / base) * 100 : 0;
+
+  // When the market is closed, Yahoo carries the previous close as the "live"
+  // price, so the 1D change collapses to a meaningless 0 and the whole map goes
+  // flat/grey (e.g. weekends, overnight gaps before the Globex re-open). Fall
+  // back to the most recent completed session's move (Finviz-style) so the board
+  // still reflects the last real trading day. Only the 1D path needs this —
+  // 1W/1M/YTD measure against an older close and are unaffected.
+  if (tf === "1D" && price === base) {
+    try {
+      const closes = await fetchDailyCloses(sym);
+      if (closes.length >= 2) {
+        const last = closes[closes.length - 1];
+        const prev = closes[closes.length - 2];
+        if (prev) {
+          outPrice = last;
+          outChange = last - prev;
+          outPct = (outChange / prev) * 100;
+        }
+      }
+    } catch {
+      /* keep the flat result if the daily fallback is unavailable */
+    }
+  }
 
   const data: FetchResult = {
-    price,
-    change: parseFloat(change.toFixed(4)),
-    changePct: parseFloat(changePct.toFixed(2)),
+    price: outPrice,
+    change: parseFloat(outChange.toFixed(4)),
+    changePct: parseFloat(outPct.toFixed(2)),
   };
   cache.set(key, { data, ts: Date.now() });
   return data;
+}
+
+// Daily closes for the "last completed session" 1D fallback. Yahoo appends a
+// synthetic placeholder bar on non-trading days that simply duplicates the prior
+// session's close; we strip that trailing duplicate so the last two entries are
+// genuine consecutive sessions. Cached 5 min per symbol.
+async function fetchDailyCloses(sym: string): Promise<number[]> {
+  const key = `${sym}:DAILYCLOSES`;
+  const hit = dailyClosesCache.get(key);
+  if (hit && Date.now() - hit.ts < TTL) return hit.data;
+
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1mo`;
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; fintrack/1.0)" },
+    next: { revalidate: 300 },
+  });
+  if (!res.ok) throw new Error(`Yahoo ${sym} ${res.status}`);
+  const json = await res.json();
+  const result = json?.chart?.result?.[0];
+  const closes: number[] = (result?.indicators?.quote?.[0]?.close ?? []).filter(
+    (c: number | null): c is number => c != null
+  );
+  if (closes.length >= 2 && closes[closes.length - 1] === closes[closes.length - 2]) {
+    closes.pop();
+  }
+  dailyClosesCache.set(key, { data: closes, ts: Date.now() });
+  return closes;
 }
 
 export async function GET(request: NextRequest) {
