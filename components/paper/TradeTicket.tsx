@@ -22,6 +22,8 @@ export function TradeTicket({
   onFutureSymbolChange,
   fxSymbol,
   onFxSymbolChange,
+  stockSymbol,
+  onStockSymbolChange,
 }: {
   accountId: string;
   onPlaced: () => void;
@@ -33,6 +35,10 @@ export function TradeTicket({
   /** Same, for the FOREX pair (the forex deck's picker + heat grid). */
   fxSymbol?: string;
   onFxSymbolChange?: (s: string) => void;
+  /** Same, for the STOCK symbol (the stocks deck's heatmap). The input stays
+   *  editable — tile-clicks fill it, the user can still type a different ticker. */
+  stockSymbol?: string;
+  onStockSymbolChange?: (s: string) => void;
 }) {
   const [side, setSide] = useState<Side>("BUY");
   const [orderType, setOrderType] = useState<OrderType>("MARKET");
@@ -53,11 +59,15 @@ export function TradeTicket({
   const fxSym = controlledFx ? fxSymbol! : internalFxSym;
   const setFxSym = controlledFx ? onFxSymbolChange! : setInternalFxSym;
 
+  const controlledStock = stockSymbol !== undefined && onStockSymbolChange !== undefined;
+  const stkSym = controlledStock ? stockSymbol! : stockSym;
+  const setStkSym = controlledStock ? onStockSymbolChange! : setStockSym;
+
   const [estPrice, setEstPrice] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
 
-  const symbol = assetClass === "STOCK" ? stockSym.trim().toUpperCase()
+  const symbol = assetClass === "STOCK" ? stkSym.trim().toUpperCase()
     : assetClass === "FUTURE" ? futSym
     : fxSym;
 
@@ -86,8 +96,9 @@ export function TradeTicket({
 
   const reset = useCallback(() => {
     setQty(""); setLimitPrice(""); setStopPrice("");
-    setStockSym("");
-  }, []);
+    // Keep the ticker when the deck controls it (stay in sync with the heatmap).
+    if (!controlledStock) setStockSym("");
+  }, [controlledStock]);
 
   const qtyN = Number(qty);
   const previewPrice = estPrice ?? 0;
@@ -155,7 +166,8 @@ export function TradeTicket({
         {/* instrument */}
         {assetClass === "STOCK" && (
           <Field label="Symbol">
-            <input value={stockSym} onChange={(e) => setStockSym(e.target.value.toUpperCase())} placeholder="AAPL" className={inputCls} />
+            <input value={stkSym} onChange={(e) => setStkSym(e.target.value.toUpperCase())} placeholder="AAPL" className={inputCls} />
+            {controlledStock && <span className="text-xs text-muted-foreground">Click a tile in the heatmap, or type a ticker.</span>}
           </Field>
         )}
         {assetClass === "FUTURE" && (

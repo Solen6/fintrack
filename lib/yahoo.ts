@@ -244,6 +244,77 @@ export async function yahooFundCategory(symbol: string): Promise<string | null> 
   }
 }
 
+/* ─── Selected-stock detail stats (for the Stocks-deck detail panel) ───
+   One crumbed quoteSummary call per selected symbol → the headline stats the
+   panel shows (market cap, P/E, day & 52-week range, volume, dividend yield).
+   Returns null on any failure; individual fields may be null when Yahoo omits
+   them. 5-min cache (these barely move within a session). */
+
+export interface StockStats {
+  price:        number | null;
+  changePct:    number | null;
+  marketCap:    number | null;
+  trailingPE:   number | null;
+  dayLow:       number | null;
+  dayHigh:      number | null;
+  weekLow52:    number | null;
+  weekHigh52:   number | null;
+  volume:       number | null;
+  dividendYield: number | null; // fraction (0.0038 = 0.38%)
+}
+
+const statsCache = new Map<string, { data: StockStats | null; ts: number }>();
+const STATS_TTL = 5 * 60_000;
+
+const num = (v: unknown): number | null =>
+  v && typeof v === "object" && "raw" in v && typeof (v as { raw: unknown }).raw === "number"
+    ? (v as { raw: number }).raw
+    : null;
+
+export async function yahooStockStats(symbol: string): Promise<StockStats | null> {
+  const key = symbol.trim().toUpperCase();
+  const hit = statsCache.get(key);
+  if (hit && Date.now() - hit.ts < STATS_TTL) return hit.data;
+
+  const remember = (data: StockStats | null) => {
+    statsCache.set(key, { data, ts: Date.now() });
+    return data;
+  };
+
+  const build = (crumb: string) =>
+    `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=price,summaryDetail&crumb=${encodeURIComponent(crumb)}`;
+
+  try {
+    let { cookie, crumb } = await getAuth();
+    let res = await fetch(build(crumb), { headers: { "User-Agent": UA, Cookie: cookie } });
+    if (res.status === 401) {
+      ({ cookie, crumb } = await getAuth(true));
+      res = await fetch(build(crumb), { headers: { "User-Agent": UA, Cookie: cookie } });
+    }
+    if (!res.ok) return remember(null);
+
+    const result = (await res.json())?.quoteSummary?.result?.[0];
+    if (!result) return remember(null);
+    const p = result.price ?? {};
+    const sd = result.summaryDetail ?? {};
+
+    return remember({
+      price: num(p.regularMarketPrice),
+      changePct: num(p.regularMarketChangePercent) != null ? num(p.regularMarketChangePercent)! * 100 : null,
+      marketCap: num(p.marketCap),
+      trailingPE: num(sd.trailingPE),
+      dayLow: num(sd.dayLow),
+      dayHigh: num(sd.dayHigh),
+      weekLow52: num(sd.fiftyTwoWeekLow),
+      weekHigh52: num(sd.fiftyTwoWeekHigh),
+      volume: num(sd.volume),
+      dividendYield: num(sd.dividendYield),
+    });
+  } catch {
+    return remember(null);
+  }
+}
+
 /* ─── Upcoming dividend (forward ex-date) ───
    Finnhub's /stock/dividend2 is premium (free tier 403s), and Yahoo chart
    `events=div` only surfaces ex-dates on/after they pass — neither fills a

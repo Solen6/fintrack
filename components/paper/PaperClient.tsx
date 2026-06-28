@@ -5,11 +5,11 @@ import { useCallback, useEffect, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { recognizeStrategy } from "@/lib/option-strategies";
 import type { Leg } from "@/lib/options-math";
-import { TradeTicket } from "./TradeTicket";
 import { OptionsBuilder } from "@/components/options/OptionsBuilder";
 import { EquityCurve } from "./EquityCurve";
 import { FuturesDeck } from "./FuturesDeck";
 import { ForexDeck } from "./ForexDeck";
+import { StocksDeck } from "./StocksDeck";
 import type { AssetClass, MarginSummary, PaperAccountMeta, PaperOrder, PaperPosition } from "@/lib/paper-types";
 
 /** Reconstruct a recognizable label for a combo from its position legs. */
@@ -351,24 +351,20 @@ export function PaperClient({ initialAccountId }: { initialAccountId?: string | 
             />
           </div>
         ) : (
-          /* ── Stocks: trade ticket + charts ── */
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-1 flex flex-col gap-4">
-              <TradeTicket accountId={state.account.id} onPlaced={reload} assetClass={assetClass as Exclude<AssetClass, "OPTION">} />
-            </div>
-            <div className="lg:col-span-2 flex flex-col gap-4">
-              <EquityCurve accountId={state.account.id} refreshKey={refreshKey} />
-              <PositionsAndOrders
-                combos={combos}
-                grouped={grouped}
-                pending={pending}
-                history={history}
-                busy={busy}
-                closePosition={closePosition}
-                closeStrategy={closeStrategy}
-                cancelOrder={cancelOrder}
-              />
-            </div>
+          /* ── Stocks: S&P 500 heatmap + detail + ticket + sector bars ── */
+          <div className="flex flex-col gap-4">
+            <StocksDeck accountId={state.account.id} onPlaced={reload} />
+            <EquityCurve accountId={state.account.id} refreshKey={refreshKey} />
+            <PositionsAndOrders
+              combos={combos}
+              grouped={grouped}
+              pending={pending}
+              history={history}
+              busy={busy}
+              closePosition={closePosition}
+              closeStrategy={closeStrategy}
+              cancelOrder={cancelOrder}
+            />
           </div>
         )}
       </div>
