@@ -38,7 +38,7 @@ interface CashBalance {
 
 export function PortfolioClient() {
   const [view, setView] = useState<ViewState>("loading");
-  const [subView, setSubView] = useState<"table" | "heatmap" | "closed" | "dividends">("table");
+  const [subView, setSubView] = useState<"table" | "heatmap" | "closed" | "dividends">("heatmap");
   const [holdings, setHoldings] = useState<HoldingWithMetrics[]>([]);
   const [cash, setCash] = useState<CashBalance[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
@@ -245,16 +245,6 @@ export function PortfolioClient() {
             </button>
             <div className="flex items-center rounded-sm border border-border overflow-hidden mr-2">
               <button
-                onClick={() => setSubView("table")}
-                className="text-xs px-2.5 py-1 transition-colors duration-150"
-                style={{
-                  background: subView === "table" ? "oklch(0.16 0 0)" : "transparent",
-                  color: subView === "table" ? "var(--primary)" : "oklch(0.64 0.008 74)",
-                }}
-              >
-                Table
-              </button>
-              <button
                 onClick={() => setSubView("heatmap")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
                 style={{
@@ -263,6 +253,16 @@ export function PortfolioClient() {
                 }}
               >
                 Heatmap
+              </button>
+              <button
+                onClick={() => setSubView("table")}
+                className="text-xs px-2.5 py-1 transition-colors duration-150"
+                style={{
+                  background: subView === "table" ? "oklch(0.16 0 0)" : "transparent",
+                  color: subView === "table" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                }}
+              >
+                Table
               </button>
               <button
                 onClick={() => setSubView("closed")}

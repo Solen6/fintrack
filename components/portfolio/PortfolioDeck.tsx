@@ -6,6 +6,7 @@ import { formatCurrency } from "@/lib/format";
 import type { HoldingWithMetrics } from "@/lib/types";
 import type { ActivityItem, ActivityType } from "@/app/api/transactions/recent/route";
 import type { SeriesRange } from "@/app/api/paper/series/route";
+import type { StockStats } from "@/lib/yahoo";
 
 const HoldingsTreemap = nextDynamic(
   () => import("./HoldingsTreemap").then((m) => m.HoldingsTreemap),
@@ -26,6 +27,18 @@ const RUBY = "0.66 0.19 25";
 
 function fmtPx(n: number): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: n >= 50 ? 2 : 4 });
+}
+function fmtBigUsd(v: number): string {
+  if (v >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
+  if (v >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
+  if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+  return `$${v.toLocaleString("en-US")}`;
+}
+function fmtVol(v: number): string {
+  if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(0)}K`;
+  return v.toLocaleString("en-US");
 }
 
 export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMetrics[]; cash?: CashBalance[] }) {
@@ -132,7 +145,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
             <h2 className="text-xs uppercase tracking-wide text-muted-foreground">Portfolio Heatmap</h2>
             <p className="text-xs text-muted-foreground">Click a holding to chart it.</p>
           </div>
-          <div style={{ height: 340 }}>
+          <div style={{ height: 440 }}>
             {treemapHoldings.length === 0 ? (
               <div className="h-full flex items-center justify-center">
                 <p className="text-sm text-muted-foreground">No positions to show — adjust account filters.</p>
@@ -143,7 +156,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
           </div>
         </section>
 
-        {/* ── selected-ticker chart ── */}
+        {/* ── selected-holding: chart + insights ── */}
         <section className="rounded-md border border-border bg-card p-4 flex flex-col gap-3">
           <div className="flex items-end justify-between gap-3 flex-wrap">
             <div>
@@ -159,7 +172,20 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
               </div>
             )}
           </div>
-          {selected ? <TickerChart symbol={selected} /> : <p className="text-sm text-muted-foreground py-8 text-center">Select a holding above to see its price chart.</p>}
+          {selected ? (
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+              {/* price chart */}
+              <div className="lg:col-span-3 min-w-0">
+                <TickerChart symbol={selected} />
+              </div>
+              {/* insights table */}
+              <div className="lg:col-span-2 min-w-0">
+                <HoldingInsights symbol={selected} holding={selectedHolding} />
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground py-8 text-center">Select a holding above to see its price chart and insights.</p>
+          )}
         </section>
 
         {/* ── 30-day activity ── */}
@@ -258,6 +284,94 @@ function TickerChart({ symbol }: { symbol: string }) {
           </ResponsiveContainer>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ─── Selected-holding insights: live market stats + your position ─── */
+function HoldingInsights({ symbol, holding }: { symbol: string; holding: HoldingWithMetrics | null }) {
+  const [stats, setStats] = useState<StockStats | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!symbol) return;
+    let cancelled = false;
+    setStats(null);
+    setLoading(true);
+    fetch(`/api/stocks/detail?symbol=${encodeURIComponent(symbol)}`)
+      .then((r) => r.json())
+      .then((d: { stats?: StockStats | null }) => { if (!cancelled) setStats(d.stats ?? null); })
+      .catch(() => { if (!cancelled) setStats(null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [symbol]);
+
+  const price = stats?.price ?? holding?.currentPrice ?? null;
+  const rangePos = (lo: number | null | undefined, hi: number | null | undefined, p: number | null) =>
+    lo != null && hi != null && p != null && hi > lo ? Math.max(0, Math.min(1, (p - lo) / (hi - lo))) : null;
+  const gainTone = holding ? (holding.gainDollar >= 0 ? "var(--positive)" : "var(--negative)") : undefined;
+
+  return (
+    <div className="flex flex-col gap-3 h-full">
+      <div>
+        <h3 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Key Stats</h3>
+        <div className="grid grid-cols-2 gap-px rounded-sm overflow-hidden" style={{ background: "var(--border)" }}>
+          <Stat label="Market cap" value={stats?.marketCap != null ? fmtBigUsd(stats.marketCap) : "—"} loading={loading} />
+          <Stat label="P / E" value={stats?.trailingPE != null ? stats.trailingPE.toFixed(1) : "—"} loading={loading} />
+          <Stat label="Div yield" value={stats?.dividendYield != null ? `${(stats.dividendYield * 100).toFixed(2)}%` : "—"} loading={loading} />
+          <Stat label="Volume" value={stats?.volume != null ? fmtVol(stats.volume) : "—"} loading={loading} />
+          <Stat
+            label="Day range"
+            value={stats?.dayLow != null && stats?.dayHigh != null ? `${fmtPx(stats.dayLow)}–${fmtPx(stats.dayHigh)}` : "—"}
+            loading={loading}
+            pos={rangePos(stats?.dayLow, stats?.dayHigh, price)}
+          />
+          <Stat
+            label="52-wk range"
+            value={stats?.weekLow52 != null && stats?.weekHigh52 != null ? `${fmtPx(stats.weekLow52)}–${fmtPx(stats.weekHigh52)}` : "—"}
+            loading={loading}
+            pos={rangePos(stats?.weekLow52, stats?.weekHigh52, price)}
+          />
+        </div>
+      </div>
+
+      {holding && (
+        <div>
+          <h3 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Your position</h3>
+          <div className="grid grid-cols-2 gap-px rounded-sm overflow-hidden" style={{ background: "var(--border)" }}>
+            <Stat label="Shares" value={holding.shares.toLocaleString("en-US", { maximumFractionDigits: 4 })} />
+            <Stat label="Market value" value={formatCurrency(holding.value)} />
+            <Stat label="Avg cost" value={formatCurrency(holding.costBasis)} />
+            <Stat
+              label="Unrealized"
+              value={`${holding.gainDollar >= 0 ? "+" : "−"}${formatCurrency(Math.abs(holding.gainDollar))} · ${holding.gainPercent >= 0 ? "+" : ""}${holding.gainPercent.toFixed(2)}%`}
+              tone={gainTone}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, loading, pos, tone }: { label: string; value: string; loading?: boolean; pos?: number | null; tone?: string }) {
+  return (
+    <div className="bg-card px-3 py-2.5 flex flex-col gap-1">
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
+      {loading ? (
+        <span className="skeleton rounded-sm" style={{ height: 14, width: "60%" }} />
+      ) : (
+        <span className={`text-sm font-mono tabular-nums ${tone ? "" : "text-foreground"}`} style={tone ? { color: tone } : undefined}>{value}</span>
+      )}
+      {/* range-position marker (low ▏ ··●·· ▕ high) */}
+      {pos != null && !loading && (
+        <div className="relative mt-0.5 h-1 rounded-full" style={{ background: "oklch(0.20 0 0)" }}>
+          <div
+            className="absolute top-1/2 h-2 w-2 rounded-full -translate-y-1/2 -translate-x-1/2"
+            style={{ left: `${pos * 100}%`, background: "var(--primary)" }}
+          />
+        </div>
+      )}
     </div>
   );
 }
