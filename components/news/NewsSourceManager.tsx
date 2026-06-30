@@ -2,6 +2,18 @@
 
 import { useState, useEffect, useRef } from "react";
 import { BUILTIN_SOURCES, type BuiltinKey, type BuiltinPrefs } from "@/lib/news-builtins";
+import { sourceColor } from "@/lib/news-source-color";
+
+/* Colored dot matching the source's color in the news feed. */
+function SourceDot({ source, dimmed }: { source: string; dimmed?: boolean }) {
+  return (
+    <span
+      className="w-2 h-2 rounded-full shrink-0 transition-opacity duration-150"
+      style={{ background: sourceColor(source), opacity: dimmed ? 0.3 : 1 }}
+      aria-hidden
+    />
+  );
+}
 
 export interface NewsSource {
   id: string;
@@ -160,6 +172,7 @@ export function NewsSourceManager({
                     onClick={() => onToggleBuiltin(b.key, !builtins[b.key])}
                     label={`${builtins[b.key] ? "Disable" : "Enable"} ${b.name}`}
                   />
+                  <SourceDot source={b.name} dimmed={!builtins[b.key]} />
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm font-medium truncate ${builtins[b.key] ? "text-foreground" : "text-muted-foreground"}`}>
                       {b.name}
@@ -191,6 +204,7 @@ export function NewsSourceManager({
                       onClick={() => handleToggle(s.id, !s.enabled)}
                       label={s.enabled ? "Disable source" : "Enable source"}
                     />
+                    <SourceDot source={s.name} dimmed={!s.enabled} />
                     <div className="flex-1 min-w-0">
                       <p className={`text-sm font-medium truncate ${s.enabled ? "text-foreground" : "text-muted-foreground"}`}>
                         {s.name}
@@ -260,9 +274,10 @@ export function NewsSourceManager({
                   <button
                     key={s.url}
                     onClick={() => { setName(s.name); setUrl(s.url); nameRef.current?.focus(); }}
-                    className="px-2.5 py-1 rounded-md text-xs border border-border text-muted-foreground hover:text-foreground hover:border-primary transition-colors"
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs border border-border text-muted-foreground hover:text-foreground hover:border-primary transition-colors"
                     style={{ background: "oklch(0.10 0 0)" }}
                   >
+                    <SourceDot source={s.name} />
                     {s.name}
                   </button>
                 ))}

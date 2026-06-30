@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import type { NewsArticle } from "@/app/api/news/route";
 import type { ArticleState } from "@/app/api/news/interactions/route";
 import { formatRelativeTime } from "@/lib/format";
+import { sourceColor } from "@/lib/news-source-color";
 
 type Filter = "all" | "saved";
 
@@ -134,6 +135,26 @@ function tickerBtn(active: boolean) {
   ].join(" ");
 }
 
+/* ─── Source color coding ───
+   Stable source → color mapping lives in lib/news-source-color so the feed and
+   the Edit Sources modal render matching dots. */
+function SourceLabel({ source }: { source: string | undefined }) {
+  if (!source) return null;
+  const color = sourceColor(source);
+  return (
+    <span className="flex items-center gap-1.5 min-w-0">
+      <span
+        className="w-1.5 h-1.5 rounded-full shrink-0"
+        style={{ background: color }}
+        aria-hidden
+      />
+      <span className="text-xs truncate" style={{ color }}>
+        {source}
+      </span>
+    </span>
+  );
+}
+
 /* ─── Per-article action buttons ─── */
 function Actions({
   url,
@@ -238,7 +259,7 @@ function LeadStory({
               {item.ticker}
             </span>
           )}
-          <span className="text-xs text-muted-foreground truncate">{item.source}</span>
+          <SourceLabel source={item.source} />
           <span className="text-xs text-muted-foreground ml-auto shrink-0">
             {formatRelativeTime(new Date(item.timestamp))}
           </span>
@@ -305,7 +326,7 @@ function FeedItem({
                 {item.ticker}
               </span>
             )}
-            <span className="text-xs text-muted-foreground truncate">{item.source}</span>
+            <SourceLabel source={item.source} />
             <span className="text-xs text-muted-foreground ml-auto shrink-0">
               {formatRelativeTime(new Date(item.timestamp))}
             </span>
