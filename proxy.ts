@@ -39,8 +39,10 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Public routes — no auth needed
-  const publicRoutes = ["/", "/login", "/auth/callback", "/api/macro", "/api/commodities", "/api/news", "/api/sentiment", "/api/paper/cron", "/api/snapshots/cron", "/api/corporate-actions/cron"];
-  const isPublic = publicRoutes.some((r) => pathname.startsWith(r));
+  const publicRoutes = ["/", "/login", "/auth/callback", "/api/macro", "/api/commodities", "/api/news", "/api/sentiment", "/api/paper/cron", "/api/snapshots/cron", "/api/corporate-actions/cron", "/api/reports/cron"];
+  const isPublic = publicRoutes.some(
+    (r) => pathname === r || (r !== "/" && pathname.startsWith(r + "/"))
+  );
 
   // 12-hour forced logout. The anchor is stamped at sign-in and cleared whenever
   // there is no user, so a fresh login always starts a clean window.
