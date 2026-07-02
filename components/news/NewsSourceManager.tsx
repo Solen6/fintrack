@@ -32,21 +32,28 @@ interface Props {
   onToggleBuiltin: (key: BuiltinKey, enabled: boolean) => void;
 }
 
-/* ─── Reusable pill toggle ─── */
+/* ─── Reusable switch ───
+   Track glides between near-black (off) and Signal Amber (on); the thumb stays
+   legible in both states — muted-light on the dark track, near-black on amber. */
 function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) {
   return (
     <button
-      onClick={onClick}
-      className="w-8 h-[18px] rounded-full shrink-0 relative transition-colors duration-150"
-      style={{ background: on ? "oklch(0.72 0.14 74)" : "oklch(0.22 0 0)" }}
+      type="button"
+      role="switch"
+      aria-checked={on}
       aria-label={label}
-      aria-pressed={on}
+      onClick={onClick}
+      className="w-9 h-5 rounded-full shrink-0 relative border transition-colors duration-150 ease-out"
+      style={{
+        background: on ? "oklch(0.72 0.14 74)" : "oklch(0.08 0 0)",
+        borderColor: on ? "oklch(0.72 0.14 74)" : "oklch(0.30 0 0)",
+      }}
     >
       <span
-        className="absolute top-[2px] w-[14px] h-[14px] rounded-full transition-transform duration-150"
+        className="absolute top-[2px] w-[14px] h-[14px] rounded-full transition-[transform,background] duration-150 ease-out"
         style={{
-          background: "oklch(0.08 0 0)",
-          transform: on ? "translateX(16px)" : "translateX(2px)",
+          background: on ? "oklch(0.08 0 0)" : "oklch(0.64 0.008 74)",
+          transform: on ? "translateX(18px)" : "translateX(2px)",
         }}
       />
     </button>
