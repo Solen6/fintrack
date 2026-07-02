@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { fetchQuotes } from "@/lib/finnhub";
 import { isMarketDay } from "@/lib/market-calendar";
 import { applyCorporateActionsWindow } from "@/lib/corporate-actions";
+import { generateMonthlyReports } from "@/lib/monthly-reports";
 
 /**
  * Scheduled trigger: captures a daily portfolio_snapshots row for every user
@@ -59,7 +60,17 @@ async function run() {
   if (error) throw new Error(error.message);
   const rows = (holdings ?? []) as HoldingRow[];
   const cash = (cashRows ?? []) as { user_id: string; account: string | null; balance: number }[];
-  if (rows.length === 0 && cash.length === 0) return { users: 0, captured: 0, corporateActions };
+  if (rows.length === 0 && cash.length === 0) {
+    // Nothing to snapshot — but a fully-liquidated user may still be owed last
+    // month's cash-flow/tax reports (the generator reads the event tables too).
+    let monthlyReports = null;
+    try {
+      monthlyReports = await generateMonthlyReports(db, today, {});
+    } catch {
+      monthlyReports = { error: "monthly reports failed" };
+    }
+    return { users: 0, captured: 0, corporateActions, monthlyReports };
+  }
 
   // One Finnhub call per unique ticker across all users (fetchQuotes caches
   // per-process for 60s anyway).
@@ -118,7 +129,18 @@ async function run() {
     captured += rowsToWrite.length;
   }
 
-  return { users, captured, date: today, corporateActions };
+  // Generate the just-closed month's per-account reports AFTER snapshots, so
+  // they read the freshest rows. "Missing" is checked in the DB (the 1st is
+  // often a weekend/holiday this cron skips); rides this cron to stay under
+  // the Hobby cron limit. Never abort the snapshot run if it fails.
+  let monthlyReports = null;
+  try {
+    monthlyReports = await generateMonthlyReports(db, today, quotes);
+  } catch {
+    monthlyReports = { error: "monthly reports failed" };
+  }
+
+  return { users, captured, date: today, corporateActions, monthlyReports };
 }
 
 export async function GET(request: NextRequest) {

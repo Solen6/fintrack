@@ -13,6 +13,7 @@ import { ClosePositionModal } from "./ClosePositionModal";
 import { DividendManager } from "./DividendManager";
 import { ClosedPositions } from "./ClosedPositions";
 import { DividendHistory } from "./DividendHistory";
+import { MonthlyReports } from "./MonthlyReports";
 import { computeMetrics } from "@/lib/types";
 import type { HoldingWithMetrics, Quote } from "@/lib/types";
 
@@ -38,7 +39,7 @@ interface CashBalance {
 
 export function PortfolioClient() {
   const [view, setView] = useState<ViewState>("loading");
-  const [subView, setSubView] = useState<"table" | "heatmap" | "closed" | "dividends">("heatmap");
+  const [subView, setSubView] = useState<"table" | "heatmap" | "closed" | "dividends" | "reports">("heatmap");
   const [holdings, setHoldings] = useState<HoldingWithMetrics[]>([]);
   const [cash, setCash] = useState<CashBalance[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
@@ -284,6 +285,16 @@ export function PortfolioClient() {
               >
                 Dividends
               </button>
+              <button
+                onClick={() => setSubView("reports")}
+                className="text-xs px-2.5 py-1 transition-colors duration-150"
+                style={{
+                  background: subView === "reports" ? "oklch(0.16 0 0)" : "transparent",
+                  color: subView === "reports" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                }}
+              >
+                Reports
+              </button>
             </div>
             <button
               onClick={() => setManagingDividends(true)}
@@ -349,6 +360,7 @@ export function PortfolioClient() {
         )}
         {subView === "closed" && <ClosedPositions />}
         {subView === "dividends" && <DividendHistory />}
+        {subView === "reports" && <MonthlyReports account={selectedAccount} />}
       </main>
 
       {closingHolding && (
