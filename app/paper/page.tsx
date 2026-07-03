@@ -10,7 +10,7 @@ export default async function PaperPage({
   // competition's sandbox account.
   const { account } = await searchParams;
   return (
-    <div className="h-screen flex flex-col bg-background overflow-hidden">
+    <div className="h-dvh flex flex-col bg-background overflow-hidden pb-[env(safe-area-inset-bottom)]">
       <TopNav />
       <PaperClient initialAccountId={account ?? null} />
     </div>
