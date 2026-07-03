@@ -144,6 +144,32 @@ dialog.app-dialog[open]::backdrop {
 .holdings-row:hover { background-color: oklch(0.14 0 0); }
 .holdings-row.expanded { background-color: oklch(0.15 0 0); }
 
+/* ─── Private mode ─── Masks sensitive money (balances, P&L, income) marked
+   with the <Sensitive> component. The real text is hidden with
+   `visibility:hidden` — never painted, so it can't be screenshotted or
+   selected — while its box (and therefore width) is preserved, so toggling
+   causes no layout shift. Dots are drawn by an ::after overlay. Only active
+   when <html> carries `is-private`. */
+html.is-private .fin-sensitive {
+  position: relative;
+  display: inline-block;
+  visibility: hidden;
+}
+html.is-private .fin-sensitive::after {
+  content: "••••";
+  visibility: visible;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ─── Scrollbar ─── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

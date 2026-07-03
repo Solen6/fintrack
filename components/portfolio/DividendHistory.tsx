@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { formatCurrency } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import { AddDividendModal } from "./AddDividendModal";
 
 interface DividendRecord {
@@ -105,7 +106,7 @@ export function DividendHistory() {
           </span>
           {dividends.length > 0 && (
             <span className="text-xs font-mono font-medium" style={{ color: "var(--positive)" }}>
-              Total received: {formatCurrency(total)}
+              Total received: <Sensitive>{formatCurrency(total)}</Sensitive>
             </span>
           )}
           <div className="ml-auto">
@@ -159,7 +160,7 @@ export function DividendHistory() {
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{d.name ?? "—"}</td>
                       <td className="px-4 py-3 text-right font-mono text-foreground">
-                        {d.amount != null ? formatCurrency(d.amount) : "—"}
+                        {d.amount != null ? <Sensitive>{formatCurrency(d.amount)}</Sensitive> : "—"}
                       </td>
                       <td className="px-4 py-3 text-center">
                         {d.reinvested == null ? (

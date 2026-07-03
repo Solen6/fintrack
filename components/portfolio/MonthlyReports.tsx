@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCurrency, formatPercent, formatShares } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import type {
   CashFlowReport,
   PortfolioReport,
@@ -221,7 +222,7 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
-function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
+function Stat({ label, value, color }: { label: string; value: React.ReactNode; color?: string }) {
   return (
     <div className="bg-card px-3 py-2.5 flex flex-col gap-0.5">
       <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
@@ -261,21 +262,26 @@ function PortfolioSection({ r }: { r: PortfolioReport }) {
       <StatGrid cols={6}>
         <Stat
           label="Month-end value"
-          value={me.total != null ? formatCurrency(me.total) : "—"}
+          value={me.total != null ? <Sensitive>{formatCurrency(me.total)}</Sensitive> : "—"}
         />
         <Stat
           label="Monthly return"
           value={me.monthReturnPct != null ? formatPercent(me.monthReturnPct) : "—"}
           color={me.monthReturnPct != null ? gainColor(me.monthReturnPct) : undefined}
         />
-        <Stat label="Market value" value={formatCurrency(r.totals.value)} />
-        <Stat label="Cost basis" value={formatCurrency(r.totals.costBasis)} />
+        <Stat label="Market value" value={<Sensitive>{formatCurrency(r.totals.value)}</Sensitive>} />
+        <Stat label="Cost basis" value={<Sensitive>{formatCurrency(r.totals.costBasis)}</Sensitive>} />
         <Stat
           label="Unrealized G/L"
-          value={`${formatCurrency(r.totals.gain)}${r.totals.gainPct != null ? ` (${formatPercent(r.totals.gainPct)})` : ""}`}
+          value={
+            <>
+              <Sensitive>{formatCurrency(r.totals.gain)}</Sensitive>
+              {r.totals.gainPct != null ? ` (${formatPercent(r.totals.gainPct)})` : ""}
+            </>
+          }
           color={gainColor(r.totals.gain)}
         />
-        <Stat label="Cash" value={formatCurrency(r.totals.cash)} />
+        <Stat label="Cash" value={<Sensitive>{formatCurrency(r.totals.cash)}</Sensitive>} />
       </StatGrid>
 
       {r.positions.length > 0 && (
@@ -306,9 +312,9 @@ function PortfolioSection({ r }: { r: PortfolioReport }) {
                     {formatCurrency(p.price)}
                     {!p.priced && <span title="No live quote — cost basis shown" style={{ color: DIM }}> *</span>}
                   </td>
-                  <td className={`${td} text-right font-mono`}>{formatCurrency(p.value)}</td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(p.value)}</Sensitive></td>
                   <td className={`${td} text-right font-mono`} style={{ color: gainColor(p.gain) }}>
-                    {formatCurrency(p.gain)}
+                    <Sensitive>{formatCurrency(p.gain)}</Sensitive>
                   </td>
                   <td className={`${td} text-right font-mono`} style={{ color: gainColor(p.gain) }}>
                     {p.gainPct != null ? formatPercent(p.gainPct) : "—"}
@@ -356,7 +362,7 @@ function Allocation({ title, rows }: { title: string; rows: { label: string; val
           </div>
           <span className="w-16 text-right font-mono tabular-nums">{row.weightPct.toFixed(2)}%</span>
           <span className="w-24 text-right font-mono tabular-nums text-muted-foreground">
-            {formatCurrency(row.value)}
+            <Sensitive>{formatCurrency(row.value)}</Sensitive>
           </span>
         </div>
       ))}
@@ -387,9 +393,9 @@ function CashFlowSection({ r }: { r: CashFlowReport }) {
   return (
     <Section title="Cash Flow & Savings" hint={r.hasLedger ? undefined : "Transactions ledger not deployed — deposits/buys absent"}>
       <StatGrid>
-        <Stat label="Total inflows" value={formatCurrency(r.inflows.total)} color={r.inflows.total > 0 ? "var(--positive)" : undefined} />
-        <Stat label="Total outflows" value={formatCurrency(r.outflows.total)} color={r.outflows.total > 0 ? "var(--negative)" : undefined} />
-        <Stat label="Net cash flow" value={formatCurrency(r.netCashFlow)} color={gainColor(r.netCashFlow)} />
+        <Stat label="Total inflows" value={<Sensitive>{formatCurrency(r.inflows.total)}</Sensitive>} color={r.inflows.total > 0 ? "var(--positive)" : undefined} />
+        <Stat label="Total outflows" value={<Sensitive>{formatCurrency(r.outflows.total)}</Sensitive>} color={r.outflows.total > 0 ? "var(--negative)" : undefined} />
+        <Stat label="Net cash flow" value={<Sensitive>{formatCurrency(r.netCashFlow)}</Sensitive>} color={gainColor(r.netCashFlow)} />
         <Stat label="Savings rate" value={r.savingsRate != null ? formatPercent(r.savingsRate, false) : "—"} />
       </StatGrid>
 
@@ -402,19 +408,19 @@ function CashFlowSection({ r }: { r: CashFlowReport }) {
         {r.cash.start != null && (
           <span>
             Cash {r.cash.startDate ? dateLabel(r.cash.startDate) : "start"}:{" "}
-            <span className="font-mono text-foreground">{formatCurrency(r.cash.start)}</span>
+            <span className="font-mono text-foreground"><Sensitive>{formatCurrency(r.cash.start)}</Sensitive></span>
           </span>
         )}
         {r.cash.end != null && (
           <span>
             Cash {r.cash.endDate ? dateLabel(r.cash.endDate) : "end"}:{" "}
-            <span className="font-mono text-foreground">{formatCurrency(r.cash.end)}</span>
+            <span className="font-mono text-foreground"><Sensitive>{formatCurrency(r.cash.end)}</Sensitive></span>
           </span>
         )}
         {r.dividendsReinvested > 0 && (
           <span>
             Reinvested dividends (no cash impact):{" "}
-            <span className="font-mono text-foreground">{formatCurrency(r.dividendsReinvested)}</span>
+            <span className="font-mono text-foreground"><Sensitive>{formatCurrency(r.dividendsReinvested)}</Sensitive></span>
           </span>
         )}
       </div>
@@ -462,7 +468,7 @@ function FlowTable({ title, lines, total, positive }: {
       {lines.filter((l) => l.value !== 0).map((l) => (
         <div key={l.label} className="flex items-center justify-between text-xs py-0.5">
           <span className="text-muted-foreground">{l.label}</span>
-          <span className="font-mono tabular-nums">{formatCurrency(l.value)}</span>
+          <span className="font-mono tabular-nums"><Sensitive>{formatCurrency(l.value)}</Sensitive></span>
         </div>
       ))}
       <div className="flex items-center justify-between text-xs py-1 border-t border-border/50 mt-1">
@@ -471,7 +477,7 @@ function FlowTable({ title, lines, total, positive }: {
           className="font-mono tabular-nums font-medium"
           style={{ color: total > 0 ? (positive ? "var(--positive)" : "var(--negative)") : undefined }}
         >
-          {formatCurrency(total)}
+          <Sensitive>{formatCurrency(total)}</Sensitive>
         </span>
       </div>
     </div>
@@ -498,9 +504,9 @@ function EventRow({ e }: { e: ReportEvent }) {
         {/* DRIP: no cash moved — ↻ gross, matching the activity feed (parens
             would read as a negative amount). */}
         {e.amount !== 0 ? (
-          formatCurrency(e.amount)
+          <Sensitive>{formatCurrency(e.amount)}</Sensitive>
         ) : e.type === "DIV" && e.gross > 0 ? (
-          <span style={{ color: MUTED }}>↻ {formatCurrency(e.gross)}</span>
+          <span style={{ color: MUTED }}>↻ <Sensitive>{formatCurrency(e.gross)}</Sensitive></span>
         ) : (
           "—"
         )}
@@ -515,10 +521,10 @@ function TaxSection({ r }: { r: TaxReport }) {
   return (
     <Section title="Realized Gains & Income" hint="Tax-readiness summary">
       <StatGrid>
-        <Stat label="Realized gain/loss" value={formatCurrency(r.realized.totalGain)} color={gainColor(r.realized.totalGain)} />
-        <Stat label="Dividend income" value={formatCurrency(r.income.totalGross)} />
-        <Stat label="Interest" value={formatCurrency(r.income.interest)} />
-        <Stat label="Fees" value={formatCurrency(r.fees.total)} color={r.fees.total > 0 ? "var(--negative)" : undefined} />
+        <Stat label="Realized gain/loss" value={<Sensitive>{formatCurrency(r.realized.totalGain)}</Sensitive>} color={gainColor(r.realized.totalGain)} />
+        <Stat label="Dividend income" value={<Sensitive>{formatCurrency(r.income.totalGross)}</Sensitive>} />
+        <Stat label="Interest" value={<Sensitive>{formatCurrency(r.income.interest)}</Sensitive>} />
+        <Stat label="Fees" value={<Sensitive>{formatCurrency(r.fees.total)}</Sensitive>} color={r.fees.total > 0 ? "var(--negative)" : undefined} />
       </StatGrid>
 
       {r.realized.lots.length > 0 && (
@@ -543,9 +549,9 @@ function TaxSection({ r }: { r: TaxReport }) {
                   <td className={`${td} text-right font-mono`}>{formatShares(l.shares)}</td>
                   <td className={`${td} text-right font-mono`}>{formatCurrency(l.costPerShare)}</td>
                   <td className={`${td} text-right font-mono`}>{formatCurrency(l.salePrice)}</td>
-                  <td className={`${td} text-right font-mono`}>{formatCurrency(l.proceeds)}</td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(l.proceeds)}</Sensitive></td>
                   <td className={`${td} text-right font-mono`} style={{ color: gainColor(l.gain) }}>
-                    {formatCurrency(l.gain)}
+                    <Sensitive>{formatCurrency(l.gain)}</Sensitive>
                   </td>
                 </tr>
               ))}
@@ -571,9 +577,9 @@ function TaxSection({ r }: { r: TaxReport }) {
                 <tr key={d.ticker} className="border-b border-border/50">
                   <td className={`${td} font-mono font-semibold text-foreground`}>{d.ticker}</td>
                   <td className={`${td} text-right font-mono`}>{d.payments}</td>
-                  <td className={`${td} text-right font-mono`}>{formatCurrency(d.gross)}</td>
-                  <td className={`${td} text-right font-mono`}>{formatCurrency(d.cash)}</td>
-                  <td className={`${td} text-right font-mono`}>{formatCurrency(d.reinvested)}</td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(d.gross)}</Sensitive></td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(d.cash)}</Sensitive></td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(d.reinvested)}</Sensitive></td>
                 </tr>
               ))}
             </tbody>

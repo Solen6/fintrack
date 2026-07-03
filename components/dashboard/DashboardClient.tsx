@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import nextDynamic from "next/dynamic";
 import { formatCurrency, formatPercent } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
 import { isInvestedType, resolveAccountType, type AccountType } from "@/lib/account-types";
 
@@ -269,7 +270,14 @@ export function DashboardClient() {
     const positionsValue = positions.reduce((s, p) => s + p.value, 0);
     const totalValue = positionsValue + cash;
     const totalGain = positionsValue - invested;
-    const totalReturnPct = invested > 0 ? (totalGain / invested) * 100 : 0;
+    // Return % = dollar gain ÷ TOTAL ACCOUNT BALANCE (current holdings value +
+    // cash), matching Fidelity's account-level Gain/Loss %. Dividing by the
+    // whole balance instead of just the amount invested is what brings 2.61%
+    // down to 2.46%. The dollar gain itself is unchanged. NOTE: this only
+    // shrinks the % if cash is actually recorded in Fintrack — if agg.cash is 0,
+    // totalValue is just holdings value (< invested while down) and the % will
+    // be slightly LARGER, not smaller.
+    const totalReturnPct = totalValue > 0 ? (totalGain / totalValue) * 100 : 0;
 
     const todayChange = positions.reduce((s, p) => {
       const pct = (quotes[p.ticker]?.changePct ?? 0) / 100;
@@ -366,18 +374,18 @@ export function DashboardClient() {
   }, [snapshots, enabledAccounts, allAccountsOn, agg.positionsValue, agg.cash]);
 
   /* Performance chart: clip the series to the selected timeframe, then plot
-     GAIN VS COST BASIS at each point — (value − costBasis) / costBasis.
+     GAIN VS TOTAL ACCOUNT BALANCE at each point — (value − costBasis) /
+     (value + cash).
 
-     This makes the chart's headline return match the Accounts tab exactly
-     (both are "how far is the portfolio above what I paid"), instead of the
-     old "return since the first snapshot," which only saw the tracked window
-     and disagreed with the Accounts number. Robust to contributions: adding a
-     position raises value AND cost basis together, so the ratio doesn't jump.
-
-     costBasis = current total cost of enabled holdings (agg.invested). It's
-     held flat across the window — an approximation if you've traded mid-window,
-     but exact when holdings are stable, and it's what reconciles the two
-     numbers the user looks at. */
+     This makes the chart's latest Return % equal the hero "Total Return"
+     metric and match Fidelity's account-level Gain/Loss % (which divides the
+     gain by the whole account balance, cash included). costBasis (agg.invested)
+     and cash (agg.cash) are both held flat across the window — an approximation
+     if you've traded/moved cash mid-window, but exact when holdings are stable,
+     and it keeps the hero metric and the chart's latest point in agreement.
+     NOTE: this is intentionally a different figure from the Accounts tab
+     "Unrealized P&L %", which divides by holdings cost only (matching
+     Fidelity's per-position view). */
   const perf = useMemo(() => {
     const start = (() => {
       if (timeframe === "ALL") return null;
@@ -395,11 +403,17 @@ export function DashboardClient() {
       : series;
 
     const costBasis = agg.invested;
+    // Cash held flat across the window — snapshots' per-day cash is 0 for older
+    // rows (cash capture started recently), so using real historical cash would
+    // put a fake cliff in the line where capture began.
+    const cashFlat = agg.cash;
     const points: PerfPoint[] = clipped.map((s) => {
-      // Return % is a pure securities figure (gain vs cost basis) — cash isn't a
-      // gain. The Value line plots the true total: securities + cash.
+      // Return % = that day's gain ÷ that day's TOTAL BALANCE (holdings value +
+      // cash), matching the hero metric and Fidelity's account Gain/Loss %.
+      // The Value line still plots the true total: securities + cash.
       const gain = s.value - costBasis;
-      const returnPct = costBasis > 0 ? (gain / costBasis) * 100 : 0;
+      const base = s.value + cashFlat;
+      const returnPct = base > 0 ? (gain / base) * 100 : 0;
       const totalValue = s.value + s.cash;
       return {
         label: new Date(`${s.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
@@ -422,7 +436,7 @@ export function DashboardClient() {
         ? new Date(`${clipped[0].date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
         : null,
     };
-  }, [series, timeframe, metric, agg.invested]);
+  }, [series, timeframe, metric, agg.invested, agg.cash]);
 
   /* History derivations — period-over-period returns from snapshots. */
   const history = useMemo(() => {
@@ -595,12 +609,12 @@ export function DashboardClient() {
           />
           <Metric
             label="Total Gain"
-            value={formatCurrency(agg.totalGain)}
+            value={<Sensitive>{formatCurrency(agg.totalGain)}</Sensitive>}
             tone={agg.totalGain >= 0 ? "pos" : "neg"}
           />
           <Divider />
-          {agg.cash > 0 && <Metric label="Cash" value={formatCurrency(agg.cash)} />}
-          <Metric label="Invested" value={formatCurrency(agg.invested)} muted />
+          {agg.cash > 0 && <Metric label="Cash" value={<Sensitive>{formatCurrency(agg.cash)}</Sensitive>} />}
+          <Metric label="Invested" value={<Sensitive>{formatCurrency(agg.invested)}</Sensitive>} muted />
           <Metric label="Positions" value={String(agg.positions.length)} muted />
         </div>
 
@@ -612,7 +626,7 @@ export function DashboardClient() {
                 Total Portfolio Value
               </span>
               <span className="font-mono text-[2.75rem] leading-none text-foreground">
-                {formatCurrency(agg.totalValue)}
+                <Sensitive>{formatCurrency(agg.totalValue)}</Sensitive>
               </span>
               <div className="flex items-baseline gap-2 mt-1">
                 <span className="text-xs text-muted-foreground">Today</span>
@@ -620,7 +634,7 @@ export function DashboardClient() {
                   className="font-mono text-sm"
                   style={toneStyle(agg.todayChange >= 0 ? "pos" : "neg")}
                 >
-                  {formatCurrency(agg.todayChange)}
+                  <Sensitive>{formatCurrency(agg.todayChange)}</Sensitive>
                 </span>
                 <span
                   className="font-mono text-xs"
@@ -643,7 +657,7 @@ export function DashboardClient() {
                         className="font-mono text-lg leading-none"
                         style={toneStyle(perf.gain >= 0 ? "pos" : "neg")}
                       >
-                        {perf.gain >= 0 ? "+" : ""}{formatCurrency(perf.gain)}
+                        <Sensitive>{perf.gain >= 0 ? "+" : ""}{formatCurrency(perf.gain)}</Sensitive>
                       </span>
                       <span
                         className="font-mono text-xs"
@@ -939,7 +953,7 @@ function AllocationModal({
         </div>
 
         <p className="text-xs text-muted-foreground">
-          {data.length} {data.length === 1 ? "sector" : "sectors"} · {formatCurrency(totalValue)} total
+          {data.length} {data.length === 1 ? "sector" : "sectors"} · <Sensitive>{formatCurrency(totalValue)}</Sensitive> total
         </p>
       </div>
     </dialog>
@@ -1000,7 +1014,7 @@ function Metric({
   muted,
 }: {
   label: string;
-  value: string;
+  value: React.ReactNode;
   tone?: "pos" | "neg";
   muted?: boolean;
 }) {
@@ -1242,13 +1256,13 @@ function HoldingsTable({
                 </td>
                 <td className="py-2.5 px-3 text-right font-mono text-foreground">{h.shares}</td>
                 <td className="py-2.5 px-3 text-right font-mono text-foreground">
-                  {formatCurrency(h.value)}
+                  <Sensitive>{formatCurrency(h.value)}</Sensitive>
                 </td>
                 <td
                   className="py-2.5 px-3 text-right font-mono"
                   style={{ color: pos ? "var(--positive)" : "var(--negative)" }}
                 >
-                  {formatCurrency(h.gain)}{" "}
+                  <Sensitive>{formatCurrency(h.gain)}</Sensitive>{" "}
                   <span className="text-xs">({formatPercent(h.gainPct)})</span>
                 </td>
                 <td className="py-2.5 pl-3 text-right font-mono text-muted-foreground">

@@ -3,6 +3,7 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { formatCurrency, formatPercent, formatShares } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import type { SortField, SortDir, HoldingWithMetrics } from "@/lib/types";
 import {
   Tooltip,
@@ -274,13 +275,13 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
           </Tooltip>
         </td>
         <td className="px-4 py-3 text-right font-mono text-sm text-foreground">
-          {formatCurrency(h.value)}
+          <Sensitive>{formatCurrency(h.value)}</Sensitive>
         </td>
         <td className="px-4 py-3 text-right font-mono text-sm text-muted-foreground">
           {weight.toFixed(1)}%
         </td>
         <td className="px-4 py-3 text-right font-mono text-sm" style={{ color: gainColor }}>
-          {h.gainDollar >= 0 ? "+" : ""}{formatCurrency(h.gainDollar)}
+          <Sensitive>{h.gainDollar >= 0 ? "+" : ""}{formatCurrency(h.gainDollar)}</Sensitive>
         </td>
         <td className="px-4 py-3 text-right font-mono text-sm" style={{ color: gainColor }}>
           {formatPercent(h.gainPercent)}

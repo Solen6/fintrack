@@ -16,6 +16,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { formatCurrency, formatCurrencyCompact, formatPercent } from "@/lib/format";
+import { usePrivacy, MONEY_MASK } from "@/lib/privacy";
 
 const AMBER = "oklch(0.72 0.14 74)";
 const POSITIVE = "oklch(0.72 0.15 152)";
@@ -62,8 +63,11 @@ export interface AllocationPoint {
    The amber line is the brand "single lamp"; gain/loss color is earned only in
    the tooltip figures. A baseline reference line marks the window start. */
 export function PerformanceChart({ data, metric }: { data: PerfPoint[]; metric: PerfMetric }) {
+  const { hidden } = usePrivacy();
   const isReturn = metric === "return";
-  const fmtY = (v: number) => (isReturn ? `${v.toFixed(0)}%` : formatCurrencyCompact(v));
+  // Return % isn't sensitive; the Value $ axis is a portfolio balance → masked.
+  const fmtY = (v: number) =>
+    isReturn ? `${v.toFixed(0)}%` : hidden ? MONEY_MASK : formatCurrencyCompact(v);
   return (
     <ResponsiveContainer width="100%" height="100%">
       <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
@@ -114,18 +118,21 @@ function PerfTooltip({ active, payload }: {
   active?: boolean;
   payload?: { payload: PerfPoint }[];
 }) {
+  const { hidden } = usePrivacy();
   if (!active || !payload || !payload.length) return null;
   const p = payload[0].payload;
   const gainColor = p.gain >= 0 ? POSITIVE : NEGATIVE;
+  const money = (n: number, sign = false) =>
+    hidden ? MONEY_MASK : `${sign && n >= 0 ? "+" : ""}${formatCurrency(n)}`;
   return (
     <div style={{ ...tooltipStyle, padding: "8px 10px", minWidth: 168 }}>
       <div style={{ color: MUTED, fontSize: 11, marginBottom: 6 }}>{p.date}</div>
-      <Row label="Value" value={formatCurrency(p.total)} mono />
-      <Row label="Gain" value={`${p.gain >= 0 ? "+" : ""}${formatCurrency(p.gain)}`} color={gainColor} mono />
+      <Row label="Value" value={money(p.total)} mono />
+      <Row label="Gain" value={money(p.gain, true)} color={gainColor} mono />
       <Row label="Return" value={formatPercent(p.returnPct)} color={gainColor} mono />
       <div style={{ height: 1, background: "oklch(0.24 0 0)", margin: "6px 0" }} />
-      <Row label="Holdings" value={formatCurrency(p.securities)} muted mono />
-      <Row label="Cash" value={formatCurrency(p.cash)} muted mono />
+      <Row label="Holdings" value={money(p.securities)} muted mono />
+      <Row label="Cash" value={money(p.cash)} muted mono />
     </div>
   );
 }
@@ -145,6 +152,7 @@ function Row({ label, value, color, muted, mono }: {
 
 /* ─── Asset allocation donut ─── */
 export function AllocationDonut({ data }: { data: AllocationPoint[] }) {
+  const { hidden } = usePrivacy();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <PieChart>
@@ -166,7 +174,7 @@ export function AllocationDonut({ data }: { data: AllocationPoint[] }) {
         </Pie>
         <Tooltip
           contentStyle={tooltipStyle}
-          formatter={(v, n) => [formatCurrencyCompact(v as number), n as string]}
+          formatter={(v, n) => [hidden ? MONEY_MASK : formatCurrencyCompact(v as number), n as string]}
         />
       </PieChart>
     </ResponsiveContainer>

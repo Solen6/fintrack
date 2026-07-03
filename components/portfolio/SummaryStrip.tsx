@@ -1,4 +1,5 @@
 import { formatCurrency, formatPercent } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import type { HoldingWithMetrics } from "@/lib/types";
 
 interface CashBalance {
@@ -35,15 +36,15 @@ export function SummaryStrip({ holdings, cash = [], account }: Props) {
 
   return (
     <div className="flex items-center gap-8 px-6 py-4 border-b border-border text-sm shrink-0 overflow-x-auto">
-      <Metric label="Portfolio Value" value={formatCurrency(totalValue)} large />
+      <Metric label="Portfolio Value" value={<Sensitive>{formatCurrency(totalValue)}</Sensitive>} large />
       <div className="w-px h-8 bg-border shrink-0" aria-hidden />
-      <Metric label="Today" value={formatCurrency(todayChange)} change={todayPct} showSign />
-      <Metric label="Unrealized P&L" value={formatCurrency(unrealized)} change={unrealizedPct} showSign />
-      {cashTotal > 0 && <Metric label="Cash" value={formatCurrency(cashTotal)} muted />}
+      <Metric label="Today" value={<Sensitive>{formatCurrency(todayChange)}</Sensitive>} change={todayPct} showSign />
+      <Metric label="Unrealized P&L" value={<Sensitive>{formatCurrency(unrealized)}</Sensitive>} change={unrealizedPct} showSign />
+      {cashTotal > 0 && <Metric label="Cash" value={<Sensitive>{formatCurrency(cashTotal)}</Sensitive>} muted />}
       {account === "all" && filtered.length > 0 && (
         <>
           <div className="w-px h-8 bg-border shrink-0" aria-hidden />
-          <Metric label="Cost Basis" value={formatCurrency(totalCost)} muted />
+          <Metric label="Cost Basis" value={<Sensitive>{formatCurrency(totalCost)}</Sensitive>} muted />
           <Metric label="Positions" value={String(filtered.length)} muted />
         </>
       )}
@@ -53,7 +54,7 @@ export function SummaryStrip({ holdings, cash = [], account }: Props) {
 
 interface MetricProps {
   label: string;
-  value: string;
+  value: React.ReactNode;
   change?: number;
   showSign?: boolean;
   large?: boolean;

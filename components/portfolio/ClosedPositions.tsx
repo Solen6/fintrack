@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { formatCurrency, formatShares, formatPercent } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 
 interface ClosedPosition {
   id: string;
@@ -57,7 +58,7 @@ export function ClosedPositions() {
           className="text-xs font-mono font-medium"
           style={{ color: totalGain >= 0 ? "var(--positive)" : "var(--negative)" }}
         >
-          Total realized: {totalGain >= 0 ? "+" : ""}{formatCurrency(totalGain)} ({formatPercent(totalPct)})
+          Total realized: <Sensitive>{totalGain >= 0 ? "+" : ""}{formatCurrency(totalGain)}</Sensitive> ({formatPercent(totalPct)})
         </span>
       </div>
       <table className="w-full text-sm border-collapse min-w-[700px]">
@@ -87,7 +88,7 @@ export function ClosedPositions() {
                 <td className="px-4 py-3 text-right font-mono text-muted-foreground">{formatCurrency(p.cost_basis)}</td>
                 <td className="px-4 py-3 text-right font-mono text-foreground">{formatCurrency(p.sale_price)}</td>
                 <td className="px-4 py-3 text-right font-mono" style={{ color }}>
-                  {gain >= 0 ? "+" : ""}{formatCurrency(gain)}
+                  <Sensitive>{gain >= 0 ? "+" : ""}{formatCurrency(gain)}</Sensitive>
                 </td>
                 <td className="px-4 py-3 text-right font-mono" style={{ color }}>
                   {formatPercent(returnPct)}

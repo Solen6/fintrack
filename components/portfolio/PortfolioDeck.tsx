@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import nextDynamic from "next/dynamic";
 import { formatCurrency } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import type { HoldingWithMetrics } from "@/lib/types";
 import type { ActivityItem, ActivityType } from "@/app/api/transactions/recent/route";
 import type { SeriesRange } from "@/app/api/paper/series/route";
@@ -340,11 +341,16 @@ function HoldingInsights({ symbol, holding }: { symbol: string; holding: Holding
           <h3 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Your position</h3>
           <div className="grid grid-cols-2 gap-px rounded-sm overflow-hidden" style={{ background: "var(--border)" }}>
             <Stat label="Shares" value={holding.shares.toLocaleString("en-US", { maximumFractionDigits: 4 })} />
-            <Stat label="Market value" value={formatCurrency(holding.value)} />
+            <Stat label="Market value" value={<Sensitive>{formatCurrency(holding.value)}</Sensitive>} />
             <Stat label="Avg cost" value={formatCurrency(holding.costBasis)} />
             <Stat
               label="Unrealized"
-              value={`${holding.gainDollar >= 0 ? "+" : "−"}${formatCurrency(Math.abs(holding.gainDollar))} · ${holding.gainPercent >= 0 ? "+" : ""}${holding.gainPercent.toFixed(2)}%`}
+              value={
+                <>
+                  <Sensitive>{holding.gainDollar >= 0 ? "+" : "−"}{formatCurrency(Math.abs(holding.gainDollar))}</Sensitive>
+                  {` · ${holding.gainPercent >= 0 ? "+" : ""}${holding.gainPercent.toFixed(2)}%`}
+                </>
+              }
               tone={gainTone}
             />
           </div>
@@ -354,7 +360,7 @@ function HoldingInsights({ symbol, holding }: { symbol: string; holding: Holding
   );
 }
 
-function Stat({ label, value, loading, pos, tone }: { label: string; value: string; loading?: boolean; pos?: number | null; tone?: string }) {
+function Stat({ label, value, loading, pos, tone }: { label: string; value: React.ReactNode; loading?: boolean; pos?: number | null; tone?: string }) {
   return (
     <div className="bg-card px-3 py-2.5 flex flex-col gap-1">
       <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
@@ -467,11 +473,11 @@ function ActivityFeed({ accounts, hidden }: { accounts: string[]; hidden: Set<st
               {it.account && <span className="text-[10px] text-muted-foreground hidden sm:block shrink-0">{it.account}</span>}
               {it.type === "DIV" && it.amount === 0 && it.gross > 0 ? (
                 <span className="font-mono tabular-nums w-24 text-right shrink-0 text-muted-foreground" title="Reinvested — no cash impact">
-                  ↻ {formatCurrency(it.gross)}
+                  ↻ <Sensitive>{formatCurrency(it.gross)}</Sensitive>
                 </span>
               ) : (
                 <span className="font-mono tabular-nums w-24 text-right shrink-0" style={{ color: it.amount >= 0 ? "var(--positive)" : "var(--negative)" }}>
-                  {it.amount >= 0 ? "+" : "−"}{formatCurrency(Math.abs(it.amount))}
+                  <Sensitive>{it.amount >= 0 ? "+" : "−"}{formatCurrency(Math.abs(it.amount))}</Sensitive>
                 </span>
               )}
             </li>

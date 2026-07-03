@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatCurrencyCompact } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import type { HoldingWithMetrics } from "@/lib/types";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -468,7 +469,7 @@ const Tile = memo(function Tile({
           className="font-mono tabular-nums"
           style={{ fontSize: 10, color: isCash ? "oklch(0.20 0.03 74)" : "oklch(0.98 0.005 74 / 0.6)", textShadow: isCash ? "none" : textShadow, marginTop: 1 }}
         >
-          {formatCurrencyCompact(cell.value)}
+          <Sensitive>{formatCurrencyCompact(cell.value)}</Sensitive>
         </span>
       )}
       {/* color-not-only fallback for the tiniest legible non-cash tiles */}
@@ -506,7 +507,7 @@ function Tooltip({ cell, cx, cy }: { cell: HCell; cx: number; cy: number }) {
         <span style={{ fontWeight: 400, color: "oklch(0.7 0.008 74)" }}>{cell.name}</span>
       </div>
       <div style={{ fontSize: 10.5, color: "oklch(0.6 0.008 74)", marginTop: 1 }}>
-        {cell.sector} · {formatCurrencyCompact(cell.value)}
+        {cell.sector} · <Sensitive>{formatCurrencyCompact(cell.value)}</Sensitive>
       </div>
       {cell.isCash ? (
         <div style={{ fontSize: 11, color: "oklch(0.78 0.12 74)", marginTop: 4 }}>cash balance</div>

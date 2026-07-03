@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { formatCurrencyCompact } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import type { HoldingWithMetrics } from "@/lib/types";
 import {
   ACCOUNT_TYPES,
@@ -94,7 +95,7 @@ export function AccountSidebar({ holdings, cash = [], selected, onSelect, onRemo
         <AccountItem
           label="All Accounts"
           sublabel={`${accounts.length} account${accounts.length !== 1 ? "s" : ""}`}
-          value={formatCurrencyCompact(grandTotal)}
+          value={<Sensitive>{formatCurrencyCompact(grandTotal)}</Sensitive>}
           active={selected === "all"}
           onClick={() => { onSelect("all"); setConfirmRemove(null); }}
         />
@@ -111,7 +112,7 @@ export function AccountSidebar({ holdings, cash = [], selected, onSelect, onRemo
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs text-muted-foreground font-medium">{group.label}</p>
             <span className="text-xs font-mono" style={{ color: "oklch(0.44 0.008 74)" }}>
-              {formatCurrencyCompact(group.subtotal)}
+              <Sensitive>{formatCurrencyCompact(group.subtotal)}</Sensitive>
             </span>
           </div>
           <div className="flex flex-col gap-0.5">
@@ -119,7 +120,7 @@ export function AccountSidebar({ holdings, cash = [], selected, onSelect, onRemo
               <div key={name} className="group relative">
                 <AccountItem
                   label={name}
-                  value={formatCurrencyCompact(value)}
+                  value={<Sensitive>{formatCurrencyCompact(value)}</Sensitive>}
                   active={selected === name}
                   onClick={() => { onSelect(name); setConfirmRemove(null); }}
                 />
@@ -153,7 +154,7 @@ export function AccountSidebar({ holdings, cash = [], selected, onSelect, onRemo
 interface AccountItemProps {
   label: string;
   sublabel?: string;
-  value?: string;
+  value?: React.ReactNode;
   active: boolean;
   onClick: () => void;
 }

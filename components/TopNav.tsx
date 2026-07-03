@@ -8,6 +8,7 @@ import { formatRelativeTime } from "@/lib/format";
 import { LAST_SYNC } from "@/lib/mock-data";
 import { createClient } from "@/lib/supabase/client";
 import { useProfile } from "@/lib/use-profile";
+import { usePrivacy } from "@/lib/privacy";
 
 const NAV_TABS = [
   { href: "/dashboard", label: "Dashboard" },
@@ -54,8 +55,10 @@ export function TopNav() {
         })}
       </nav>
 
-      {/* Right: sync status + user */}
+      {/* Right: privacy toggle + sync status + user */}
       <div className="flex items-center gap-4 shrink-0">
+        <PrivacyToggle />
+
         <button
           className="text-xs text-muted-foreground hover:text-foreground transition-colors duration-150 flex items-center gap-1.5"
           title="Sync portfolio from OneDrive"
@@ -160,6 +163,44 @@ function ProfileMenu() {
         </div>
       )}
     </div>
+  );
+}
+
+/* Private-mode toggle — hides account balances & P&L across the app. */
+function PrivacyToggle() {
+  const { hidden, toggle } = usePrivacy();
+  return (
+    <button
+      onClick={toggle}
+      aria-pressed={hidden}
+      title={hidden ? "Private mode on — balances hidden" : "Hide balances (private mode)"}
+      aria-label={hidden ? "Show balances" : "Hide balances"}
+      className={cn(
+        "flex items-center justify-center h-7 w-7 rounded-sm transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+        hidden
+          ? "text-[oklch(0.72_0.14_74)] hover:bg-accent"
+          : "text-muted-foreground hover:text-foreground hover:bg-accent/60",
+      )}
+    >
+      {hidden ? <EyeOffIcon /> : <EyeIcon />}
+    </button>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9.9 5.2A10.5 10.5 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3 3.9M6.6 6.6A17.6 17.6 0 0 0 2 12s3.5 7 10 7a10.4 10.4 0 0 0 4.4-1M3 3l18 18M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </svg>
   );
 }
 
