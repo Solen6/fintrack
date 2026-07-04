@@ -105,10 +105,20 @@ export function usePrivacy(): PrivacyContextValue {
 }
 
 /**
- * Marks a sensitive money value (balance, holding value, P&L, income). Renders
- * its children in a `.fin-sensitive` span; CSS masks it when <html> carries the
- * `is-private` class. Safe in any client component — no hooks, no hydration
- * concerns. Percentages and share counts should be left OUTSIDE this wrapper.
+ * Marks a sensitive money value (balance, holding value, P&L, income).
+ *
+ * When private mode is on it renders the dot mask directly from React state
+ * (same mechanism as the chart axes) — this is the source of truth and does
+ * not depend on any CSS class reaching the element.
+ *
+ * When private mode is off it keeps the real value inside a `.fin-sensitive`
+ * span. That class exists only so the pre-paint script + CSS can hide the
+ * value during the brief window on first load — before React mounts and this
+ * component learns `hidden` — so a stored-on private mode shows no flash of
+ * real balances. Once mounted, React drives everything.
+ *
+ * Percentages and share counts should be left OUTSIDE this wrapper (unless they
+ * are P/L figures, which are wrapped at their call sites).
  */
 export function Sensitive({
   children,
@@ -117,6 +127,10 @@ export function Sensitive({
   children: ReactNode;
   className?: string;
 }) {
+  const { hidden } = usePrivacy();
+  if (hidden) {
+    return <span className={className}>{MONEY_MASK}</span>;
+  }
   return (
     <span className={className ? `fin-sensitive ${className}` : "fin-sensitive"}>
       {children}

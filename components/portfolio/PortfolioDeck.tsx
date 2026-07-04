@@ -467,7 +467,7 @@ function ActivityFeed({ accounts, hidden }: { accounts: string[]; hidden: Set<st
               <span className="text-muted-foreground flex-1 truncate text-xs">
                 {it.description}
                 {it.shares != null && it.price != null && (
-                  <span className="font-mono"> · {it.shares} @ {fmtPx(it.price)}</span>
+                  <span className="font-mono"> · {it.shares} @ <Sensitive>{fmtPx(it.price)}</Sensitive></span>
                 )}
               </span>
               {it.account && <span className="text-[10px] text-muted-foreground hidden sm:block shrink-0">{it.account}</span>}
