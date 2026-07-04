@@ -4,6 +4,7 @@ import { useState, useRef, useCallback } from "react";
 import { parsePortfolioCSV } from "@/lib/parse-csv";
 import type { ParsedHolding } from "@/lib/parse-csv";
 import { formatCurrency } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import {
   ACCOUNT_TYPES,
   DEFAULT_ACCOUNT_TYPE,
@@ -320,7 +321,7 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
                             {h.shares.toLocaleString()}
                           </td>
                           <td className="px-3 py-2 font-mono text-right" style={{ color: "oklch(0.60 0.008 74)" }}>
-                            {h.cost_basis > 0 ? formatCurrency(h.cost_basis) : "—"}
+                            {h.cost_basis > 0 ? <Sensitive>{formatCurrency(h.cost_basis)}</Sensitive> : "—"}
                           </td>
                           <td className="px-3 py-2" style={{ color: "oklch(0.52 0.008 74)" }}>
                             {h.sector || "—"}

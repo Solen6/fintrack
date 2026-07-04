@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { formatCurrency } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 
 interface Holding {
   id: string;
@@ -134,7 +135,7 @@ export function AddDividendModal({ onClose, onAdded }: Props) {
             />
             {estimated != null && (
               <p className="text-xs font-mono" style={{ color: "var(--positive)" }}>
-                ≈ {formatCurrency(estimated)} total ({selected!.shares.toFixed(4)} sh)
+                ≈ <Sensitive>{formatCurrency(estimated)}</Sensitive> total ({selected!.shares.toFixed(4)} sh)
               </p>
             )}
           </div>

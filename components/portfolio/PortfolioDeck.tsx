@@ -342,13 +342,13 @@ function HoldingInsights({ symbol, holding }: { symbol: string; holding: Holding
           <div className="grid grid-cols-2 gap-px rounded-sm overflow-hidden" style={{ background: "var(--border)" }}>
             <Stat label="Shares" value={holding.shares.toLocaleString("en-US", { maximumFractionDigits: 4 })} />
             <Stat label="Market value" value={<Sensitive>{formatCurrency(holding.value)}</Sensitive>} />
-            <Stat label="Avg cost" value={formatCurrency(holding.costBasis)} />
+            <Stat label="Avg cost" value={<Sensitive>{formatCurrency(holding.costBasis)}</Sensitive>} />
             <Stat
               label="Unrealized"
               value={
                 <>
                   <Sensitive>{holding.gainDollar >= 0 ? "+" : "−"}{formatCurrency(Math.abs(holding.gainDollar))}</Sensitive>
-                  {` · ${holding.gainPercent >= 0 ? "+" : ""}${holding.gainPercent.toFixed(2)}%`}
+                  {" · "}<Sensitive>{`${holding.gainPercent >= 0 ? "+" : ""}${holding.gainPercent.toFixed(2)}%`}</Sensitive>
                 </>
               }
               tone={gainTone}

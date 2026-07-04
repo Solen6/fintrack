@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { formatCurrency, formatShares } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 import type { HoldingWithMetrics } from "@/lib/types";
 
 interface Props {
@@ -50,7 +51,7 @@ export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
           Close <span className="font-mono">{holding.ticker}</span>
         </h3>
         <p className="text-xs text-muted-foreground">
-          Holding: {formatShares(holding.shares)} shares @ {formatCurrency(holding.costBasis)} avg
+          Holding: {formatShares(holding.shares)} shares @ <Sensitive>{formatCurrency(holding.costBasis)}</Sensitive> avg
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-3">
@@ -86,7 +87,7 @@ export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
                 className="font-mono font-medium"
                 style={{ color: realizedGain >= 0 ? "var(--positive)" : "var(--negative)" }}
               >
-                {realizedGain >= 0 ? "+" : ""}{formatCurrency(realizedGain)}
+                <Sensitive>{realizedGain >= 0 ? "+" : ""}{formatCurrency(realizedGain)}</Sensitive>
               </span>
             </div>
           )}

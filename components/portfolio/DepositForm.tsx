@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { formatCurrency } from "@/lib/format";
+import { Sensitive } from "@/lib/privacy";
 
 interface Props {
   existingAccounts: string[];
@@ -108,8 +109,8 @@ export function DepositForm({ existingAccounts, cashByAccount = {}, onSaved, onC
           <div className="flex items-center justify-between text-xs rounded-sm border border-border px-3 py-2" style={{ background: "oklch(0.10 0 0)" }}>
             <span className="text-muted-foreground">{acct} balance</span>
             <span className="font-mono text-foreground">
-              {formatCurrency(current)}
-              {projected !== current && <span style={{ color: "var(--positive)" }}> → {formatCurrency(projected)}</span>}
+              <Sensitive>{formatCurrency(current)}</Sensitive>
+              {projected !== current && <span style={{ color: "var(--positive)" }}> → <Sensitive>{formatCurrency(projected)}</Sensitive></span>}
             </span>
           </div>
         )}

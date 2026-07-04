@@ -92,7 +92,7 @@ function Metric({ label, value, change, showSign, large, muted }: MetricProps) {
                 : { color: "var(--negative)" }
             }
           >
-            {formatPercent(change, showSign)}
+            <Sensitive>{formatPercent(change, showSign)}</Sensitive>
           </span>
         )}
       </div>

@@ -266,7 +266,7 @@ function PortfolioSection({ r }: { r: PortfolioReport }) {
         />
         <Stat
           label="Monthly return"
-          value={me.monthReturnPct != null ? formatPercent(me.monthReturnPct) : "—"}
+          value={me.monthReturnPct != null ? <Sensitive>{formatPercent(me.monthReturnPct)}</Sensitive> : "—"}
           color={me.monthReturnPct != null ? gainColor(me.monthReturnPct) : undefined}
         />
         <Stat label="Market value" value={<Sensitive>{formatCurrency(r.totals.value)}</Sensitive>} />
@@ -276,7 +276,7 @@ function PortfolioSection({ r }: { r: PortfolioReport }) {
           value={
             <>
               <Sensitive>{formatCurrency(r.totals.gain)}</Sensitive>
-              {r.totals.gainPct != null ? ` (${formatPercent(r.totals.gainPct)})` : ""}
+              {r.totals.gainPct != null ? <> (<Sensitive>{formatPercent(r.totals.gainPct)}</Sensitive>)</> : ""}
             </>
           }
           color={gainColor(r.totals.gain)}
@@ -307,9 +307,9 @@ function PortfolioSection({ r }: { r: PortfolioReport }) {
                   <td className={`${td} text-muted-foreground max-w-[220px] truncate`}>{p.name}</td>
                   <td className={`${td} text-xs text-muted-foreground`}>{p.sector || "—"}</td>
                   <td className={`${td} text-right font-mono`}>{formatShares(p.shares)}</td>
-                  <td className={`${td} text-right font-mono`}>{formatCurrency(p.costPerShare)}</td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(p.costPerShare)}</Sensitive></td>
                   <td className={`${td} text-right font-mono`}>
-                    {formatCurrency(p.price)}
+                    <Sensitive>{formatCurrency(p.price)}</Sensitive>
                     {!p.priced && <span title="No live quote — cost basis shown" style={{ color: DIM }}> *</span>}
                   </td>
                   <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(p.value)}</Sensitive></td>
@@ -317,7 +317,7 @@ function PortfolioSection({ r }: { r: PortfolioReport }) {
                     <Sensitive>{formatCurrency(p.gain)}</Sensitive>
                   </td>
                   <td className={`${td} text-right font-mono`} style={{ color: gainColor(p.gain) }}>
-                    {p.gainPct != null ? formatPercent(p.gainPct) : "—"}
+                    {p.gainPct != null ? <Sensitive>{formatPercent(p.gainPct)}</Sensitive> : "—"}
                   </td>
                 </tr>
               ))}
@@ -396,7 +396,7 @@ function CashFlowSection({ r }: { r: CashFlowReport }) {
         <Stat label="Total inflows" value={<Sensitive>{formatCurrency(r.inflows.total)}</Sensitive>} color={r.inflows.total > 0 ? "var(--positive)" : undefined} />
         <Stat label="Total outflows" value={<Sensitive>{formatCurrency(r.outflows.total)}</Sensitive>} color={r.outflows.total > 0 ? "var(--negative)" : undefined} />
         <Stat label="Net cash flow" value={<Sensitive>{formatCurrency(r.netCashFlow)}</Sensitive>} color={gainColor(r.netCashFlow)} />
-        <Stat label="Savings rate" value={r.savingsRate != null ? formatPercent(r.savingsRate, false) : "—"} />
+        <Stat label="Savings rate" value={r.savingsRate != null ? <Sensitive>{formatPercent(r.savingsRate, false)}</Sensitive> : "—"} />
       </StatGrid>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

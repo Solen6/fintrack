@@ -58,7 +58,7 @@ export function ClosedPositions() {
           className="text-xs font-mono font-medium"
           style={{ color: totalGain >= 0 ? "var(--positive)" : "var(--negative)" }}
         >
-          Total realized: <Sensitive>{totalGain >= 0 ? "+" : ""}{formatCurrency(totalGain)}</Sensitive> ({formatPercent(totalPct)})
+          Total realized: <Sensitive>{totalGain >= 0 ? "+" : ""}{formatCurrency(totalGain)}</Sensitive> (<Sensitive>{formatPercent(totalPct)}</Sensitive>)
         </span>
       </div>
       <table className="w-full text-sm border-collapse min-w-[700px]">
@@ -85,13 +85,13 @@ export function ClosedPositions() {
                 <td className="px-4 py-3 font-mono font-semibold text-foreground">{p.ticker}</td>
                 <td className="px-4 py-3 text-muted-foreground">{p.name}</td>
                 <td className="px-4 py-3 text-right font-mono text-muted-foreground">{formatShares(p.shares)}</td>
-                <td className="px-4 py-3 text-right font-mono text-muted-foreground">{formatCurrency(p.cost_basis)}</td>
-                <td className="px-4 py-3 text-right font-mono text-foreground">{formatCurrency(p.sale_price)}</td>
+                <td className="px-4 py-3 text-right font-mono text-muted-foreground"><Sensitive>{formatCurrency(p.cost_basis)}</Sensitive></td>
+                <td className="px-4 py-3 text-right font-mono text-foreground"><Sensitive>{formatCurrency(p.sale_price)}</Sensitive></td>
                 <td className="px-4 py-3 text-right font-mono" style={{ color }}>
                   <Sensitive>{gain >= 0 ? "+" : ""}{formatCurrency(gain)}</Sensitive>
                 </td>
                 <td className="px-4 py-3 text-right font-mono" style={{ color }}>
-                  {formatPercent(returnPct)}
+                  <Sensitive>{formatPercent(returnPct)}</Sensitive>
                 </td>
                 <td className="px-4 py-3 text-center">
                   <span

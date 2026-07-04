@@ -257,13 +257,13 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
           {formatShares(h.shares)}
         </td>
         <td className="px-4 py-3 text-right font-mono text-muted-foreground text-sm">
-          {formatCurrency(h.costBasis)}
+          <Sensitive>{formatCurrency(h.costBasis)}</Sensitive>
         </td>
         <td className="px-4 py-3 text-right">
           <Tooltip>
             <TooltipTrigger>
               <span className="font-mono text-sm text-foreground cursor-default">
-                {formatCurrency(h.currentPrice)}
+                <Sensitive>{formatCurrency(h.currentPrice)}</Sensitive>
               </span>
             </TooltipTrigger>
             <TooltipContent side="left" className="text-xs font-mono bg-popover border-border">
@@ -284,7 +284,7 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
           <Sensitive>{h.gainDollar >= 0 ? "+" : ""}{formatCurrency(h.gainDollar)}</Sensitive>
         </td>
         <td className="px-4 py-3 text-right font-mono text-sm" style={{ color: gainColor }}>
-          {formatPercent(h.gainPercent)}
+          <Sensitive>{formatPercent(h.gainPercent)}</Sensitive>
         </td>
         <td className="px-4 py-3 text-center">
           <span

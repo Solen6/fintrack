@@ -331,7 +331,7 @@ export function HoldingsTreemap({
                   className="font-mono tabular-nums shrink-0"
                   style={{ fontSize: 10, color: b.item.aggPct >= 0 ? "var(--positive)" : "var(--negative)" }}
                 >
-                  {signedPct(b.item.aggPct)}
+                  {colorBy === "total" ? <Sensitive>{signedPct(b.item.aggPct)}</Sensitive> : signedPct(b.item.aggPct)}
                 </span>
               )}
               {b.w > 240 && b.item.priced > 0 && (
@@ -353,20 +353,21 @@ export function HoldingsTreemap({
                 onSelect={onSelect}
                 onEnter={handleEnter}
                 onLeave={handleLeave}
+                maskPct={colorBy === "total"}
               />
             ))}
           </div>
         ))}
       </div>
 
-      {hoveredCell && hover && <Tooltip cell={hoveredCell} cx={hover.cx} cy={hover.cy} />}
+      {hoveredCell && hover && <Tooltip cell={hoveredCell} cx={hover.cx} cy={hover.cy} maskPct={colorBy === "total"} />}
     </div>
   );
 }
 
 /* ─── A single tile (memoized — only re-renders on hovered/selected flip) ─── */
 const Tile = memo(function Tile({
-  placed, scale, transition, hovered, selected, onSelect, onEnter, onLeave,
+  placed, scale, transition, hovered, selected, onSelect, onEnter, onLeave, maskPct,
 }: {
   placed: Placed<{ cell: HCell }>;
   scale: number;
@@ -376,6 +377,7 @@ const Tile = memo(function Tile({
   onSelect?: (symbol: string) => void;
   onEnter: (symbol: string, cx: number, cy: number) => void;
   onLeave: (symbol: string) => void;
+  maskPct?: boolean;
 }) {
   const { x, y, w, h } = placed;
   const cell = placed.item.cell;
@@ -461,7 +463,7 @@ const Tile = memo(function Tile({
             color: "oklch(0.98 0.005 74)", textShadow, marginTop: xl || large || medium ? 1 : 0,
           }}
         >
-          {signedPct(cell.changePct)}
+          {maskPct ? <Sensitive>{signedPct(cell.changePct)}</Sensitive> : signedPct(cell.changePct)}
         </span>
       )}
       {(xl || large) && (
@@ -487,7 +489,7 @@ const Tile = memo(function Tile({
 });
 
 /* ─── Crisp dark tooltip (the one allowed soft shadow — popover layer) ─── */
-function Tooltip({ cell, cx, cy }: { cell: HCell; cx: number; cy: number }) {
+function Tooltip({ cell, cx, cy, maskPct }: { cell: HCell; cx: number; cy: number; maskPct?: boolean }) {
   const positive = cell.changePct >= 0;
   const vw = typeof window !== "undefined" ? window.innerWidth : 1440;
   const clampedX = Math.max(130, Math.min(cx, vw - 130));
@@ -515,7 +517,7 @@ function Tooltip({ cell, cx, cy }: { cell: HCell; cx: number; cy: number }) {
         <div className="tabular-nums" style={{ marginTop: 4, display: "flex", gap: 10, alignItems: "baseline" }}>
           <span style={{ fontSize: 12, color: "oklch(0.92 0.005 74)" }}>{fmtPrice(cell.price)}</span>
           <span style={{ fontSize: 12, fontWeight: 700, color: positive ? "var(--positive)" : "var(--negative)" }}>
-            {signedPct(cell.changePct)}
+            {maskPct ? <Sensitive>{signedPct(cell.changePct)}</Sensitive> : signedPct(cell.changePct)}
           </span>
         </div>
       )}

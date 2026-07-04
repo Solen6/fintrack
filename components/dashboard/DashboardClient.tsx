@@ -604,7 +604,7 @@ export function DashboardClient() {
         <div className="flex flex-wrap items-center gap-x-8 gap-y-3 px-1">
           <Metric
             label="Overall Return"
-            value={formatPercent(agg.totalReturnPct)}
+            value={<Sensitive>{formatPercent(agg.totalReturnPct)}</Sensitive>}
             tone={agg.totalReturnPct >= 0 ? "pos" : "neg"}
           />
           <Metric
@@ -640,7 +640,7 @@ export function DashboardClient() {
                   className="font-mono text-xs"
                   style={toneStyle(agg.todayPct >= 0 ? "pos" : "neg")}
                 >
-                  {formatPercent(agg.todayPct)}
+                  <Sensitive>{formatPercent(agg.todayPct)}</Sensitive>
                 </span>
               </div>
             </div>
@@ -663,7 +663,7 @@ export function DashboardClient() {
                         className="font-mono text-xs"
                         style={toneStyle(perf.returnPct >= 0 ? "pos" : "neg")}
                       >
-                        {formatPercent(perf.returnPct)}
+                        <Sensitive>{formatPercent(perf.returnPct)}</Sensitive>
                       </span>
                       <span className="text-xs text-muted-foreground">vs cost basis</span>
                     </div>
@@ -795,7 +795,7 @@ export function DashboardClient() {
                       className="font-mono shrink-0"
                       style={{ color: m.pct >= 0 ? "var(--positive)" : "var(--negative)" }}
                     >
-                      {formatPercent(m.pct)}
+                      <Sensitive>{formatPercent(m.pct)}</Sensitive>
                     </span>
                   </li>
                 ))}
@@ -826,7 +826,7 @@ export function DashboardClient() {
                     <span className="font-mono text-xs text-muted-foreground w-9 shrink-0">
                       {row.range}
                     </span>
-                    <PctCell value={row.portfolio} />
+                    <PctCell value={row.portfolio} sensitive />
                     <PctCell value={row.market} muted />
                     <span
                       className="font-mono text-xs ml-auto shrink-0 w-16 text-right"
@@ -837,7 +837,7 @@ export function DashboardClient() {
                       }
                       title={spread === null ? "Needs portfolio history for this range" : "Portfolio minus SPY"}
                     >
-                      {spread === null ? "—" : `${spread >= 0 ? "+" : ""}${spread.toFixed(2)}`}
+                      {spread === null ? "—" : <Sensitive>{`${spread >= 0 ? "+" : ""}${spread.toFixed(2)}`}</Sensitive>}
                     </span>
                   </li>
                 );
@@ -986,7 +986,7 @@ function HistoryPlaceholder({
 }
 
 /* ─── % cell for the vs-market rows ─── */
-function PctCell({ value, muted }: { value: number | null; muted?: boolean }) {
+function PctCell({ value, muted, sensitive }: { value: number | null; muted?: boolean; sensitive?: boolean }) {
   if (value === null) {
     return (
       <span className="font-mono text-xs w-16 text-right shrink-0" style={{ color: "var(--muted-foreground)" }}>
@@ -999,9 +999,10 @@ function PctCell({ value, muted }: { value: number | null; muted?: boolean }) {
     : value >= 0
     ? "var(--positive)"
     : "var(--negative)";
+  const pct = formatPercent(value);
   return (
     <span className="font-mono text-xs w-16 text-right shrink-0" style={{ color }}>
-      {formatPercent(value)}
+      {sensitive ? <Sensitive>{pct}</Sensitive> : pct}
     </span>
   );
 }
@@ -1263,7 +1264,7 @@ function HoldingsTable({
                   style={{ color: pos ? "var(--positive)" : "var(--negative)" }}
                 >
                   <Sensitive>{formatCurrency(h.gain)}</Sensitive>{" "}
-                  <span className="text-xs">({formatPercent(h.gainPct)})</span>
+                  <span className="text-xs">(<Sensitive>{formatPercent(h.gainPct)}</Sensitive>)</span>
                 </td>
                 <td className="py-2.5 pl-3 text-right font-mono text-muted-foreground">
                   {alloc.toFixed(1)}%
