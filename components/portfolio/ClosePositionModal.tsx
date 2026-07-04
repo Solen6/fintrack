@@ -51,7 +51,7 @@ export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
           Close <span className="font-mono">{holding.ticker}</span>
         </h3>
         <p className="text-xs text-muted-foreground">
-          Holding: {formatShares(holding.shares)} shares @ <Sensitive>{formatCurrency(holding.costBasis)}</Sensitive> avg
+          Holding: <Sensitive>{formatShares(holding.shares)}</Sensitive> shares @ <Sensitive>{formatCurrency(holding.costBasis)}</Sensitive> avg
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-3">

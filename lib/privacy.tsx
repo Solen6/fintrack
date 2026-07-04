@@ -104,6 +104,36 @@ export function usePrivacy(): PrivacyContextValue {
   return useContext(PrivacyContext);
 }
 
+/** Label shown in place of a chart/graph when private mode is on. */
+export const PRIVATE_GRAPH_LABEL = "Hidden while in Private";
+
+/**
+ * Wraps a chart/graph whose shape itself reveals sensitive performance (e.g.
+ * best-month / yearly-return graphs). When private mode is on, the whole thing
+ * is replaced by a "Hidden while in Private" placeholder instead of masking
+ * individual numbers. Give it the same height as the chart so nothing jumps.
+ */
+export function PrivateGraphMask({
+  children,
+  height,
+  label = PRIVATE_GRAPH_LABEL,
+}: {
+  children: ReactNode;
+  height?: number | string;
+  label?: string;
+}) {
+  const { hidden } = usePrivacy();
+  if (!hidden) return <>{children}</>;
+  return (
+    <div
+      className="flex items-center justify-center rounded-sm border border-dashed border-border text-xs text-muted-foreground select-none"
+      style={{ height: height ?? "100%", minHeight: typeof height === "number" ? height : 120 }}
+    >
+      {label}
+    </div>
+  );
+}
+
 /**
  * Marks a sensitive money value (balance, holding value, P&L, income).
  *

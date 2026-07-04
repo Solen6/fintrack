@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { formatCurrency } from "@/lib/format";
-import { Sensitive } from "@/lib/privacy";
+import { Sensitive, usePrivacy } from "@/lib/privacy";
 
 interface Holding {
   id: string;
@@ -17,6 +17,7 @@ interface Props {
 }
 
 export function AddDividendModal({ onClose, onAdded }: Props) {
+  const { hidden } = usePrivacy();
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [holdingId, setHoldingId] = useState("");
   const [effectiveDate, setEffectiveDate] = useState(() => {
@@ -102,7 +103,7 @@ export function AddDividendModal({ onClose, onAdded }: Props) {
             >
               {holdings.map((h) => (
                 <option key={h.id} value={h.id}>
-                  {h.ticker} — {h.shares.toFixed(4)} sh{h.name ? ` (${h.name})` : ""}
+                  {h.ticker}{hidden ? "" : ` — ${h.shares.toFixed(4)} sh`}{h.name ? ` (${h.name})` : ""}
                 </option>
               ))}
             </select>
@@ -135,7 +136,7 @@ export function AddDividendModal({ onClose, onAdded }: Props) {
             />
             {estimated != null && (
               <p className="text-xs font-mono" style={{ color: "var(--positive)" }}>
-                ≈ <Sensitive>{formatCurrency(estimated)}</Sensitive> total ({selected!.shares.toFixed(4)} sh)
+                ≈ <Sensitive>{formatCurrency(estimated)}</Sensitive> total (<Sensitive>{selected!.shares.toFixed(4)}</Sensitive> sh)
               </p>
             )}
           </div>

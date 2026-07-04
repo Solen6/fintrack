@@ -306,7 +306,7 @@ function PortfolioSection({ r }: { r: PortfolioReport }) {
                   <td className={`${td} font-mono font-semibold text-foreground`}>{p.ticker}</td>
                   <td className={`${td} text-muted-foreground max-w-[220px] truncate`}>{p.name}</td>
                   <td className={`${td} text-xs text-muted-foreground`}>{p.sector || "—"}</td>
-                  <td className={`${td} text-right font-mono`}>{formatShares(p.shares)}</td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatShares(p.shares)}</Sensitive></td>
                   <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(p.costPerShare)}</Sensitive></td>
                   <td className={`${td} text-right font-mono`}>
                     <Sensitive>{formatCurrency(p.price)}</Sensitive>
@@ -498,8 +498,8 @@ function EventRow({ e }: { e: ReportEvent }) {
         {e.symbol && <span className="font-mono font-semibold text-foreground mr-2">{e.symbol}</span>}
         {e.description}
       </td>
-      <td className={`${td} text-right font-mono text-xs`}>{e.shares != null ? formatShares(e.shares) : "—"}</td>
-      <td className={`${td} text-right font-mono text-xs`}>{e.price != null ? formatCurrency(e.price) : "—"}</td>
+      <td className={`${td} text-right font-mono text-xs`}>{e.shares != null ? <Sensitive>{formatShares(e.shares)}</Sensitive> : "—"}</td>
+      <td className={`${td} text-right font-mono text-xs`}>{e.price != null ? <Sensitive>{formatCurrency(e.price)}</Sensitive> : "—"}</td>
       <td className={`${td} text-right font-mono text-xs`} style={{ color: e.amount !== 0 ? gainColor(e.amount) : undefined }}>
         {/* DRIP: no cash moved — ↻ gross, matching the activity feed (parens
             would read as a negative amount). */}
@@ -546,9 +546,9 @@ function TaxSection({ r }: { r: TaxReport }) {
                 <tr key={`${l.ticker}-${l.date}-${i}`} className="border-b border-border/50">
                   <td className={`${td} text-xs text-muted-foreground whitespace-nowrap`}>{dateLabel(l.date)}</td>
                   <td className={`${td} font-mono font-semibold text-foreground`}>{l.ticker}</td>
-                  <td className={`${td} text-right font-mono`}>{formatShares(l.shares)}</td>
-                  <td className={`${td} text-right font-mono`}>{formatCurrency(l.costPerShare)}</td>
-                  <td className={`${td} text-right font-mono`}>{formatCurrency(l.salePrice)}</td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatShares(l.shares)}</Sensitive></td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(l.costPerShare)}</Sensitive></td>
+                  <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(l.salePrice)}</Sensitive></td>
                   <td className={`${td} text-right font-mono`}><Sensitive>{formatCurrency(l.proceeds)}</Sensitive></td>
                   <td className={`${td} text-right font-mono`} style={{ color: gainColor(l.gain) }}>
                     <Sensitive>{formatCurrency(l.gain)}</Sensitive>

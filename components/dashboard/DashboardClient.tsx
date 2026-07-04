@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import nextDynamic from "next/dynamic";
 import { formatCurrency, formatPercent } from "@/lib/format";
-import { Sensitive } from "@/lib/privacy";
+import { Sensitive, PrivateGraphMask } from "@/lib/privacy";
 import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
 import { isInvestedType, resolveAccountType, type AccountType } from "@/lib/account-types";
 
@@ -753,7 +753,9 @@ export function DashboardClient() {
             </div>
             {history.monthlyReturns.length > 0 ? (
               <div className="h-[180px] pointer-events-none">
-                <ReturnsBarChart data={history.monthlyReturns} />
+                <PrivateGraphMask height={180}>
+                  <ReturnsBarChart data={history.monthlyReturns} />
+                </PrivateGraphMask>
               </div>
             ) : (
               <HistoryPlaceholder since={history.since} height={180} detail="Building once snapshots arrive." />
@@ -771,7 +773,9 @@ export function DashboardClient() {
             </div>
             {history.yearlyReturns.length > 0 ? (
               <div className="h-[180px] pointer-events-none">
-                <ReturnsBarChart data={history.yearlyReturns} />
+                <PrivateGraphMask height={180}>
+                  <ReturnsBarChart data={history.yearlyReturns} />
+                </PrivateGraphMask>
               </div>
             ) : (
               <HistoryPlaceholder since={history.since} height={180} detail="Building once snapshots arrive." />
@@ -783,6 +787,7 @@ export function DashboardClient() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="flex flex-col gap-4">
           <Panel title="Best Months">
+            <PrivateGraphMask height={160}>
             {history.bestMonths.length > 0 ? (
               <ol className="flex flex-col gap-2.5 max-h-[320px] overflow-y-auto pr-1">
                 {history.bestMonths.map((m, i) => (
@@ -803,6 +808,7 @@ export function DashboardClient() {
             ) : (
               <HistoryPlaceholder since={history.since} height={160} detail="Ranks your strongest months once history accrues." />
             )}
+            </PrivateGraphMask>
           </Panel>
 
           <Panel title="vs Market (SPY)">
@@ -1182,7 +1188,9 @@ function ReturnsModal({
         </div>
         {data.length > 0 ? (
           <div className="h-[360px]">
-            <ReturnsBarChartExpanded data={data} />
+            <PrivateGraphMask height={360}>
+              <ReturnsBarChartExpanded data={data} />
+            </PrivateGraphMask>
           </div>
         ) : (
           <div
@@ -1255,7 +1263,7 @@ function HoldingsTable({
                 <td className="py-2.5 pr-3 text-muted-foreground">
                   {h.sector === "Other" ? "—" : h.sector}
                 </td>
-                <td className="py-2.5 px-3 text-right font-mono text-foreground">{h.shares}</td>
+                <td className="py-2.5 px-3 text-right font-mono text-foreground"><Sensitive>{h.shares}</Sensitive></td>
                 <td className="py-2.5 px-3 text-right font-mono text-foreground">
                   <Sensitive>{formatCurrency(h.value)}</Sensitive>
                 </td>

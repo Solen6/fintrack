@@ -254,7 +254,7 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
           <span className="text-xs text-muted-foreground">{h.sector || "—"}</span>
         </td>
         <td className="px-4 py-3 text-right font-mono text-muted-foreground text-sm">
-          {formatShares(h.shares)}
+          <Sensitive>{formatShares(h.shares)}</Sensitive>
         </td>
         <td className="px-4 py-3 text-right font-mono text-muted-foreground text-sm">
           <Sensitive>{formatCurrency(h.costBasis)}</Sensitive>

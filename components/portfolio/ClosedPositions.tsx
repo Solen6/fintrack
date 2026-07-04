@@ -84,7 +84,7 @@ export function ClosedPositions() {
               <tr key={p.id} className="border-b border-border/50">
                 <td className="px-4 py-3 font-mono font-semibold text-foreground">{p.ticker}</td>
                 <td className="px-4 py-3 text-muted-foreground">{p.name}</td>
-                <td className="px-4 py-3 text-right font-mono text-muted-foreground">{formatShares(p.shares)}</td>
+                <td className="px-4 py-3 text-right font-mono text-muted-foreground"><Sensitive>{formatShares(p.shares)}</Sensitive></td>
                 <td className="px-4 py-3 text-right font-mono text-muted-foreground"><Sensitive>{formatCurrency(p.cost_basis)}</Sensitive></td>
                 <td className="px-4 py-3 text-right font-mono text-foreground"><Sensitive>{formatCurrency(p.sale_price)}</Sensitive></td>
                 <td className="px-4 py-3 text-right font-mono" style={{ color }}>

@@ -340,7 +340,7 @@ function HoldingInsights({ symbol, holding }: { symbol: string; holding: Holding
         <div>
           <h3 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Your position</h3>
           <div className="grid grid-cols-2 gap-px rounded-sm overflow-hidden" style={{ background: "var(--border)" }}>
-            <Stat label="Shares" value={holding.shares.toLocaleString("en-US", { maximumFractionDigits: 4 })} />
+            <Stat label="Shares" value={<Sensitive>{holding.shares.toLocaleString("en-US", { maximumFractionDigits: 4 })}</Sensitive>} />
             <Stat label="Market value" value={<Sensitive>{formatCurrency(holding.value)}</Sensitive>} />
             <Stat label="Avg cost" value={<Sensitive>{formatCurrency(holding.costBasis)}</Sensitive>} />
             <Stat
@@ -467,7 +467,7 @@ function ActivityFeed({ accounts, hidden }: { accounts: string[]; hidden: Set<st
               <span className="text-muted-foreground flex-1 truncate text-xs">
                 {it.description}
                 {it.shares != null && it.price != null && (
-                  <span className="font-mono"> · {it.shares} @ <Sensitive>{fmtPx(it.price)}</Sensitive></span>
+                  <span className="font-mono"> · <Sensitive>{it.shares}</Sensitive> @ <Sensitive>{fmtPx(it.price)}</Sensitive></span>
                 )}
               </span>
               {it.account && <span className="text-[10px] text-muted-foreground hidden sm:block shrink-0">{it.account}</span>}

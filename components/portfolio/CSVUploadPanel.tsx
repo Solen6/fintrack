@@ -318,7 +318,7 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
                             {h.name}
                           </td>
                           <td className="px-3 py-2 font-mono text-right" style={{ color: "oklch(0.60 0.008 74)" }}>
-                            {h.shares.toLocaleString()}
+                            <Sensitive>{h.shares.toLocaleString()}</Sensitive>
                           </td>
                           <td className="px-3 py-2 font-mono text-right" style={{ color: "oklch(0.60 0.008 74)" }}>
                             {h.cost_basis > 0 ? <Sensitive>{formatCurrency(h.cost_basis)}</Sensitive> : "—"}
