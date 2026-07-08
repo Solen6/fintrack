@@ -87,5 +87,31 @@ export async function POST(request: NextRequest) {
     amount: -(shares * perUnit), // cash outflow (−)
   });
 
-  return NextResponse.json({ ok: true });
+  // Buying pulls cash out of the account's balance, mirroring the sale-proceeds
+  // credit in /api/holdings/close so a rebalance (sell → buy) is value-neutral.
+  // Non-fatal if cash_balances isn't migrated yet — the holding insert already
+  // succeeded. Cash may go negative when recording a position bought with funds
+  // not tracked in Fintrack; that's expected and self-corrects when the real
+  // cash balance is set.
+  const cost = Math.round(shares * perUnit * 100) / 100;
+  const { data: existingCash } = await supabase
+    .from("cash_balances")
+    .select("balance,label")
+    .eq("user_id", user.id)
+    .eq("account", account.trim())
+    .maybeSingle();
+
+  const newBalance = Math.round((Number(existingCash?.balance ?? 0) - cost) * 100) / 100;
+  await supabase.from("cash_balances").upsert(
+    {
+      user_id: user.id,
+      account: account.trim(),
+      label: existingCash?.label ?? "Cash",
+      balance: newBalance,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id,account" },
+  );
+
+  return NextResponse.json({ ok: true, cost, cashBalance: newBalance });
 }
