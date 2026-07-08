@@ -604,7 +604,7 @@ export function DashboardClient() {
         <div className="flex flex-wrap items-center gap-x-8 gap-y-3 px-1">
           <Metric
             label="Overall Return"
-            value={<Sensitive>{formatPercent(agg.totalReturnPct)}</Sensitive>}
+            value={formatPercent(agg.totalReturnPct)}
             tone={agg.totalReturnPct >= 0 ? "pos" : "neg"}
           />
           <Metric
