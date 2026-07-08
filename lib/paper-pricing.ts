@@ -18,6 +18,7 @@ import type { InstrumentRef, OptionType, Side } from "./paper-types";
 export interface PricedInstrument {
   price: number;
   livePrice: boolean;
+  prevClose?: number;   // prior session close — absent for options (chains carry no close)
 }
 
 /* ─── Options liquidity hardening ─── */
@@ -131,15 +132,15 @@ export async function priceInstrument(ref: InstrumentRef): Promise<PricedInstrum
   switch (ref.assetClass) {
     case "STOCK": {
       const q = await fetchQuote(ref.symbol);
-      return q ? { price: q.price, livePrice: true } : null;
+      return q ? { price: q.price, livePrice: true, prevClose: q.prevClose } : null;
     }
     case "FUTURE": {
       const q = await yahooQuote(ref.symbol);
-      return q ? { price: q.price, livePrice: true } : null;
+      return q ? { price: q.price, livePrice: true, prevClose: q.prevClose } : null;
     }
     case "FOREX": {
       const q = await yahooQuote(`${ref.symbol}=X`);
-      return q ? { price: q.price, livePrice: true } : null;
+      return q ? { price: q.price, livePrice: true, prevClose: q.prevClose } : null;
     }
     case "OPTION": {
       if (!ref.underlying || !ref.expiry || ref.strike == null || !ref.optionType) return null;

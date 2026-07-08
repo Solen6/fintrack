@@ -37,6 +37,7 @@ import type {
   PaperAccountMeta,
   PaperOrder,
   PaperPosition,
+  RealizedTrade,
   Side,
 } from "./paper-types";
 
@@ -471,6 +472,7 @@ export interface AccountState {
   positions: PaperPosition[];
   orders: PaperOrder[];
   realizedTotal: number;
+  realized: RealizedTrade[];
   summary: MarginSummary;
 }
 
@@ -496,14 +498,14 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
   const [{ data: posData }, { data: orderData }, { data: realizedData }] = await Promise.all([
     db.from("paper_positions").select("*").eq("account_id", account.id).order("asset_class").order("symbol"),
     db.from("paper_orders").select("*").eq("account_id", account.id).order("created_at", { ascending: false }).limit(80),
-    db.from("paper_realized").select("realized_pl").eq("account_id", account.id),
+    db.from("paper_realized").select("id, symbol, asset_class, realized_pl, closed_at").eq("account_id", account.id).order("closed_at", { ascending: false }),
   ]);
 
   const posRows = (posData ?? []) as PositionRow[];
   // Mark every position in parallel — this is a pure read, so order doesn't
   // matter. (Was a sequential loop with a 40ms sleep per position, which made a
   // 10-leg account take seconds instead of one round-trip.)
-  const priceMap = new Map<string, { price: number; livePrice: boolean }>();
+  const priceMap = new Map<string, { price: number; livePrice: boolean; prevClose?: number }>();
   const priced = await mapLimit(posRows, 8, (p) => priceInstrument(rowToRef(p)));
   posRows.forEach((p, i) => {
     priceMap.set(p.symbol, priced[i] ?? { price: Number(p.avg_cost), livePrice: false });
@@ -548,6 +550,10 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
       unrealizedPct: cost > 0 ? (unrealized / cost) * 100 : 0,
       marginHeld: Number(p.margin_held),
       livePrice: mark.livePrice,
+      dayPL: mark.prevClose != null && mark.prevClose > 0
+        ? pnlUsd(ref, p.direction, mark.prevClose, mark.price, Number(p.shares))
+        : null,
+      exposure: Math.abs(notionalUsd(ref, mark.price, Number(p.shares))),
     };
   });
 
@@ -612,8 +618,16 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
     filledAt: o.filled_at,
   }));
 
-  const realizedTotal = ((realizedData ?? []) as { realized_pl: number }[])
-    .reduce((s, r) => s + Number(r.realized_pl), 0);
+  type RealizedRow = { id: string; symbol: string; asset_class: AssetClass; realized_pl: number; closed_at: string };
+  const realizedRows = (realizedData ?? []) as RealizedRow[];
+  const realizedTotal = realizedRows.reduce((s, r) => s + Number(r.realized_pl), 0);
+  const realized: RealizedTrade[] = realizedRows.slice(0, 100).map((r) => ({
+    id: r.id,
+    symbol: r.symbol,
+    assetClass: r.asset_class,
+    realizedPl: Number(r.realized_pl),
+    closedAt: r.closed_at,
+  }));
 
   return {
     account: { id: account.id, name: account.name },
@@ -622,6 +636,7 @@ export async function loadAccountState(db: DB, userId: string, account: AccountR
     positions,
     orders,
     realizedTotal,
+    realized,
     summary,
   };
 }

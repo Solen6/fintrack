@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/format";
+import { PositionsDeck } from "@/components/paper/PositionsDeck";
+import type { MarginSummary, PaperOrder, PaperPosition, RealizedTrade } from "@/lib/paper-types";
 
 /* ─── Types (mirror the API) ─── */
 type Scope = "private" | "global";
@@ -696,9 +698,75 @@ function CompetitionDetail({
                 <TradeFeed feed={feed} />
               </div>
             </div>
+
+            {/* my positions in this competition, grouped by security type */}
+            {comp.joined && myAccountId && (
+              <MyPositions accountId={myAccountId} status={comp.status} />
+            )}
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ─── My positions in this competition (read-only, grouped by security type) ─── */
+
+interface CompPaperState {
+  positions: PaperPosition[];
+  realized: RealizedTrade[];
+  orders: PaperOrder[];
+  summary: MarginSummary;
+}
+
+function MyPositions({ accountId, status }: { accountId: string; status: Status }) {
+  const [state, setState] = useState<CompPaperState | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState(null);
+    setFailed(false);
+    fetch(`/api/paper?account=${encodeURIComponent(accountId)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => { if (!cancelled) setState(d); })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [accountId]);
+
+  const noop = () => {};
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-xs uppercase tracking-wide text-muted-foreground">My positions</h2>
+        {status !== "ended" && (
+          <Link href={`/paper?account=${encodeURIComponent(accountId)}`} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+            Manage in Paper →
+          </Link>
+        )}
+      </div>
+      {failed ? (
+        <Empty>Couldn&apos;t load your positions.</Empty>
+      ) : state === null ? (
+        <div className="skeleton rounded-md" style={{ height: 160 }} />
+      ) : state.positions.length === 0 ? (
+        <Empty>{status === "ended" ? "No positions were open at the close." : "No open positions yet — place a trade to get on the board."}</Empty>
+      ) : (
+        <PositionsDeck
+          accountId={accountId}
+          positions={state.positions}
+          realized={state.realized ?? []}
+          orders={state.orders ?? []}
+          equity={state.summary.equity}
+          cash={state.summary.cash}
+          busy={false}
+          onClose={noop}
+          onCloseStrategy={noop}
+          onPlaced={noop}
+          readOnly
+        />
+      )}
     </div>
   );
 }

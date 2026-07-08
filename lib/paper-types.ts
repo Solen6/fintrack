@@ -35,6 +35,17 @@ export interface PaperPosition extends InstrumentRef {
   unrealizedPct: number;
   marginHeld: number;    // USD margin reserved (futures/forex)
   livePrice: boolean;
+  dayPL: number | null;  // USD P/L vs prior session close (null when no prev close, e.g. options)
+  exposure: number;      // |USD notional| at current mark — sizing/allocation weight
+}
+
+/** One closing fill from the realized-P/L log. */
+export interface RealizedTrade {
+  id: string;
+  symbol: string;
+  assetClass: AssetClass;
+  realizedPl: number;
+  closedAt: string;
 }
 
 /** An order row as returned to the client. */

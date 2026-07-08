@@ -3,29 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/format";
-import { recognizeStrategy } from "@/lib/option-strategies";
 import type { Leg } from "@/lib/options-math";
 import { OptionsBuilder } from "@/components/options/OptionsBuilder";
 import { EquityCurve } from "./EquityCurve";
 import { FuturesDeck } from "./FuturesDeck";
 import { ForexDeck } from "./ForexDeck";
 import { StocksDeck } from "./StocksDeck";
-import type { AssetClass, MarginSummary, PaperAccountMeta, PaperOrder, PaperPosition } from "@/lib/paper-types";
-
-/** Reconstruct a recognizable label for a combo from its position legs. */
-function comboLabel(rows: PaperPosition[]): string {
-  const underlying = rows[0]?.underlying ?? rows[0]?.symbol ?? "";
-  const legs: Leg[] = rows.map((r) => ({
-    type: r.assetClass === "STOCK" ? "stock" : r.optionType === "CALL" ? "call" : "put",
-    side: r.direction === "LONG" ? "long" : "short",
-    strike: r.strike ?? r.avgCost,
-    expiry: 0,
-    qty: r.qty,
-    premium: r.avgCost,
-    iv: 0,
-  }));
-  return `${underlying} · ${recognizeStrategy(legs) ?? "Strategy"}`;
-}
+import { PositionsDeck, comboLabel } from "./PositionsDeck";
+import type { AssetClass, MarginSummary, PaperAccountMeta, PaperOrder, PaperPosition, RealizedTrade } from "@/lib/paper-types";
 
 interface State {
   account: PaperAccountMeta;
@@ -34,12 +19,15 @@ interface State {
   positions: PaperPosition[];
   orders: PaperOrder[];
   realizedTotal: number;
+  realized: RealizedTrade[];
   summary: MarginSummary;
 }
 
 const CLASS_LABEL: Record<AssetClass, string> = { STOCK: "Stocks", OPTION: "Options", FUTURE: "Futures", FOREX: "Forex" };
 const CLASS_ORDER: AssetClass[] = ["STOCK", "OPTION", "FUTURE", "FOREX"];
-const ASSET_TABS: { key: AssetClass; label: string }[] = [
+type PaperTab = "POSITIONS" | AssetClass;
+const ASSET_TABS: { key: PaperTab; label: string }[] = [
+  { key: "POSITIONS", label: "Positions" },
   { key: "STOCK", label: "Stocks" },
   { key: "OPTION", label: "Options" },
   { key: "FUTURE", label: "Futures" },
@@ -53,7 +41,7 @@ export function PaperClient({ initialAccountId }: { initialAccountId?: string | 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [assetClass, setAssetClass] = useState<AssetClass>("STOCK");
+  const [assetClass, setAssetClass] = useState<PaperTab>("POSITIONS");
 
   const load = useCallback(async (id?: string | null) => {
     setLoading(true);
@@ -301,7 +289,28 @@ export function PaperClient({ initialAccountId }: { initialAccountId?: string | 
           })}
         </div>
 
-        {assetClass === "OPTION" ? (
+        {assetClass === "POSITIONS" ? (
+          /* ── Positions: unified view across every asset class ── */
+          <div className="flex flex-col gap-4">
+            <PositionsDeck
+              accountId={state.account.id}
+              positions={state.positions}
+              realized={state.realized ?? []}
+              orders={state.orders}
+              equity={s.equity}
+              cash={s.cash}
+              busy={busy}
+              onClose={closePosition}
+              onCloseStrategy={closeStrategy}
+              onPlaced={reload}
+              pending={pending}
+              onCancelOrder={cancelOrder}
+            />
+            <EquityCurve accountId={state.account.id} refreshKey={refreshKey} />
+            {/* Pending orders live in the deck's HUD here — history tape only. */}
+            <OrdersPanels pending={pending} history={history} busy={busy} cancelOrder={cancelOrder} showPending={false} />
+          </div>
+        ) : assetClass === "OPTION" ? (
           /* ── Options: the same strategy builder as the Options tab, now tradeable ── */
           <div className="flex flex-col gap-4">
             <div className="rounded-md border border-border overflow-hidden flex flex-col" style={{ height: 820 }}>
@@ -478,46 +487,74 @@ function PositionsAndOrders({
         )}
       </section>
 
-      {/* pending orders */}
-      {pending.length > 0 && (
-        <section className="rounded-md border border-border bg-card p-4">
-          <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Pending Orders</h2>
-          <ul className="flex flex-col">
+      <OrdersPanels pending={pending} history={history} busy={busy} cancelOrder={cancelOrder} />
+    </>
+  );
+}
+
+function OrdersPanels({
+  pending,
+  history,
+  busy,
+  cancelOrder,
+  showPending = true,
+}: {
+  pending: PaperOrder[];
+  history: PaperOrder[];
+  busy: boolean;
+  cancelOrder: (id: string) => void;
+  /** The Positions tab renders pending orders in its own HUD — hide them here. */
+  showPending?: boolean;
+}) {
+  return (
+    <>
+      {/* pending orders — terminal tape */}
+      {showPending && pending.length > 0 && (
+        <section className="rounded-md border border-border bg-card">
+          <header className="flex items-baseline gap-2 border-b border-border/60 px-4 pt-3.5 pb-2.5">
+            <h2 className="text-xs uppercase tracking-wide text-muted-foreground">Pending Orders</h2>
+            <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{pending.length}</span>
+          </header>
+          <div className="px-2 py-1" style={{ background: "oklch(0.10 0 0)" }}>
             {pending.map((o) => (
-              <li key={o.id} className="flex items-center gap-3 py-2 border-b border-border/60 last:border-0 text-sm">
-                <span className="font-mono text-xs w-12 shrink-0" style={{ color: o.side === "BUY" ? "var(--positive)" : "var(--negative)" }}>{o.side}</span>
-                <span className="font-mono text-foreground flex-1 truncate">{o.symbol}</span>
-                <span className="font-mono text-muted-foreground w-14 shrink-0 text-right">{o.qty}</span>
-                <span className="font-mono text-xs text-muted-foreground w-32 shrink-0 text-right">
-                  {o.orderType} {o.limitPrice != null ? `@ ${formatCurrency(o.limitPrice)}` : o.stopPrice != null ? `stop ${formatCurrency(o.stopPrice)}` : ""}
+              <div key={o.id} className="flex items-center gap-2.5 border-b border-border/40 px-2 py-1.5 font-mono text-xs last:border-0">
+                <span className="w-9 shrink-0 text-[11px]" style={{ color: o.side === "BUY" ? "var(--positive)" : "var(--negative)" }}>{o.side}</span>
+                <span className="min-w-0 flex-1 truncate text-foreground">{o.symbol}</span>
+                <span className="w-12 shrink-0 text-right tabular-nums text-muted-foreground">{o.qty}</span>
+                <span className="w-36 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
+                  <span aria-hidden style={{ color: "var(--steel)" }}>◎ </span>
+                  {o.limitPrice != null ? `LIMIT @ ${formatCurrency(o.limitPrice)}` : o.stopPrice != null ? `STOP @ ${formatCurrency(o.stopPrice)}` : o.orderType}
                 </span>
-                <button onClick={() => cancelOrder(o.id)} disabled={busy} className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 shrink-0">Cancel</button>
-              </li>
+                <button onClick={() => cancelOrder(o.id)} disabled={busy} className="shrink-0 text-[11px] text-muted-foreground transition-colors duration-150 hover:text-foreground disabled:opacity-50">Cancel</button>
+              </div>
             ))}
-          </ul>
+          </div>
         </section>
       )}
 
-      {/* order history */}
-      <section className="rounded-md border border-border bg-card p-4">
-        <h2 className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Order History</h2>
+      {/* order history — terminal tape */}
+      <section className="rounded-md border border-border bg-card">
+        <header className="flex items-baseline gap-2 border-b border-border/60 px-4 pt-3.5 pb-2.5">
+          <h2 className="text-xs uppercase tracking-wide text-muted-foreground">Order History</h2>
+          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{history.length}</span>
+        </header>
         {history.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-2">No orders yet.</p>
+          <p className="px-4 py-3 text-sm text-muted-foreground">No orders yet.</p>
         ) : (
-          <ul className="flex flex-col">
+          <div className="max-h-72 overflow-y-auto px-2 py-1" style={{ background: "oklch(0.10 0 0)" }}>
             {history.map((o) => (
-              <li key={o.id} className="flex items-center gap-3 py-2 border-b border-border/60 last:border-0 text-sm">
-                <span className="font-mono text-xs w-10 shrink-0" style={{ color: o.side === "BUY" ? "var(--positive)" : "var(--negative)" }}>{o.side}</span>
-                <span className="font-mono text-foreground flex-1 truncate">{o.symbol}</span>
-                <span className="font-mono text-muted-foreground w-14 shrink-0 text-right">{o.qty}</span>
-                <span className="font-mono text-foreground w-24 shrink-0 text-right">{o.price != null ? formatCurrency(o.price) : "—"}</span>
+              <div key={o.id} className="flex items-center gap-2.5 border-b border-border/40 px-2 py-1.5 font-mono text-xs last:border-0">
+                <span className="w-9 shrink-0 text-[11px]" style={{ color: o.side === "BUY" ? "var(--positive)" : "var(--negative)" }}>{o.side}</span>
+                <span className="min-w-0 flex-1 truncate text-foreground">{o.symbol}</span>
+                <span className="w-12 shrink-0 text-right tabular-nums text-muted-foreground">{o.qty}</span>
+                <span className="w-20 shrink-0 text-right tabular-nums text-foreground">{o.price != null ? formatCurrency(o.price) : "—"}</span>
                 <StatusPill status={o.status} />
-                <span className="text-xs text-muted-foreground w-24 shrink-0 text-right">
+                <span className="w-24 shrink-0 text-right text-[10px] text-muted-foreground">
                   {new Date(o.filledAt ?? o.createdAt).toLocaleString("en-US", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })}
                 </span>
-              </li>
+              </div>
             ))}
-          </ul>
+          </div>
         )}
       </section>
     </>
