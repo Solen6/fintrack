@@ -5,6 +5,7 @@ import type { NewsArticle } from "@/app/api/news/route";
 import type { ArticleState } from "@/app/api/news/interactions/route";
 import { formatRelativeTime } from "@/lib/format";
 import { sourceColor } from "@/lib/news-source-color";
+import { articleVisible, type NewsPrefs } from "@/lib/news-preferences";
 
 type Filter = "all" | "saved";
 
@@ -19,6 +20,8 @@ interface Props {
   onFilterChange: (f: Filter) => void;
   onInteract: (url: string, update: Partial<ArticleState>) => void;
   onManageSources: () => void;
+  prefs: NewsPrefs;
+  onEditPreferences: () => void;
 }
 
 export function NewsFeed({
@@ -32,13 +35,23 @@ export function NewsFeed({
   onFilterChange,
   onInteract,
   onManageSources,
+  prefs,
+  onEditPreferences,
 }: Props) {
   const filtered = useMemo(() => {
     let list = articles.filter((a) => !interactions[a.url]?.deleted);
+    list = list.filter((a) => articleVisible(a, prefs));
     if (selectedTicker) list = list.filter((a) => a.ticker === selectedTicker);
     if (filter === "saved") list = list.filter((a) => interactions[a.url]?.saved);
     return list;
-  }, [articles, selectedTicker, interactions, filter]);
+  }, [articles, selectedTicker, interactions, filter, prefs]);
+
+  // Distinguish "no data" from "your preferences filtered everything out".
+  const hidByPrefs =
+    filtered.length === 0 &&
+    filter === "all" &&
+    !selectedTicker &&
+    articles.filter((a) => !interactions[a.url]?.deleted).length > 0;
 
   const [lead, ...rest] = filtered;
 
@@ -88,25 +101,49 @@ export function NewsFeed({
               {f === "all" ? "All" : "Saved"}
             </button>
           ))}
-          <button
-            onClick={onManageSources}
-            className="px-3 py-1 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground transition-colors ml-1"
-          >
-            Edit Sources
-          </button>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              onClick={onEditPreferences}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-xs font-medium text-foreground border border-border hover:border-primary transition-colors"
+            >
+              <SlidersIcon />
+              Preferences
+            </button>
+            <button
+              onClick={onManageSources}
+              className="px-3 py-1 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Edit Sources
+            </button>
+          </div>
         </div>
 
         {loading ? (
           <FeedSkeleton />
         ) : filtered.length === 0 ? (
-          <div className="flex items-center justify-center flex-1">
-            <p className="text-sm text-muted-foreground">
-              {filter === "saved"
-                ? "No saved articles yet."
-                : selectedTicker
-                ? `No recent news for ${selectedTicker}.`
-                : "No news found. Check back soon."}
-            </p>
+          <div className="flex flex-col items-center justify-center flex-1 gap-2 px-6 text-center">
+            {hidByPrefs ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  No articles match your preferences.
+                </p>
+                <button
+                  onClick={onEditPreferences}
+                  className="text-xs font-medium transition-colors"
+                  style={{ color: "oklch(0.72 0.14 74)" }}
+                >
+                  Adjust preferences
+                </button>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {filter === "saved"
+                  ? "No saved articles yet."
+                  : selectedTicker
+                  ? `No recent news for ${selectedTicker}.`
+                  : "No news found. Check back soon."}
+              </p>
+            )}
           </div>
         ) : (
           <div>
@@ -133,6 +170,22 @@ function tickerBtn(active: boolean) {
     "w-full text-left px-4 py-2 text-sm font-mono transition-colors duration-150",
     active ? "text-foreground font-semibold" : "text-muted-foreground hover:text-foreground",
   ].join(" ");
+}
+
+/* Sliders icon for the Preferences button (SVG, not emoji). */
+function SlidersIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M2 4.5h7M11.5 4.5H14M2 11.5h2.5M7 11.5h7"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <circle cx="10" cy="4.5" r="1.75" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="5.5" cy="11.5" r="1.75" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
 }
 
 /* ─── Source color coding ───

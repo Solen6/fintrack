@@ -35,12 +35,17 @@ export async function POST(req: NextRequest) {
   // Fetch the holding — RLS ensures it belongs to this user.
   const { data: holding, error: holdingErr } = await supabase
     .from("holdings")
-    .select("id, ticker, name, shares, cost_basis, account")
+    .select("id, ticker, name, shares, cost_basis, account, instrument_type")
     .eq("id", holdingId)
     .maybeSingle();
 
   if (holdingErr) return NextResponse.json({ error: holdingErr.message }, { status: 500 });
   if (!holding) return NextResponse.json({ error: "Holding not found" }, { status: 404 });
+  if (holding.instrument_type === "bond") {
+    // Bonds accrue coupons on face value — the per-share dividend / DRIP path
+    // does not apply and would corrupt the face-value encoding.
+    return NextResponse.json({ error: "Bonds accrue coupons, not dividends." }, { status: 400 });
+  }
 
   const shares = Number(holding.shares);
   const costBasis = Number(holding.cost_basis);

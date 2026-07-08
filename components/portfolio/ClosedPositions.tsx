@@ -15,6 +15,7 @@ interface ClosedPosition {
   account: string;
   closed_at: string;
   notes: string | null;
+  instrument_type?: string | null;
 }
 
 export function ClosedPositions() {
@@ -80,13 +81,14 @@ export function ClosedPositions() {
             const gain = p.realized_gain;
             const color = gain >= 0 ? "var(--positive)" : "var(--negative)";
             const returnPct = p.cost_basis > 0 ? ((p.sale_price - p.cost_basis) / p.cost_basis) * 100 : 0;
+            const faceBond = p.instrument_type === "bond"; // shares = face, prices = clean/100
             return (
               <tr key={p.id} className="border-b border-border/50">
                 <td className="px-4 py-3 font-mono font-semibold text-foreground">{p.ticker}</td>
                 <td className="px-4 py-3 text-muted-foreground">{p.name}</td>
-                <td className="px-4 py-3 text-right font-mono text-muted-foreground"><Sensitive>{formatShares(p.shares)}</Sensitive></td>
-                <td className="px-4 py-3 text-right font-mono text-muted-foreground"><Sensitive>{formatCurrency(p.cost_basis)}</Sensitive></td>
-                <td className="px-4 py-3 text-right font-mono text-foreground"><Sensitive>{formatCurrency(p.sale_price)}</Sensitive></td>
+                <td className="px-4 py-3 text-right font-mono text-muted-foreground"><Sensitive>{faceBond ? formatCurrency(p.shares) : formatShares(p.shares)}</Sensitive></td>
+                <td className="px-4 py-3 text-right font-mono text-muted-foreground"><Sensitive>{faceBond ? (p.cost_basis * 100).toFixed(2) : formatCurrency(p.cost_basis)}</Sensitive></td>
+                <td className="px-4 py-3 text-right font-mono text-foreground"><Sensitive>{faceBond ? (p.sale_price * 100).toFixed(2) : formatCurrency(p.sale_price)}</Sensitive></td>
                 <td className="px-4 py-3 text-right font-mono" style={{ color }}>
                   <Sensitive>{gain >= 0 ? "+" : ""}{formatCurrency(gain)}</Sensitive>
                 </td>

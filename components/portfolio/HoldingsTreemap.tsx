@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatCurrencyCompact } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
+import { isFaceValueBond } from "@/lib/types";
 import type { HoldingWithMetrics } from "@/lib/types";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -229,7 +230,8 @@ export function HoldingsTreemap({
           sector,
           value: Math.max(h.value, 1),
           changePct: colorBy === "daily" ? h.todayChangePct : h.gainPercent,
-          price: h.currentPrice,
+          // Bonds show a clean price (98.50), not currentPrice (0.985).
+          price: isFaceValueBond(h) ? h.currentPrice * 100 : h.currentPrice,
           isCash,
         };
       }),

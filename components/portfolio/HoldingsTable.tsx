@@ -4,6 +4,7 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { formatCurrency, formatPercent, formatShares } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
+import { isFaceValueBond } from "@/lib/types";
 import type { SortField, SortDir, HoldingWithMetrics } from "@/lib/types";
 import {
   Tooltip,
@@ -218,13 +219,14 @@ interface RowProps {
 function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, onDelete }: RowProps) {
   const [editing, setEditing] = useState(false);
   const [editShares, setEditShares] = useState(String(h.shares));
-  const [editCost, setEditCost] = useState(String(h.costBasis));
+  const [editCost, setEditCost] = useState(String(isFaceValueBond(h) ? h.costBasis * 100 : h.costBasis));
   const [editNotes, setEditNotes] = useState(h.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const positive = h.gainDollar >= 0;
   const todayPositive = h.todayChangePct >= 0;
+  const faceBond = isFaceValueBond(h); // shares = par, price = clean/100
 
   const gainColor = positive ? "var(--positive)" : "var(--negative)";
   const todayColor = todayPositive ? "var(--positive)" : "var(--negative)";
@@ -254,23 +256,27 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
           <span className="text-xs text-muted-foreground">{h.sector || "—"}</span>
         </td>
         <td className="px-4 py-3 text-right font-mono text-muted-foreground text-sm">
-          <Sensitive>{formatShares(h.shares)}</Sensitive>
+          <Sensitive>{faceBond ? formatCurrency(h.shares) : formatShares(h.shares)}</Sensitive>
         </td>
         <td className="px-4 py-3 text-right font-mono text-muted-foreground text-sm">
-          <Sensitive>{formatCurrency(h.costBasis)}</Sensitive>
+          <Sensitive>{faceBond ? (h.costBasis * 100).toFixed(2) : formatCurrency(h.costBasis)}</Sensitive>
         </td>
         <td className="px-4 py-3 text-right">
           <Tooltip>
             <TooltipTrigger>
               <span className="font-mono text-sm text-foreground cursor-default">
-                <Sensitive>{formatCurrency(h.currentPrice)}</Sensitive>
+                <Sensitive>{faceBond ? (h.currentPrice * 100).toFixed(2) : formatCurrency(h.currentPrice)}</Sensitive>
               </span>
             </TooltipTrigger>
             <TooltipContent side="left" className="text-xs font-mono bg-popover border-border">
-              <span style={{ color: todayColor }}>
-                {h.todayChangePct >= 0 ? "+" : ""}
-                {h.todayChangePct.toFixed(2)}% today
-              </span>
+              {faceBond && h.bondMetrics ? (
+                <span className="text-muted-foreground">{h.bondMetrics.ytm.toFixed(2)}% YTM</span>
+              ) : (
+                <span style={{ color: todayColor }}>
+                  {h.todayChangePct >= 0 ? "+" : ""}
+                  {h.todayChangePct.toFixed(2)}% today
+                </span>
+              )}
             </TooltipContent>
           </Tooltip>
         </td>
@@ -301,7 +307,7 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
                 <button
                   onClick={() => {
                     setEditShares(String(h.shares));
-                    setEditCost(String(h.costBasis));
+                    setEditCost(String(faceBond ? h.costBasis * 100 : h.costBasis));
                     setEditNotes(h.notes ?? "");
                     setEditing(true);
                   }}
@@ -358,7 +364,7 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
                 setSaving(true);
                 await onEdit(h, {
                   shares: parseFloat(editShares),
-                  cost_basis: parseFloat(editCost),
+                  cost_basis: faceBond ? parseFloat(editCost) / 100 : parseFloat(editCost),
                   notes: editNotes.trim() || null,
                 });
                 setSaving(false);
@@ -366,7 +372,7 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
               }}
             >
               <label className="text-xs text-muted-foreground">
-                Shares
+                {faceBond ? "Face ($)" : "Shares"}
                 <input
                   type="number"
                   step="any"
@@ -377,7 +383,7 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
                 />
               </label>
               <label className="text-xs text-muted-foreground">
-                Avg Cost
+                {faceBond ? "Price /100" : "Avg Cost"}
                 <input
                   type="number"
                   step="any"

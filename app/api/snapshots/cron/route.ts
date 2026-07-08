@@ -4,6 +4,7 @@ import { fetchQuotes } from "@/lib/finnhub";
 import { isMarketDay } from "@/lib/market-calendar";
 import { applyCorporateActionsWindow } from "@/lib/corporate-actions";
 import { generateMonthlyReports } from "@/lib/monthly-reports";
+import { computeBondMarks, type BondRow } from "@/lib/bond-marks";
 
 /**
  * Scheduled trigger: captures a daily portfolio_snapshots row for every user
@@ -20,11 +21,21 @@ function authorized(request: NextRequest): boolean {
 }
 
 interface HoldingRow {
+  id: string;
   user_id: string;
   ticker: string;
   shares: number;
   cost_basis: number;
   account: string | null;
+  instrument_type: string | null;
+  bond_type: string | null;
+  coupon_rate: number | null;
+  coupon_freq: number | null;
+  maturity_date: string | null;
+  day_count: string | null;
+  price_source: string | null;
+  manual_price: number | null;
+  credit_spread_bps: number | null;
 }
 
 async function run() {
@@ -54,7 +65,10 @@ async function run() {
   // Pull every holding + cash balance in one shot each, then group per user.
   // RLS is bypassed by the service-role client.
   const [{ data: holdings, error }, { data: cashRows }] = await Promise.all([
-    db.from("holdings").select("user_id,ticker,shares,cost_basis,account"),
+    // select("*") so a pre-migration deploy (bonds.sql not yet run) still
+    // captures snapshots — missing bond columns just read as undefined (equity),
+    // rather than PostgREST 400-ing and dropping the daily point for every user.
+    db.from("holdings").select("*"),
     db.from("cash_balances").select("user_id,account,balance"),
   ]);
   if (error) throw new Error(error.message);
@@ -73,21 +87,42 @@ async function run() {
   }
 
   // One Finnhub call per unique ticker across all users (fetchQuotes caches
-  // per-process for 60s anyway).
-  const allTickers = [...new Set(rows.map((h) => h.ticker.toUpperCase()))];
+  // per-process for 60s anyway). Non-ETF bonds have no exchange ticker — they
+  // price from the Treasury curve / par / cost via computeBondMarks instead.
+  const allTickers = [
+    ...new Set(
+      rows
+        .filter((h) => h.instrument_type !== "bond" || h.bond_type === "etf")
+        .map((h) => h.ticker.toUpperCase()),
+    ),
+  ];
   const quotes = allTickers.length ? await fetchQuotes(allTickers) : {};
 
-  // Group securities value by user → account.
+  // Clean-price marks for every non-ETF bond across all users (ids are unique).
+  const bondRows = rows.filter((h) => h.instrument_type === "bond" && h.bond_type !== "etf");
+  const bondMarks = bondRows.length ? await computeBondMarks(bondRows as unknown as BondRow[]) : {};
+
+  // Group securities value and cost basis by user → account.
   const byUser = new Map<string, Map<string, number>>();
+  const costByUser = new Map<string, Map<string, number>>();
   const pricedByUser = new Map<string, number>();
   for (const h of rows) {
+    const isNonEtfBond = h.instrument_type === "bond" && h.bond_type !== "etf";
+    const mark = isNonEtfBond ? bondMarks[h.id] : undefined;
     const q = quotes[h.ticker.toUpperCase()];
-    const price = q?.price ?? Number(h.cost_basis);
+    const price = mark ? mark.currentPrice : q?.price ?? Number(h.cost_basis);
     const acct = (h.account ?? "").trim() || "Unassigned";
+    
     const userMap = byUser.get(h.user_id) ?? new Map<string, number>();
     userMap.set(acct, (userMap.get(acct) ?? 0) + Number(h.shares) * price);
     byUser.set(h.user_id, userMap);
-    if (q) pricedByUser.set(h.user_id, (pricedByUser.get(h.user_id) ?? 0) + 1);
+
+    const costMap = costByUser.get(h.user_id) ?? new Map<string, number>();
+    costMap.set(acct, (costMap.get(acct) ?? 0) + Number(h.shares) * Number(h.cost_basis));
+    costByUser.set(h.user_id, costMap);
+
+    // Count anything we could actually price so a bond-only user isn't skipped.
+    if (q || mark) pricedByUser.set(h.user_id, (pricedByUser.get(h.user_id) ?? 0) + 1);
   }
 
   // Group cash by user → account.
@@ -105,18 +140,20 @@ async function run() {
   for (const user_id of allUsers) {
     const accountMap = byUser.get(user_id) ?? new Map<string, number>();
     const userCash = cashByUser.get(user_id) ?? new Map<string, number>();
-
+    const userCost = costByUser.get(user_id) ?? new Map<string, number>();
+ 
     // Skip the user if they have holdings but NO live prices came back — avoids
     // a junk point. Cash-only users (no holdings) still capture.
     const hasHoldings = accountMap.size > 0;
     if (hasHoldings && (pricedByUser.get(user_id) ?? 0) === 0) continue;
-
+ 
     const accounts = new Set<string>([...accountMap.keys(), ...userCash.keys()]);
     const rowsToWrite = [...accounts].map((account) => ({
       user_id,
       snapshot_date: today,
       total_value: accountMap.get(account) ?? 0,
       cash: userCash.get(account) ?? 0,
+      cost_basis: userCost.get(account) ?? 0,
       account,
     }));
 

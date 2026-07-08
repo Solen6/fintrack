@@ -60,6 +60,8 @@ interface DBHolding {
   shares: number;
   cost_basis: number;
   account: string;
+  instrument_type?: string | null;
+  bond_type?: string | null;
 }
 
 interface QuoteData {
@@ -72,6 +74,7 @@ interface Snapshot {
   value: number;
   /* Cash balance captured for this account on this day (0 for legacy/pre-cash rows). */
   cash?: number;
+  costBasis?: number;
   /* null = legacy combined row (pre per-account split); otherwise the account name. */
   account: string | null;
 }
@@ -90,6 +93,8 @@ interface AggHolding {
   value: number;
   gain: number;
   gainPct: number;
+  /** True when this position uses the face-value encoding (shares = par). */
+  faceBond?: boolean;
 }
 
 type ViewState = "loading" | "empty" | "error" | "ready";
@@ -98,6 +103,7 @@ export function DashboardClient() {
   const [view, setView] = useState<ViewState>("loading");
   const [holdings, setHoldings] = useState<DBHolding[]>([]);
   const [quotes, setQuotes] = useState<Record<string, QuoteData>>({});
+  const [bondMarks, setBondMarks] = useState<Record<string, { currentPrice: number }>>({});
   const [sectors, setSectors] = useState<Record<string, string>>({});
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [accountTypes, setAccountTypes] = useState<Record<string, AccountType>>({});
@@ -128,7 +134,12 @@ export function DashboardClient() {
       }
       setHoldings(rows);
 
-      const tickers = [...new Set(rows.map((h) => h.ticker))];
+      // Non-ETF bonds have no exchange ticker — exclude them from the quote list.
+      const tickers = [
+        ...new Set(
+          rows.filter((h) => h.instrument_type !== "bond" || h.bond_type === "etf").map((h) => h.ticker),
+        ),
+      ];
       setQuotesError(false);
 
       // Quotes + sectors in parallel; capture today's snapshot fire-and-forget
@@ -165,6 +176,14 @@ export function DashboardClient() {
         const m: Record<string, number> = {};
         for (const b of balances ?? []) m[b.account] = Number(b.balance);
         setCashBalances(m);
+      }
+
+      // Live marks for non-ETF bonds (Treasury curve / par / cost).
+      if (rows.some((h) => h.instrument_type === "bond" && h.bond_type !== "etf")) {
+        const mRes = await fetch("/api/bonds/marks").catch(() => null);
+        setBondMarks(mRes?.ok ? (await mRes.json()).marks ?? {} : {});
+      } else {
+        setBondMarks({});
       }
 
       // History after capture so today's point is included
@@ -224,8 +243,10 @@ export function DashboardClient() {
 
     const byTicker = new Map<string, AggHolding>();
     for (const h of investRows) {
+      const isNonEtfBond = h.instrument_type === "bond" && h.bond_type !== "etf";
+      const mark = isNonEtfBond ? bondMarks[h.id] : undefined;
       const q = quotes[h.ticker];
-      const price = q?.price ?? Number(h.cost_basis);
+      const price = mark ? mark.currentPrice : q?.price ?? Number(h.cost_basis);
       const cur = byTicker.get(h.ticker);
       const shares = Number(h.shares);
       const cost = shares * Number(h.cost_basis);
@@ -238,17 +259,19 @@ export function DashboardClient() {
         byTicker.set(h.ticker, {
           ticker: h.ticker,
           name: h.name,
-          sector: sectors[h.ticker] || "Other",
+          sector: h.instrument_type === "bond" ? "Fixed Income" : sectors[h.ticker] || "Other",
           shares,
           cost,
           value,
           gain: 0,
           gainPct: 0,
+          faceBond: isNonEtfBond,
         });
       }
     }
     const positions = [...byTicker.values()].map((p) => {
-      p.sector = sectors[p.ticker] || "Other";
+      // Keep bonds (set to "Fixed Income" above) grouped; refresh equity sectors.
+      if (p.sector !== "Fixed Income") p.sector = sectors[p.ticker] || "Other";
       p.gain = p.value - p.cost;
       p.gainPct = p.cost > 0 ? (p.gain / p.cost) * 100 : 0;
       return p;
@@ -289,7 +312,7 @@ export function DashboardClient() {
         : 0;
 
     return { positions, cash, invested, positionsValue, totalValue, totalGain, totalReturnPct, todayChange, todayPct };
-  }, [holdings, quotes, sectors, enabledAccounts, accountTypes, cashBalances]);
+  }, [holdings, quotes, bondMarks, sectors, enabledAccounts, accountTypes, cashBalances]);
 
   /* Allocation by sector — top 4 + Other, steel ramp */
   const allocation: AllocationPoint[] = useMemo(() => {
@@ -332,17 +355,22 @@ export function DashboardClient() {
      The same filtered series feeds the performance chart AND the monthly /
      yearly bars, so toggles propagate everywhere. */
   const series = useMemo(() => {
-    type Acc = { value: number; cash: number };
-    // Pass 1: sum enabled per-account rows per date (securities value + cash).
+    type Acc = { value: number; cash: number; costBasis: number };
+    // Pass 1: sum enabled per-account rows per date (securities value + cash + cost basis).
     const perAccount = new Map<string, Acc>();
     const legacy = new Map<string, Acc>();
     for (const s of snapshots) {
       const cash = s.cash ?? 0;
+      const costBasis = s.costBasis ?? 0;
       if (s.account === null) {
-        legacy.set(s.date, { value: s.value, cash }); // last write wins; one combined total/day
+        legacy.set(s.date, { value: s.value, cash, costBasis }); // last write wins; one combined total/day
       } else if (enabledAccounts.has(s.account)) {
-        const cur = perAccount.get(s.date) ?? { value: 0, cash: 0 };
-        perAccount.set(s.date, { value: cur.value + s.value, cash: cur.cash + cash });
+        const cur = perAccount.get(s.date) ?? { value: 0, cash: 0, costBasis: 0 };
+        perAccount.set(s.date, {
+          value: cur.value + s.value,
+          cash: cur.cash + cash,
+          costBasis: cur.costBasis + costBasis,
+        });
       }
     }
     // Pass 2: per-account total wins for a date; fall back to the legacy
@@ -356,7 +384,12 @@ export function DashboardClient() {
     }
     const result = [...byDate.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, acc]) => ({ date, value: acc.value, cash: acc.cash }));
+      .map(([date, acc]) => ({
+        date,
+        value: acc.value,
+        cash: acc.cash,
+        costBasis: acc.costBasis,
+      }));
       
     // Force the final point to match live data, ensuring the chart perfectly aligns with the hero
     if (result.length > 0) {
@@ -365,13 +398,19 @@ export function DashboardClient() {
       if (last.date === todayStr) {
         last.value = agg.positionsValue;
         last.cash = agg.cash;
+        last.costBasis = agg.invested;
       } else {
-        result.push({ date: todayStr, value: agg.positionsValue, cash: agg.cash });
+        result.push({
+          date: todayStr,
+          value: agg.positionsValue,
+          cash: agg.cash,
+          costBasis: agg.invested,
+        });
       }
     }
     
     return result;
-  }, [snapshots, enabledAccounts, allAccountsOn, agg.positionsValue, agg.cash]);
+  }, [snapshots, enabledAccounts, allAccountsOn, agg.positionsValue, agg.cash, agg.invested]);
 
   /* Performance chart: clip the series to the selected timeframe, then plot
      GAIN VS TOTAL ACCOUNT BALANCE at each point — (value − costBasis) /
@@ -402,12 +441,13 @@ export function DashboardClient() {
       ? series.filter((s) => new Date(`${s.date}T00:00:00`) >= start)
       : series;
 
-    const costBasis = agg.invested;
-    // Cash held flat across the window — snapshots' per-day cash is 0 for older
-    // rows (cash capture started recently), so using real historical cash would
-    // put a fake cliff in the line where capture began.
-    const cashFlat = agg.cash;
     const points: PerfPoint[] = clipped.map((s) => {
+      // Use historical cost basis if available and > 0, otherwise fall back to current.
+      const costBasis = s.costBasis && s.costBasis > 0 ? s.costBasis : agg.invested;
+      // Use historical cash if available and > 0, otherwise fall back to current cash.
+      // (This maintains backward compatibility and avoids the "cliff" issue for old runs).
+      const cashFlat = s.cash && s.cash > 0 ? s.cash : agg.cash;
+
       // Return % = that day's gain ÷ that day's TOTAL BALANCE (holdings value +
       // cash), matching the hero metric and Fidelity's account Gain/Loss %.
       // The Value line still plots the true total: securities + cash.
@@ -1263,7 +1303,7 @@ function HoldingsTable({
                 <td className="py-2.5 pr-3 text-muted-foreground">
                   {h.sector === "Other" ? "—" : h.sector}
                 </td>
-                <td className="py-2.5 px-3 text-right font-mono text-foreground"><Sensitive>{h.shares}</Sensitive></td>
+                <td className="py-2.5 px-3 text-right font-mono text-foreground"><Sensitive>{h.faceBond ? formatCurrency(h.shares) : h.shares}</Sensitive></td>
                 <td className="py-2.5 px-3 text-right font-mono text-foreground">
                   <Sensitive>{formatCurrency(h.value)}</Sensitive>
                 </td>

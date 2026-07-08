@@ -53,6 +53,7 @@ function parseCSVRows(text: string): string[][] {
 export function parsePortfolioCSV(text: string): ParseResult {
   const errors: string[] = [];
   const holdings: ParsedHolding[] = [];
+  let skippedBonds = 0;
 
   const rows = parseCSVRows(text);
   if (rows.length < 2) {
@@ -105,6 +106,25 @@ export function parsePortfolioCSV(text: string): ParseResult {
     const row = rows[i];
     if (!row || row.length < 2) continue;
 
+    // ─── Ignore bonds / CDs — this app tracks them via the Add Bond form, not
+    // CSV import. Must run BEFORE the sanitizer below, which strips a 9-char
+    // CUSIP (e.g. 91282CJK5) down to a bogus equity ticker (CJK) that would
+    // otherwise leak in as a fake stock with `face value` as its share count. ───
+    const rawSymbol = (row[tickerIdx] ?? "").trim().toUpperCase();
+    const descRaw = nameIdx !== -1 ? (row[nameIdx] ?? "") : "";
+    // A CUSIP is exactly 9 alphanumerics with at least one digit — never a real
+    // equity/ETF ticker (those are 1–5 chars; "BRK.B"'s dot fails the char class).
+    const isCusip = /^[0-9A-Z]{9}$/.test(rawSymbol) && /[0-9]/.test(rawSymbol);
+    // Bond/CD descriptions carry a coupon rate (e.g. 4.250%) AND a maturity date.
+    const looksLikeBondDesc =
+      /\d+(?:\.\d+)?%/.test(descRaw) &&
+      /\b(?:19|20)\d{2}\b|\d{1,2}\/\d{1,2}\/\d{2,4}/.test(descRaw);
+    const isCd = /CERTIFICATE OF DEPOSIT|\bFDIC\b/.test(descRaw.toUpperCase());
+    if (isCusip || looksLikeBondDesc || isCd) {
+      skippedBonds++;
+      continue;
+    }
+
     const ticker = row[tickerIdx]?.trim().toUpperCase().replace(/[^A-Z.]/g, "");
     if (!ticker || ticker.length === 0 || ticker === "SYMBOL") continue;
 
@@ -137,6 +157,12 @@ export function parsePortfolioCSV(text: string): ParseResult {
     }
 
     holdings.push({ ticker, name, shares, cost_basis: isNaN(cost) ? 0 : cost, account, sector });
+  }
+
+  if (skippedBonds > 0) {
+    errors.push(
+      `Skipped ${skippedBonds} bond/CD ${skippedBonds === 1 ? "row" : "rows"} — add fixed income with the “Add bond” button.`,
+    );
   }
 
   return { holdings, errors, source };

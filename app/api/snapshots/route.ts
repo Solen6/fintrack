@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchQuotes } from "@/lib/finnhub";
 import { isMarketDay } from "@/lib/market-calendar";
+import { computeBondMarks, type BondRow } from "@/lib/bond-marks";
 
 /* ─── GET: the user's snapshot history, oldest first ───
    Returns one row per (date, account). Legacy rows captured before per-account
@@ -14,7 +15,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("portfolio_snapshots")
-    .select("snapshot_date,total_value,cash,account")
+    .select("snapshot_date,total_value,cash,cost_basis,account")
     .eq("user_id", user.id)
     .order("snapshot_date", { ascending: true });
 
@@ -24,6 +25,7 @@ export async function GET() {
       date: s.snapshot_date as string,
       value: Number(s.total_value),
       cash: Number(s.cash ?? 0),
+      costBasis: Number(s.cost_basis ?? 0),
       account: (s.account as string | null) ?? null,
     })),
   });
@@ -47,7 +49,12 @@ export async function POST() {
   }
 
   const [{ data: holdings, error: hErr }, { data: cashRows }] = await Promise.all([
-    supabase.from("holdings").select("ticker,shares,cost_basis,account").eq("user_id", user.id),
+    // select("*") so a pre-migration deploy still captures snapshots (missing
+    // bond columns read as undefined = equity) instead of 400-ing.
+    supabase
+      .from("holdings")
+      .select("*")
+      .eq("user_id", user.id),
     supabase.from("cash_balances").select("account,balance").eq("user_id", user.id),
   ]);
   if (hErr) return NextResponse.json({ error: hErr.message }, { status: 500 });
@@ -63,18 +70,32 @@ export async function POST() {
     return NextResponse.json({ captured: false, reason: "No holdings." });
   }
 
-  const tickers = [...new Set((holdings ?? []).map((h) => h.ticker as string))];
+  // Equities + bond ETFs price via quotes; non-ETF bonds via computeBondMarks.
+  const tickers = [
+    ...new Set(
+      (holdings ?? [])
+        .filter((h) => h.instrument_type !== "bond" || h.bond_type === "etf")
+        .map((h) => h.ticker as string),
+    ),
+  ];
   const quotes = tickers.length ? await fetchQuotes(tickers) : {};
 
-  // Bucket securities value per account.
+  const bondRows = (holdings ?? []).filter((h) => h.instrument_type === "bond" && h.bond_type !== "etf");
+  const bondMarks = bondRows.length ? await computeBondMarks(bondRows as unknown as BondRow[]) : {};
+
+  // Bucket securities value and cost basis per account.
   const byAccount = new Map<string, number>();
+  const costBasisByAccount = new Map<string, number>();
   let pricedPositions = 0;
   for (const h of holdings ?? []) {
+    const isNonEtfBond = h.instrument_type === "bond" && h.bond_type !== "etf";
+    const mark = isNonEtfBond ? bondMarks[h.id as string] : undefined;
     const q = quotes[(h.ticker as string).toUpperCase()];
-    const price = q?.price ?? Number(h.cost_basis);
-    if (q) pricedPositions++;
+    const price = mark ? mark.currentPrice : q?.price ?? Number(h.cost_basis);
+    if (q || mark) pricedPositions++;
     const acct = ((h.account as string | null) ?? "").trim() || "Unassigned";
     byAccount.set(acct, (byAccount.get(acct) ?? 0) + Number(h.shares) * price);
+    costBasisByAccount.set(acct, (costBasisByAccount.get(acct) ?? 0) + Number(h.shares) * Number(h.cost_basis));
   }
 
   // Don't record a junk data point if we have holdings but live prices were
@@ -91,6 +112,7 @@ export async function POST() {
     snapshot_date: today,
     total_value: byAccount.get(account) ?? 0,
     cash: cashByAccount.get(account) ?? 0,
+    cost_basis: costBasisByAccount.get(account) ?? 0,
     account,
   }));
 

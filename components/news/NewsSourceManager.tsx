@@ -59,7 +59,6 @@ const SUGGESTIONS = [
   { name: "Reuters Business", url: "https://feeds.reuters.com/reuters/businessNews" },
   { name: "CNBC Finance",     url: "https://www.cnbc.com/id/10000664/device/rss/rss.html" },
   { name: "MarketWatch",      url: "https://feeds.marketwatch.com/marketwatch/topstories/" },
-  { name: "Seeking Alpha",    url: "https://seekingalpha.com/feed.xml" },
   { name: "Motley Fool",      url: "https://www.fool.com/feeds/index.aspx" },
   { name: "Barron's",         url: "https://www.barrons.com/feed" },
 ];

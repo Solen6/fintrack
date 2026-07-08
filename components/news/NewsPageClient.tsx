@@ -6,9 +6,18 @@ import { NewsFeed } from "@/components/news/NewsFeed";
 import { MacroPanel } from "@/components/news/MacroPanel";
 import { NewsSourceManager } from "@/components/news/NewsSourceManager";
 import type { NewsSource } from "@/components/news/NewsSourceManager";
+import { NewsPreferencesModal } from "@/components/news/NewsPreferencesModal";
 import type { NewsArticle } from "@/app/api/news/route";
 import type { ArticleState } from "@/app/api/news/interactions/route";
 import { DEFAULT_BUILTIN_PREFS, type BuiltinKey, type BuiltinPrefs } from "@/lib/news-builtins";
+import {
+  DEFAULT_PREFS,
+  loadPrefs,
+  savePrefs,
+  isOnboarded,
+  markOnboarded,
+  type NewsPrefs,
+} from "@/lib/news-preferences";
 
 const CommodityChart = nextDynamic(
   () => import("@/components/news/CommodityChart").then((m) => m.CommodityChart),
@@ -26,12 +35,15 @@ async function fetchAllNews(
 ): Promise<NewsArticle[]> {
   const param = portfolioTickers.join(",");
   const empty = Promise.resolve({ articles: [] as NewsArticle[] });
-  const [finnhubResult, avResult, feedsResult] = await Promise.allSettled([
+  const [finnhubResult, avResult, saResult, feedsResult] = await Promise.allSettled([
     builtins.finnhub
       ? fetch(`/api/news?tickers=${param}`).then((r) => (r.ok ? r.json() : { articles: [] }))
       : empty,
     builtins.alphavantage
       ? fetch(`/api/news/av?tickers=${param}`).then((r) => (r.ok ? r.json() : { articles: [] }))
+      : empty,
+    builtins.seekingalpha
+      ? fetch(`/api/news/sa?tickers=${param}`).then((r) => (r.ok ? r.json() : { articles: [] }))
       : empty,
     fetch(`/api/news/feeds`).then((r) => (r.ok ? r.json() : { articles: [] })),
   ]);
@@ -40,13 +52,16 @@ async function fetchAllNews(
     finnhubResult.status === "fulfilled" ? (finnhubResult.value.articles ?? []) : [];
   const av: NewsArticle[] =
     avResult.status === "fulfilled" ? (avResult.value.articles ?? []) : [];
+  const sa: NewsArticle[] =
+    saResult.status === "fulfilled" ? (saResult.value.articles ?? []) : [];
   const feeds: NewsArticle[] =
     feedsResult.status === "fulfilled" ? (feedsResult.value.articles ?? []) : [];
 
-  // Merge: RSS feeds first (user-curated), then AV (broad market), then Finnhub (portfolio-specific)
+  // Merge: RSS feeds first (user-curated), then AV (broad market), then
+  // Finnhub + Seeking Alpha (portfolio-specific). First-seen URL wins.
   const seen = new Set<string>();
   const merged: NewsArticle[] = [];
-  for (const a of [...feeds, ...av, ...finnhub]) {
+  for (const a of [...feeds, ...av, ...finnhub, ...sa]) {
     const key = a.url || a.id;
     if (!seen.has(key)) {
       seen.add(key);
@@ -66,6 +81,9 @@ export function NewsPageClient() {
   const [builtins, setBuiltins] = useState<BuiltinPrefs>(DEFAULT_BUILTIN_PREFS);
   const [loading, setLoading] = useState(true);
   const [showSourceManager, setShowSourceManager] = useState(false);
+  const [prefs, setPrefs] = useState<NewsPrefs>(DEFAULT_PREFS);
+  const [showPrefs, setShowPrefs] = useState(false);
+  const [prefsFirstRun, setPrefsFirstRun] = useState(false);
   const tickersRef = useRef<string[]>([]);
   const interactionsRef = useRef<Record<string, ArticleState>>({});
   const builtinsRef = useRef<BuiltinPrefs>(DEFAULT_BUILTIN_PREFS);
@@ -115,6 +133,13 @@ export function NewsPageClient() {
           builtinsRef.current = bl;
         }
 
+        // Load saved preferences (client-only) and trigger onboarding on first visit.
+        setPrefs(loadPrefs());
+        if (!isOnboarded()) {
+          setPrefsFirstRun(true);
+          setShowPrefs(true);
+        }
+
         const merged = await fetchAllNews(portfolioTickers, builtinsRef.current);
         if (!mountedRef.current) return;
         setArticles(merged);
@@ -156,6 +181,51 @@ export function NewsPageClient() {
       });
   }, [refreshNews]);
 
+  const handleSavePrefs = useCallback(
+    async (next: NewsPrefs, sourcesToAdd: { name: string; url: string }[]) => {
+      savePrefs(next);
+      setPrefs(next);
+      markOnboarded();
+      setShowPrefs(false);
+
+      // Seed any newly-enabled curated sources as custom RSS feeds.
+      if (sourcesToAdd.length) {
+        const added: NewsSource[] = [];
+        for (const feed of sourcesToAdd) {
+          try {
+            const res = await fetch("/api/news/sources", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(feed),
+            });
+            if (res.ok) {
+              const d = await res.json();
+              if (d.source) added.push(d.source);
+            }
+          } catch {
+            /* skip this feed, keep going */
+          }
+        }
+        if (added.length && mountedRef.current) {
+          setSources((prev) => [...prev, ...added]);
+        }
+      }
+      // Re-fetch so newly-added feeds pull into the merged feed.
+      refreshNews();
+    },
+    [refreshNews]
+  );
+
+  const handleClosePrefs = useCallback(() => {
+    // Dismissing the first-run modal still counts as onboarded (keep defaults)
+    // so we don't nag on every visit.
+    if (prefsFirstRun && !isOnboarded()) {
+      markOnboarded();
+      savePrefs(prefs);
+    }
+    setShowPrefs(false);
+  }, [prefsFirstRun, prefs]);
+
   const handleInteract = useCallback((url: string, update: Partial<ArticleState>) => {
     const current = interactionsRef.current[url] ?? { read: false, saved: false, deleted: false };
     const next = { ...current, ...update };
@@ -189,6 +259,11 @@ export function NewsPageClient() {
           onFilterChange={setFilter}
           onInteract={handleInteract}
           onManageSources={() => setShowSourceManager(true)}
+          prefs={prefs}
+          onEditPreferences={() => {
+            setPrefsFirstRun(false);
+            setShowPrefs(true);
+          }}
         />
         <MacroPanel />
       </div>
@@ -205,6 +280,20 @@ export function NewsPageClient() {
           }
           onDelete={(id) => setSources((prev) => prev.filter((s) => s.id !== id))}
           onToggleBuiltin={handleToggleBuiltin}
+        />
+      )}
+
+      {showPrefs && (
+        <NewsPreferencesModal
+          firstRun={prefsFirstRun}
+          initialPrefs={prefs}
+          sources={sources}
+          onClose={handleClosePrefs}
+          onSave={handleSavePrefs}
+          onOpenAdvanced={() => {
+            handleClosePrefs();
+            setShowSourceManager(true);
+          }}
         />
       )}
     </>

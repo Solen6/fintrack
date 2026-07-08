@@ -32,12 +32,14 @@ export function AddDividendModal({ onClose, onAdded }: Props) {
     fetch("/api/holdings")
       .then((r) => r.json())
       .then((d) => {
-        const list: Holding[] = (d.holdings ?? []).map((h: Holding) => ({
-          id: h.id,
-          ticker: h.ticker,
-          name: h.name,
-          shares: Number(h.shares),
-        }));
+        const list: Holding[] = (d.holdings ?? [])
+          .filter((h: { instrument_type?: string }) => h.instrument_type !== "bond") // coupons, not dividends
+          .map((h: Holding) => ({
+            id: h.id,
+            ticker: h.ticker,
+            name: h.name,
+            shares: Number(h.shares),
+          }));
         setHoldings(list);
         if (list.length > 0) setHoldingId(list[0].id);
       });

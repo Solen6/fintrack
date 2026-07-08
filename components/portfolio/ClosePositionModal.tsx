@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { formatCurrency, formatShares } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
+import { isFaceValueBond } from "@/lib/types";
 import type { HoldingWithMetrics } from "@/lib/types";
 
 interface Props {
@@ -12,21 +13,27 @@ interface Props {
 }
 
 export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
+  const faceBond = isFaceValueBond(holding); // shares = face, price = clean/100
   const [shares, setShares] = useState(String(holding.shares));
-  const [salePrice, setSalePrice] = useState(String(holding.currentPrice));
+  const [salePrice, setSalePrice] = useState(String(faceBond ? holding.currentPrice * 100 : holding.currentPrice));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   const sharesToClose = parseFloat(shares) || 0;
-  const price = parseFloat(salePrice) || 0;
+  const rawPrice = parseFloat(salePrice) || 0;
+  // For bonds the user enters a clean price (98.50); realized-gain + storage use clean/100.
+  const price = faceBond ? rawPrice / 100 : rawPrice;
   const realizedGain = (price - holding.costBasis) * sharesToClose;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (sharesToClose <= 0) { setError("Shares must be > 0"); return; }
-    if (sharesToClose > holding.shares) { setError(`Max ${formatShares(holding.shares)} shares`); return; }
-    if (price <= 0) { setError("Sale price must be > 0"); return; }
+    if (sharesToClose <= 0) { setError(faceBond ? "Face value must be > 0" : "Shares must be > 0"); return; }
+    if (sharesToClose > holding.shares) {
+      setError(faceBond ? `Max ${formatCurrency(holding.shares)} face` : `Max ${formatShares(holding.shares)} shares`);
+      return;
+    }
+    if (rawPrice <= 0) { setError("Sale price must be > 0"); return; }
     setSaving(true);
     try {
       await onConfirm(sharesToClose, price);
@@ -51,12 +58,21 @@ export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
           Close <span className="font-mono">{holding.ticker}</span>
         </h3>
         <p className="text-xs text-muted-foreground">
-          Holding: <Sensitive>{formatShares(holding.shares)}</Sensitive> shares @ <Sensitive>{formatCurrency(holding.costBasis)}</Sensitive> avg
+          Holding:{" "}
+          {faceBond ? (
+            <>
+              <Sensitive>{formatCurrency(holding.shares)}</Sensitive> face @ {(holding.costBasis * 100).toFixed(2)} avg
+            </>
+          ) : (
+            <>
+              <Sensitive>{formatShares(holding.shares)}</Sensitive> shares @ <Sensitive>{formatCurrency(holding.costBasis)}</Sensitive> avg
+            </>
+          )}
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Shares to close</label>
+            <label className="text-xs text-muted-foreground mb-1 block">{faceBond ? "Face value to close" : "Shares to close"}</label>
             <input
               className={inputClass}
               type="number"
@@ -69,7 +85,7 @@ export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
             />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Sale price per share</label>
+            <label className="text-xs text-muted-foreground mb-1 block">{faceBond ? "Sale price (per 100)" : "Sale price per share"}</label>
             <input
               className={inputClass}
               type="number"

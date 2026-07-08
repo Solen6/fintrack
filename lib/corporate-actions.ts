@@ -152,9 +152,17 @@ export async function applyCorporateActions(
 
   const { data: holdingsRaw, error } = await db
     .from("holdings")
-    .select("id,user_id,ticker,name,shares,cost_basis,account,drip");
+    // select("*") so this still runs pre-migration (bond columns read as
+    // undefined = equity) rather than 400-ing on the missing columns.
+    .select("*");
   if (error) throw new Error(error.message);
-  const holdings = (holdingsRaw ?? []) as Holding[];
+  // Non-ETF bonds have no exchange ticker and accrue coupons (not splits/
+  // dividends) — exclude them from the sweep. Bond ETFs keep their ticker and
+  // still receive Yahoo distributions like any other fund.
+  const holdings = (holdingsRaw ?? []).filter(
+    (h) => (h as { instrument_type?: string }).instrument_type !== "bond" ||
+      (h as { bond_type?: string }).bond_type === "etf",
+  ) as Holding[];
   if (holdings.length === 0) return summary;
 
   // What's already been applied for this date (skip those). Exclude manual

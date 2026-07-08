@@ -36,11 +36,12 @@ export async function POST(request: NextRequest) {
     user_id: user.id,
     ticker: holding.ticker,
     name: holding.name,
-    shares: sharesToClose,
+    shares: sharesToClose, // face value for bonds (face-value trick keeps proceeds correct)
     cost_basis: holding.cost_basis,
-    sale_price: salePrice,
+    sale_price: salePrice, // clean price / 100 for bonds
     account: holding.account,
     notes: holding.notes,
+    instrument_type: holding.instrument_type ?? "equity",
   });
 
   if (insertErr) {

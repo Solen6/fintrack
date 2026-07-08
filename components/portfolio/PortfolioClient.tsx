@@ -7,15 +7,17 @@ import { HoldingsTable } from "./HoldingsTable";
 import { PortfolioDeck } from "./PortfolioDeck";
 import { CSVUploadPanel } from "./CSVUploadPanel";
 import { AddPositionForm } from "./AddPositionForm";
+import { AddBondForm } from "./AddBondForm";
 import { AddCashForm } from "./AddCashForm";
 import { DepositForm } from "./DepositForm";
 import { ClosePositionModal } from "./ClosePositionModal";
 import { DividendManager } from "./DividendManager";
 import { ClosedPositions } from "./ClosedPositions";
 import { DividendHistory } from "./DividendHistory";
+import { FixedIncomeView } from "./FixedIncomeView";
 import { MonthlyReports } from "./MonthlyReports";
 import { computeMetrics } from "@/lib/types";
-import type { HoldingWithMetrics, Quote } from "@/lib/types";
+import type { HoldingWithMetrics, Quote, BondMetrics, InstrumentType, BondType, DayCount, BondPriceSource } from "@/lib/types";
 
 interface DBHolding {
   id: string;
@@ -27,9 +29,22 @@ interface DBHolding {
   sector: string | null;
   notes: string | null;
   drip: boolean | null;
+  instrument_type: string | null;
+  bond_type: string | null;
+  cusip: string | null;
+  coupon_rate: number | null;
+  coupon_freq: number | null;
+  maturity_date: string | null;
+  issue_date: string | null;
+  day_count: string | null;
+  price_source: string | null;
+  manual_price: number | null;
+  credit_spread_bps: number | null;
 }
 
-type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "addCash" | "deposit" | "ready";
+type BondMark = BondMetrics & { currentPrice: number };
+
+type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "addBond" | "addCash" | "deposit" | "ready";
 
 interface CashBalance {
   account: string;
@@ -39,7 +54,7 @@ interface CashBalance {
 
 export function PortfolioClient() {
   const [view, setView] = useState<ViewState>("loading");
-  const [subView, setSubView] = useState<"table" | "heatmap" | "closed" | "dividends" | "reports">("heatmap");
+  const [subView, setSubView] = useState<"table" | "heatmap" | "bonds" | "closed" | "income" | "reports">("heatmap");
   const [holdings, setHoldings] = useState<HoldingWithMetrics[]>([]);
   const [cash, setCash] = useState<CashBalance[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
@@ -52,6 +67,8 @@ export function PortfolioClient() {
     () => [...new Set([...holdings.map((h) => h.account), ...cash.map((c) => c.account)])].sort(),
     [holdings, cash]
   );
+
+  const hasBonds = useMemo(() => holdings.some((h) => h.instrumentType === "bond"), [holdings]);
 
   const cashByAccount = useMemo(() => {
     const m: Record<string, { label: string; balance: number }> = {};
@@ -86,42 +103,76 @@ export function PortfolioClient() {
         return;
       }
 
-      const tickers = [...new Set(dbHoldings.map((h) => h.ticker))];
+      // Equities + bond ETFs price via /api/quotes; non-ETF bonds via /api/bonds/marks.
+      const priceableTickers = [
+        ...new Set(
+          dbHoldings
+            .filter((h) => h.instrument_type !== "bond" || h.bond_type === "etf")
+            .map((h) => h.ticker),
+        ),
+      ];
       let quotes: Record<string, Quote> = {};
       setQuotesError(false);
       try {
-        const qRes = await fetch(`/api/quotes?tickers=${tickers.join(",")}`);
+        const qRes = await fetch(`/api/quotes?tickers=${priceableTickers.join(",")}`);
         if (qRes.ok) quotes = (await qRes.json()).quotes ?? {};
         else setQuotesError(true);
       } catch {
         setQuotesError(true);
       }
 
-      // Live sectors from Finnhub — authoritative; ignores stale stored values
+      // Live sectors from Finnhub — authoritative for equities; bonds are forced to "Fixed Income".
       let sectors: Record<string, string> = {};
       try {
-        const sRes = await fetch(`/api/sectors?tickers=${tickers.join(",")}`);
+        const sRes = await fetch(`/api/sectors?tickers=${priceableTickers.join(",")}`);
         if (sRes.ok) sectors = (await sRes.json()).sectors ?? {};
       } catch {
         // non-fatal — fall back to "—" in the table
       }
 
+      // Live clean-price marks + fixed-income analytics for non-ETF bonds.
+      let marks: Record<string, BondMark> = {};
+      if (dbHoldings.some((h) => h.instrument_type === "bond" && h.bond_type !== "etf")) {
+        try {
+          const mRes = await fetch("/api/bonds/marks");
+          if (mRes.ok) marks = (await mRes.json()).marks ?? {};
+        } catch {
+          // non-fatal — bonds fall back to cost basis below
+        }
+      }
+
       const merged: HoldingWithMetrics[] = dbHoldings.map((h) => {
+        const isBondRow = h.instrument_type === "bond";
+        const isEtfBond = isBondRow && h.bond_type === "etf";
         const q = quotes[h.ticker];
+        const mark = isBondRow && !isEtfBond ? marks[h.id] : undefined;
+        const currentPrice = mark ? mark.currentPrice : q?.price ?? h.cost_basis;
         return computeMetrics(
           {
             id: h.id,
             ticker: h.ticker,
             name: h.name,
-            sector: sectors[h.ticker] ?? "",
+            sector: isBondRow ? "Fixed Income" : sectors[h.ticker] ?? "",
             shares: h.shares,
             costBasis: h.cost_basis,
-            currentPrice: q?.price ?? h.cost_basis,
+            currentPrice,
             account: h.account,
             notes: h.notes ?? undefined,
             drip: h.drip ?? false,
+            instrumentType: (isBondRow ? "bond" : "equity") as InstrumentType,
+            bondType: (h.bond_type ?? undefined) as BondType | undefined,
+            cusip: h.cusip ?? undefined,
+            couponRate: h.coupon_rate ?? undefined,
+            couponFreq: h.coupon_freq ?? undefined,
+            maturityDate: h.maturity_date ?? undefined,
+            issueDate: h.issue_date ?? undefined,
+            dayCount: (h.day_count ?? undefined) as DayCount | undefined,
+            priceSource: (h.price_source ?? undefined) as BondPriceSource | undefined,
+            manualPrice: h.manual_price ?? undefined,
+            creditSpreadBps: h.credit_spread_bps ?? undefined,
+            bondMetrics: mark,
           },
-          q?.changePct ?? 0
+          isBondRow && !isEtfBond ? 0 : q?.changePct ?? 0,
         );
       });
 
@@ -182,6 +233,16 @@ export function PortfolioClient() {
       <AddPositionForm
         existingAccounts={existingAccounts}
         onSaved={() => loadData()}
+        onCancel={() => setView("ready")}
+      />
+    );
+  }
+
+  if (view === "addBond") {
+    return (
+      <AddBondForm
+        existingAccounts={existingAccounts}
+        onSaved={() => { setView("ready"); setSubView("bonds"); loadData(); }}
         onCancel={() => setView("ready")}
       />
     );
@@ -265,6 +326,18 @@ export function PortfolioClient() {
               >
                 Table
               </button>
+              {hasBonds && (
+                <button
+                  onClick={() => setSubView("bonds")}
+                  className="text-xs px-2.5 py-1 transition-colors duration-150"
+                  style={{
+                    background: subView === "bonds" ? "oklch(0.16 0 0)" : "transparent",
+                    color: subView === "bonds" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                  }}
+                >
+                  Bonds
+                </button>
+              )}
               <button
                 onClick={() => setSubView("closed")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
@@ -276,14 +349,14 @@ export function PortfolioClient() {
                 Closed
               </button>
               <button
-                onClick={() => setSubView("dividends")}
+                onClick={() => setSubView("income")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
                 style={{
-                  background: subView === "dividends" ? "oklch(0.16 0 0)" : "transparent",
-                  color: subView === "dividends" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                  background: subView === "income" ? "oklch(0.16 0 0)" : "transparent",
+                  color: subView === "income" ? "var(--primary)" : "oklch(0.64 0.008 74)",
                 }}
               >
-                Dividends
+                Income
               </button>
               <button
                 onClick={() => setSubView("reports")}
@@ -307,6 +380,12 @@ export function PortfolioClient() {
               className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
             >
               Add position
+            </button>
+            <button
+              onClick={() => setView("addBond")}
+              className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+            >
+              Add bond
             </button>
             <button
               onClick={() => setView("deposit")}
@@ -358,8 +437,11 @@ export function PortfolioClient() {
         {subView === "heatmap" && (
           <PortfolioDeck holdings={holdings} cash={cash} />
         )}
+        {subView === "bonds" && <FixedIncomeView holdings={holdings} />}
         {subView === "closed" && <ClosedPositions />}
-        {subView === "dividends" && <DividendHistory />}
+        {subView === "income" && (
+          <DividendHistory bonds={holdings.filter((h) => h.instrumentType === "bond" && h.bondType !== "etf")} />
+        )}
         {subView === "reports" && <MonthlyReports account={selectedAccount} />}
       </main>
 
@@ -389,7 +471,7 @@ export function PortfolioClient() {
 
       {managingDividends && (
         <DividendManager
-          holdings={holdings}
+          holdings={holdings.filter((h) => h.instrumentType !== "bond")}
           account={selectedAccount}
           onSaved={() => { setManagingDividends(false); loadData(); }}
           onCancel={() => setManagingDividends(false)}

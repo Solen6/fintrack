@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import nextDynamic from "next/dynamic";
 import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
+import { isFaceValueBond } from "@/lib/types";
 import type { HoldingWithMetrics } from "@/lib/types";
 import type { ActivityItem, ActivityType } from "@/app/api/transactions/recent/route";
 import type { SeriesRange } from "@/app/api/paper/series/route";
@@ -88,6 +89,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
   }, [selectableTickers, selected]);
 
   const selectedHolding = holdings.find((h) => h.ticker === selected) ?? null;
+  const selFaceBond = selectedHolding ? isFaceValueBond(selectedHolding) : false;
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-4">
@@ -166,24 +168,36 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
             </div>
             {selectedHolding && (
               <div className="text-right">
-                <div className="text-2xl font-mono tabular-nums leading-none text-foreground">{fmtPx(selectedHolding.currentPrice)}</div>
-                <div className="text-sm font-mono tabular-nums mt-1" style={{ color: selectedHolding.todayChangePct >= 0 ? "var(--positive)" : "var(--negative)" }}>
-                  {selectedHolding.todayChangePct >= 0 ? "+" : ""}{selectedHolding.todayChangePct.toFixed(2)}% today
+                <div className="text-2xl font-mono tabular-nums leading-none text-foreground">
+                  {selFaceBond ? (selectedHolding.currentPrice * 100).toFixed(2) : fmtPx(selectedHolding.currentPrice)}
                 </div>
+                {selFaceBond && selectedHolding.bondMetrics ? (
+                  <div className="text-sm font-mono tabular-nums mt-1 text-muted-foreground">
+                    {selectedHolding.bondMetrics.ytm.toFixed(2)}% YTM
+                  </div>
+                ) : (
+                  <div className="text-sm font-mono tabular-nums mt-1" style={{ color: selectedHolding.todayChangePct >= 0 ? "var(--positive)" : "var(--negative)" }}>
+                    {selectedHolding.todayChangePct >= 0 ? "+" : ""}{selectedHolding.todayChangePct.toFixed(2)}% today
+                  </div>
+                )}
               </div>
             )}
           </div>
           {selected ? (
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-              {/* price chart */}
-              <div className="lg:col-span-3 min-w-0">
-                <TickerChart symbol={selected} />
+            selFaceBond ? (
+              <BondInsights holding={selectedHolding} />
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                {/* price chart */}
+                <div className="lg:col-span-3 min-w-0">
+                  <TickerChart symbol={selected} />
+                </div>
+                {/* insights table */}
+                <div className="lg:col-span-2 min-w-0">
+                  <HoldingInsights symbol={selected} holding={selectedHolding} />
+                </div>
               </div>
-              {/* insights table */}
-              <div className="lg:col-span-2 min-w-0">
-                <HoldingInsights symbol={selected} holding={selectedHolding} />
-              </div>
-            </div>
+            )
           ) : (
             <p className="text-sm text-muted-foreground py-8 text-center">Select a holding above to see its price chart and insights.</p>
           )}
@@ -356,6 +370,54 @@ function HoldingInsights({ symbol, holding }: { symbol: string; holding: Holding
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ─── Selected-bond insights: fixed-income analytics + your position ─── */
+function fmtBondDate(iso?: string | null): string {
+  if (!iso) return "—";
+  const [y, mo, d] = iso.slice(0, 10).split("-");
+  return `${mo}/${d}/${y.slice(2)}`;
+}
+
+function BondInsights({ holding }: { holding: HoldingWithMetrics | null }) {
+  if (!holding) return null;
+  const m = holding.bondMetrics;
+  const gainTone = holding.gainDollar >= 0 ? "var(--positive)" : "var(--negative)";
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <h3 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Bond details</h3>
+        <div className="grid grid-cols-2 gap-px rounded-sm overflow-hidden" style={{ background: "var(--border)" }}>
+          <Stat label="Coupon" value={`${(holding.couponRate ?? 0).toFixed(2)}%`} />
+          <Stat label="Maturity" value={fmtBondDate(holding.maturityDate)} />
+          <Stat label="YTM" value={m ? `${m.ytm.toFixed(2)}%` : "—"} />
+          <Stat label="Current yield" value={m ? `${m.currentYield.toFixed(2)}%` : "—"} />
+          <Stat label="Duration" value={m ? `${m.modifiedDuration.toFixed(1)}y` : "—"} />
+          <Stat label="Accrued" value={<Sensitive>{m ? formatCurrency(m.accrued) : "—"}</Sensitive>} />
+        </div>
+      </div>
+      <div>
+        <h3 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Your position</h3>
+        <div className="grid grid-cols-2 gap-px rounded-sm overflow-hidden" style={{ background: "var(--border)" }}>
+          <Stat label="Face value" value={<Sensitive>{formatCurrency(holding.shares)}</Sensitive>} />
+          <Stat label="Market value" value={<Sensitive>{formatCurrency(holding.value)}</Sensitive>} />
+          <Stat label="Avg price" value={(holding.costBasis * 100).toFixed(2)} />
+          <Stat label="Price" value={(holding.currentPrice * 100).toFixed(2)} />
+          <Stat label="Next coupon" value={m?.nextCouponDate ? fmtBondDate(m.nextCouponDate) : "—"} />
+          <Stat
+            label="Unrealized"
+            tone={gainTone}
+            value={
+              <>
+                <Sensitive>{holding.gainDollar >= 0 ? "+" : "−"}{formatCurrency(Math.abs(holding.gainDollar))}</Sensitive>
+                {" · "}<Sensitive>{`${holding.gainPercent >= 0 ? "+" : ""}${holding.gainPercent.toFixed(2)}%`}</Sensitive>
+              </>
+            }
+          />
+        </div>
+      </div>
     </div>
   );
 }
