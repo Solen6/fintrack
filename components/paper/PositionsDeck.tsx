@@ -33,7 +33,9 @@ const Tooltip = nextDynamic(() => import("recharts").then((m) => m.Tooltip), { s
 const ResponsiveContainer = nextDynamic(() => import("recharts").then((m) => m.ResponsiveContainer), { ssr: false });
 const PieChart = nextDynamic(() => import("recharts").then((m) => m.PieChart), { ssr: false });
 const Pie = nextDynamic(() => import("recharts").then((m) => m.Pie), { ssr: false });
-const Cell = nextDynamic(() => import("recharts").then((m) => m.Cell), { ssr: false });
+/* Cell removed — next/dynamic wraps it in a lazy boundary that breaks
+   Recharts' child-type matching.  We pass `fill` directly on each data
+   item instead, which Pie reads natively. */
 
 const CHART_RANGES: SeriesRange[] = ["1D", "5D", "1M", "6M", "YTD"];
 const CLASS_ORDER: AssetClass[] = ["STOCK", "OPTION", "FUTURE", "FOREX"];
@@ -87,14 +89,19 @@ function plColor(v: number): string {
 }
 
 /** Slice fill: emerald gain / ruby loss (intensity scaled to unrealized %),
-    amber for the cash slice. */
-function sliceFill(unrealized: number | null, unrealizedPct: number): string {
-  if (unrealized === null) return "var(--primary)"; // cash — brand amber
+    amber for the cash slice.
+    Uses HSLA — oklch with alpha is not rendered correctly in SVG fills.
+    @param opacity  0-1 fill opacity (used for hover dimming). */
+function sliceFill(unrealized: number | null, unrealizedPct: number, opacity = 1): string {
+  const a = opacity.toFixed(2);
+  if (unrealized === null) return `hsla(45, 80%, 55%, ${a})`; // cash — amber
+  // mag 0→1 drives saturation + lightness ramp so bigger P/L = bolder color
   const mag = Math.min(1, Math.abs(unrealizedPct) / 20);
-  const alpha = 0.35 + 0.5 * Math.pow(mag, 0.7);
+  const sat = 45 + 35 * mag;   // 45% → 80%
+  const lit = 28 + 16 * mag;   // 28% → 44%
   return unrealized >= 0
-    ? `oklch(0.68 0.13 152 / ${alpha.toFixed(2)})`
-    : `oklch(0.62 0.15 28 / ${alpha.toFixed(2)})`;
+    ? `hsla(152, ${sat.toFixed(0)}%, ${lit.toFixed(0)}%, ${a})`  // emerald green
+    : `hsla(4, ${sat.toFixed(0)}%, ${lit.toFixed(0)}%, ${a})`;   // ruby red
 }
 
 /**
@@ -274,7 +281,8 @@ interface Slice {
   pct: number;        // 0-100 of the account pie
   unrealized: number | null;  // null = the cash slice
   unrealizedPct: number;
-  color: string;      // steel-ramp identity fill (cash = inert gray)
+  color: string;      // full-opacity legend swatch color
+  fill: string;       // SVG fill (may include dimmed opacity on hover)
 }
 
 function AllocationPie({
@@ -296,7 +304,7 @@ function AllocationPie({
   const cashSlice = Math.max(0, equity - positionsDeployed);
   const denom = positionsDeployed + cashSlice; // ≈ equity; drives slice %
 
-  const slices: Slice[] = [...positions]
+  const baseSlices = [...positions]
     .map((p) => ({ p, val: equityValue(p) }))
     .sort((a, b) => b.val - a.val)
     .map(({ p, val }) => ({
@@ -305,15 +313,26 @@ function AllocationPie({
       name: p.name,
       value: val,
       pct: denom > 0 ? (100 * val) / denom : 0,
-      unrealized: p.unrealized,
+      unrealized: p.unrealized as number | null,
       unrealizedPct: p.unrealizedPct,
-      color: sliceFill(p.unrealized, p.unrealizedPct),
     }));
   if (cashSlice > 0) {
-    slices.push({ id: "__cash", label: "CASH", name: "Cash", value: cashSlice, pct: denom > 0 ? (100 * cashSlice) / denom : 0, unrealized: null, unrealizedPct: 0, color: sliceFill(null, 0) });
+    baseSlices.push({ id: "__cash", label: "CASH", name: "Cash", value: cashSlice, pct: denom > 0 ? (100 * cashSlice) / denom : 0, unrealized: null, unrealizedPct: 0 });
   }
 
-  const anyHot = hovered !== null && slices.some((s) => s.id === hovered);
+  const anyHot = hovered !== null && baseSlices.some((s) => s.id === hovered);
+
+  // Build final slices with fill colors.  Hover dimming is baked into the
+  // fill's alpha channel because we can't use Recharts <Cell> (next/dynamic
+  // breaks the child-type matching that Pie relies on).
+  const slices: Slice[] = baseSlices.map((s) => {
+    const dimmed = anyHot && hovered !== s.id;
+    return {
+      ...s,
+      color: sliceFill(s.unrealized, s.unrealizedPct),           // legend swatch (full opacity)
+      fill: sliceFill(s.unrealized, s.unrealizedPct, dimmed ? 0.35 : 1), // SVG fill
+    };
+  });
 
   return (
     <div className="rounded-md border border-border bg-card px-4 pt-3.5 pb-4">
@@ -334,21 +353,14 @@ function AllocationPie({
                 innerRadius="62%"
                 outerRadius="96%"
                 paddingAngle={1.5}
-                stroke="oklch(0.08 0 0)"
+                stroke="#141414"
                 strokeWidth={1}
                 isAnimationActive={false}
                 onMouseEnter={(_, i) => { const s = slices[i]; if (s && s.unrealized !== null) setHovered(s.id); }}
                 onMouseLeave={() => setHovered(null)}
                 onClick={(_, i) => { const s = slices[i]; if (s && s.unrealized !== null) onJump(s.id); }}
               >
-                {slices.map((s) => (
-                  <Cell
-                    key={s.id}
-                    fill={s.color}
-                    fillOpacity={anyHot && hovered !== s.id ? 0.35 : 1}
-                    cursor={s.unrealized !== null ? "pointer" : "default"}
-                  />
-                ))}
+                {/* fill comes from each slice's `fill` property — no Cell needed */}
               </Pie>
               <Tooltip
                 contentStyle={{ background: "var(--popover)", border: "1px solid oklch(0.20 0 0)", borderRadius: 4, fontSize: 12 }}
