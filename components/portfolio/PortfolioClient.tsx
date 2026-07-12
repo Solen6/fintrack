@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { AccountSidebar } from "./AccountSidebar";
 import { SummaryStrip } from "./SummaryStrip";
+import { unitMethodReturn, earliestStoredCapital, type ReturnSnapshot, type ReturnFlow } from "@/lib/portfolio-return";
 import { HoldingsTable } from "./HoldingsTable";
 import { PortfolioDeck } from "./PortfolioDeck";
 import { CSVUploadPanel } from "./CSVUploadPanel";
@@ -40,6 +41,7 @@ interface DBHolding {
   price_source: string | null;
   manual_price: number | null;
   credit_spread_bps: number | null;
+  acquired_at: string | null;
 }
 
 type BondMark = BondMetrics & { currentPrice: number };
@@ -62,6 +64,10 @@ export function PortfolioClient() {
   const [quotesError, setQuotesError] = useState(false);
   const [closingHolding, setClosingHolding] = useState<HoldingWithMetrics | null>(null);
   const [managingDividends, setManagingDividends] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [snapshots, setSnapshots] = useState<ReturnSnapshot[]>([]);
+  const [flows, setFlows] = useState<ReturnFlow[]>([]);
+  const [seeds, setSeeds] = useState<{ account: string; seedCostBasis: number; basePrice: number }[]>([]);
 
   const existingAccounts = useMemo(
     () => [...new Set([...holdings.map((h) => h.account), ...cash.map((c) => c.account)])].sort(),
@@ -76,12 +82,47 @@ export function PortfolioClient() {
     return m;
   }, [cash]);
 
+  /* Cumulative time-weighted return for the selected account (or all), computed
+     the same way as the dashboard hero so the two agree. null until snapshots
+     load / when there isn't enough history. */
+  const cumReturn = useMemo(() => {
+    const allOn = selectedAccount === "all";
+    const enabled = allOn ? new Set(existingAccounts) : new Set([selectedAccount]);
+    const acctHoldings = allOn ? holdings : holdings.filter((h) => h.account === selectedAccount);
+    const liveValue = acctHoldings.reduce((s, h) => s + h.value, 0);
+    const acctCash = allOn ? cash : cash.filter((c) => c.account === selectedAccount);
+    const liveCash = acctCash.reduce((s, c) => s + c.balance, 0);
+    // Seed cost basis for the selected account(s): stored anchor (portfolio_seed),
+    // falling back — for any account not seeded yet — to cost basis + cash as of
+    // that account's EARLIEST STORED snapshot, never live/current values. Live
+    // cash already includes every deposit/withdrawal made since inception, which
+    // would double-count them: once baked into the anchor, again minted/redeemed
+    // by unitMethodReturn's flow loop — a deposit would then read as a loss and
+    // a withdrawal as a gain. Only an account with NO stored history at all (a
+    // brand-new account) falls back to live cost basis + cash.
+    const seedByAccount = new Map(seeds.map((s) => [s.account, s.seedCostBasis]));
+    let seedCostBasis = 0;
+    for (const acct of enabled) {
+      const seeded = seedByAccount.get(acct);
+      if (seeded != null) { seedCostBasis += seeded; continue; }
+      const anchor = earliestStoredCapital(snapshots, new Set([acct]), false);
+      if (anchor) { seedCostBasis += anchor.costBasis + anchor.cash; continue; }
+      const liveCostBasis = acctHoldings.filter((h) => h.account === acct).reduce((s, h) => s + h.costTotal, 0);
+      const liveCashAcct = acctCash.filter((c) => c.account === acct).reduce((s, c) => s + c.balance, 0);
+      seedCostBasis += liveCostBasis + liveCashAcct;
+    }
+    if (seedCostBasis <= 0) return null; // no cost basis → fall back to cost-basis unrealized
+    const r = unitMethodReturn(snapshots, flows, enabled, allOn, { value: liveValue, cash: liveCash }, seedCostBasis);
+    return { pct: r.totalPct, gain: r.totalGain };
+  }, [snapshots, flows, seeds, selectedAccount, existingAccounts, holdings, cash]);
+
   const loadData = useCallback(async () => {
     setView("loading");
     try {
-      const [res, cashRes] = await Promise.all([
+      const [res, cashRes, snapRes] = await Promise.all([
         fetch("/api/holdings"),
         fetch("/api/cash").catch(() => null),
+        fetch("/api/snapshots").catch(() => null),
       ]);
       if (!res.ok) throw new Error();
       const { holdings: dbHoldings }: { holdings: DBHolding[] } = await res.json();
@@ -90,6 +131,13 @@ export function PortfolioClient() {
         ? (await cashRes.json()).balances ?? []
         : [];
       setCash(cashBalances);
+
+      if (snapRes?.ok) {
+        const snap = await snapRes.json();
+        setSnapshots(snap.snapshots ?? []);
+        setFlows(snap.flows ?? []);
+        setSeeds(snap.seeds ?? []);
+      }
 
       if ((!dbHoldings || dbHoldings.length === 0) && cashBalances.length === 0) {
         setView("empty");
@@ -159,6 +207,7 @@ export function PortfolioClient() {
             account: h.account,
             notes: h.notes ?? undefined,
             drip: h.drip ?? false,
+            acquiredAt: h.acquired_at,
             instrumentType: (isBondRow ? "bond" : "equity") as InstrumentType,
             bondType: (h.bond_type ?? undefined) as BondType | undefined,
             cusip: h.cusip ?? undefined,
@@ -281,7 +330,7 @@ export function PortfolioClient() {
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        <SummaryStrip holdings={holdings} cash={cash} account={selectedAccount} />
+        <SummaryStrip holdings={holdings} cash={cash} account={selectedAccount} cumReturn={cumReturn} />
 
         {/* Toolbar */}
         <div className="flex items-center justify-between px-6 py-2 border-b border-border shrink-0">
@@ -375,29 +424,32 @@ export function PortfolioClient() {
             >
               Manage dividends
             </button>
-            <button
-              onClick={() => setView("addPosition")}
-              className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
-            >
-              Add position
-            </button>
-            <button
-              onClick={() => setView("addBond")}
-              className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
-            >
-              Add bond
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setAddMenuOpen((o) => !o)}
+                aria-haspopup="menu"
+                aria-expanded={addMenuOpen}
+                className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors inline-flex items-center gap-1"
+              >
+                Add
+                <span aria-hidden className="text-[0.6rem] leading-none">▾</span>
+              </button>
+              {addMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" aria-hidden onClick={() => setAddMenuOpen(false)} />
+                  <div role="menu" className="absolute left-0 mt-1 z-20 min-w-[8rem] rounded-md border border-border bg-card py-1 shadow-lg">
+                    <button role="menuitem" onClick={() => { setAddMenuOpen(false); setView("addPosition"); }} className="block w-full text-left text-xs px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">Position</button>
+                    <button role="menuitem" onClick={() => { setAddMenuOpen(false); setView("addBond"); }} className="block w-full text-left text-xs px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">Bond</button>
+                    <button role="menuitem" onClick={() => { setAddMenuOpen(false); setView("addCash"); }} className="block w-full text-left text-xs px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">Cash</button>
+                  </div>
+                </>
+              )}
+            </div>
             <button
               onClick={() => setView("deposit")}
               className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
             >
-              Deposit
-            </button>
-            <button
-              onClick={() => setView("addCash")}
-              className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
-            >
-              Add cash
+              Deposit / Withdraw
             </button>
             <button
               onClick={() => setView("uploading")}

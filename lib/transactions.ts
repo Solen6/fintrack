@@ -20,6 +20,27 @@ export interface TxnInput {
   tradeDate?: string;   // YYYY-MM-DD; defaults to today (US market day)
 }
 
+const FLOW_ACTIONS = ["DEPOSIT", "WITHDRAWAL", "TRANSFER_IN", "TRANSFER_OUT", "TRANSFER"] as const;
+
+/** Σ signed external cash flows (deposits +, withdrawals −) recorded so far
+ *  for one account — used to audit that cash_balance stays in lockstep with
+ *  the ledger (cash − netDeposits must be flow-invariant). Best-effort: 0 if
+ *  the ledger table isn't deployed yet. */
+export async function sumNetDeposits(
+  supabase: SupabaseClient,
+  userId: string,
+  account: string,
+): Promise<number> {
+  const { data, error } = await supabase
+    .from("transactions")
+    .select("amount")
+    .eq("user_id", userId)
+    .eq("account", account)
+    .in("action", FLOW_ACTIONS);
+  if (error || !data) return 0;
+  return data.reduce((s, r) => s + Number(r.amount ?? 0), 0);
+}
+
 function todayEastern(): string {
   // en-CA renders YYYY-MM-DD; anchor to New York so the date matches the market day.
   return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });

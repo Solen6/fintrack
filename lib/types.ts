@@ -65,6 +65,9 @@ export interface Holding extends BondFields {
   /* Dividend handling: true = reinvest (DRIP), false = pay to cash. */
   drip?: boolean;
   instrumentType?: InstrumentType;
+  /** When the position was acquired — a same-day buy measures its daily gain
+      from cost instead of yesterday's close. Null = predates the app. */
+  acquiredAt?: string | null;
   /** Present on bond rows once priced by /api/bonds/marks. */
   bondMetrics?: BondMetrics;
 }

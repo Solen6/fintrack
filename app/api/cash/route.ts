@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { recordTransaction } from "@/lib/transactions";
 
 /* ─── GET: user's cash balances, one per account ───
    → { balances: [{ account, label, balance }] } */
@@ -45,6 +46,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Balance must be a non-negative number" }, { status: 400 });
   }
 
+  // Read the prior balance first so the change can be logged as a cash flow.
+  // Setting a balance directly is otherwise invisible to the time-weighted
+  // return, which would then read the jump as a phantom gain/loss. Logging the
+  // delta as a deposit (+) or withdrawal (−) makes it return-neutral.
+  const { data: prior } = await supabase
+    .from("cash_balances")
+    .select("balance")
+    .eq("user_id", user.id)
+    .eq("account", account)
+    .maybeSingle();
+  const oldBalance = Number(prior?.balance ?? 0);
+
   const { error } = await supabase
     .from("cash_balances")
     .upsert(
@@ -60,6 +73,16 @@ export async function POST(request: NextRequest) {
       );
     }
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const delta = Math.round((balance - oldBalance) * 100) / 100;
+  if (delta !== 0) {
+    await recordTransaction(supabase, user.id, {
+      account,
+      action: delta > 0 ? "DEPOSIT" : "WITHDRAWAL",
+      description: "Cash balance adjustment",
+      amount: delta, // signed: + raises the balance, − lowers it
+    });
   }
   return NextResponse.json({ ok: true, account, balance });
 }

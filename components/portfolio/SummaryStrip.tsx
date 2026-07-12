@@ -12,9 +12,13 @@ interface Props {
   holdings: HoldingWithMetrics[];
   cash?: CashBalance[];
   account: string;
+  /* Cumulative time-weighted return for this account (matches the dashboard).
+     null until snapshots load or when there isn't enough history — then we fall
+     back to the cost-basis unrealized figure. */
+  cumReturn?: { pct: number; gain: number } | null;
 }
 
-export function SummaryStrip({ holdings, cash = [], account }: Props) {
+export function SummaryStrip({ holdings, cash = [], account, cumReturn = null }: Props) {
   const filtered = account === "all"
     ? holdings
     : holdings.filter((h) => h.account === account);
@@ -28,7 +32,14 @@ export function SummaryStrip({ holdings, cash = [], account }: Props) {
   const unrealized = positionsValue - totalCost;
   const unrealizedPct = totalCost > 0 ? (unrealized / totalCost) * 100 : 0;
 
+  // A position acquired today is measured from cost (your entry), not yesterday's
+  // close it never held through — matching the broker on same-day buys.
+  const todayStrET = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+  const acquiredToday = (h: HoldingWithMetrics) =>
+    h.acquiredAt != null &&
+    new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date(h.acquiredAt)) === todayStrET;
   const todayChange = filtered.reduce((s, h) => {
+    if (acquiredToday(h)) return s + (h.value - h.costTotal);
     const pct = h.todayChangePct / 100;
     return s + (h.value / (1 + pct)) * pct;
   }, 0);
@@ -39,7 +50,12 @@ export function SummaryStrip({ holdings, cash = [], account }: Props) {
       <Metric label="Portfolio Value" value={<Sensitive>{formatCurrency(totalValue)}</Sensitive>} large />
       <div className="w-px h-8 bg-border shrink-0" aria-hidden />
       <Metric label="Today" value={<Sensitive>{formatCurrency(todayChange)}</Sensitive>} change={todayPct} showSign />
-      <Metric label="Unrealized P&L" value={<Sensitive>{formatCurrency(unrealized)}</Sensitive>} change={unrealizedPct} showSign />
+      <Metric
+        label="Total Return"
+        value={<Sensitive>{formatCurrency(cumReturn ? cumReturn.gain : unrealized)}</Sensitive>}
+        change={cumReturn ? cumReturn.pct : unrealizedPct}
+        showSign
+      />
       {cashTotal > 0 && <Metric label="Cash" value={<Sensitive>{formatCurrency(cashTotal)}</Sensitive>} muted />}
       {account === "all" && filtered.length > 0 && (
         <>

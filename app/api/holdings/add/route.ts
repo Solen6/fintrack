@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "maturity date is required for bonds" }, { status: 400 });
   }
 
-  const { error } = await supabase.from("holdings").insert({
+  const row: Record<string, unknown> = {
     user_id: user.id,
     ticker: ticker.toUpperCase(),
     name: name ?? ticker.toUpperCase(),
@@ -52,6 +52,7 @@ export async function POST(request: NextRequest) {
     cost_basis: perUnit,
     account: account.trim(),
     notes: notes ?? null,
+    acquired_at: new Date().toISOString(), // added now → same-day daily gain from cost
     ...(isBond
       ? {
           instrument_type: "bond",
@@ -68,8 +69,12 @@ export async function POST(request: NextRequest) {
           credit_spread_bps: credit_spread_bps ?? 0,
         }
       : {}),
-  });
-
+  };
+  let { error } = await supabase.from("holdings").insert(row);
+  if (error && /acquired_at/i.test(error.message ?? "")) {
+    delete row.acquired_at; // pre-migration fallback
+    ({ error } = await supabase.from("holdings").insert(row));
+  }
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   // Record the buy in the activity ledger (best-effort). For bonds we omit the

@@ -41,6 +41,23 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No holdings provided" }, { status: 400 });
   }
 
+  // Preserve acquisition dates across re-uploads so "bought today" stays right.
+  // A ticker already held keeps its date; a NEW ticker in a re-upload (you
+  // already had holdings) is stamped now = freshly acquired; on the very FIRST
+  // upload we leave it null — those positions predate the app, so their daily
+  // gain is measured from the market, not cost.
+  const { data: existing } = await supabase
+    .from("holdings")
+    .select("ticker,acquired_at")
+    .eq("user_id", user.id)
+    .eq("account", accountName);
+  const priorAcq = new Map<string, string | null>();
+  for (const e of existing ?? []) {
+    priorAcq.set((e.ticker as string).toUpperCase(), (e.acquired_at as string | null) ?? null);
+  }
+  const hadHoldings = (existing?.length ?? 0) > 0;
+  const nowIso = new Date().toISOString();
+
   // Replace only the EQUITY holdings for this account — other accounts, and any
   // bonds in this account (added via the Add Bond form, never via CSV), are
   // untouched so a CSV re-upload can't wipe fixed income.
@@ -57,19 +74,31 @@ export async function POST(request: NextRequest) {
     await supabase.from("holdings").delete().eq("user_id", user.id).eq("account", accountName);
   }
 
-  const rows = holdings.map(h => ({
-    user_id:    user.id,
-    ticker:     h.ticker.toUpperCase(),
-    name:       h.name ?? h.ticker,
-    shares:     h.shares,
-    cost_basis: h.cost_basis,
-    account:    accountName,
-    sector:     h.sector ?? null,
-    notes:      h.notes ?? null,
-  }));
+  const rows = holdings.map(h => {
+    const ticker = h.ticker.toUpperCase();
+    const acquired_at = priorAcq.has(ticker)
+      ? priorAcq.get(ticker) ?? null   // already held → keep its date
+      : hadHoldings ? nowIso : null;   // new ticker → now; first-ever upload → null
+    return {
+      user_id:    user.id,
+      ticker,
+      name:       h.name ?? h.ticker,
+      shares:     h.shares,
+      cost_basis: h.cost_basis,
+      account:    accountName,
+      sector:     h.sector ?? null,
+      notes:      h.notes ?? null,
+      acquired_at,
+    };
+  });
 
-  const { error } = await supabase.from("holdings").insert(rows);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  let insErr = (await supabase.from("holdings").insert(rows)).error;
+  if (insErr && /acquired_at/i.test(insErr.message ?? "")) {
+    // Pre-migration (holdings-acquired-at.sql not run) — insert without it.
+    const rowsNoAcq = rows.map(({ acquired_at: _drop, ...r }) => r);
+    insErr = (await supabase.from("holdings").insert(rowsNoAcq)).error;
+  }
+  if (insErr) return NextResponse.json({ error: insErr.message }, { status: 500 });
 
   return NextResponse.json({ saved: rows.length });
 }

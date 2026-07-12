@@ -7,6 +7,7 @@ import { formatCurrency, formatPercent } from "@/lib/format";
 import { Sensitive, PrivateGraphMask } from "@/lib/privacy";
 import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
 import { isInvestedType, resolveAccountType, type AccountType } from "@/lib/account-types";
+import { earliestStoredCapital } from "@/lib/portfolio-return";
 
 const chartLoading = () => (
   <div className="skeleton h-full w-full rounded-sm" aria-hidden />
@@ -62,6 +63,7 @@ interface DBHolding {
   account: string;
   instrument_type?: string | null;
   bond_type?: string | null;
+  acquired_at?: string | null;
 }
 
 interface QuoteData {
@@ -78,6 +80,22 @@ interface Snapshot {
   /* null = legacy combined row (pre per-account split); otherwise the account name. */
   account: string | null;
 }
+
+/* External cash flow (deposit/withdrawal/transfer) on a given day, per account.
+   Signed: money in +, money out −. Used to neutralize deposits/withdrawals so
+   they don't read as investment return. */
+interface FlowRow {
+  date: string;
+  account: string | null;
+  amount: number;
+}
+
+/* Return tracking is anchored here — the "day 1" the personal (money-weighted)
+   return and the performance chart measure from. Set just AFTER the June
+   portfolio onboarding so the starting NAV is the full portfolio, not a partial
+   mid-setup value (a tiny baseline would blow the % up). Move it to the exact
+   date everything was loaded if that differs. */
+const RETURN_INCEPTION = "2026-07-01";
 
 
 
@@ -106,6 +124,8 @@ export function DashboardClient() {
   const [bondMarks, setBondMarks] = useState<Record<string, { currentPrice: number }>>({});
   const [sectors, setSectors] = useState<Record<string, string>>({});
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [flows, setFlows] = useState<FlowRow[]>([]);
+  const [seeds, setSeeds] = useState<{ account: string; seedCostBasis: number; basePrice: number }[]>([]);
   const [accountTypes, setAccountTypes] = useState<Record<string, AccountType>>({});
   const [cashBalances, setCashBalances] = useState<Record<string, number>>({});
   const [benchmark, setBenchmark] = useState<Record<BenchRange, number | null> | null>(null);
@@ -190,8 +210,10 @@ export function DashboardClient() {
       await snapshotCapture;
       const snapRes = await fetch("/api/snapshots").catch(() => null);
       if (snapRes?.ok) {
-        const { snapshots: snaps } = await snapRes.json();
+        const { snapshots: snaps, flows: fl, seeds: sd } = await snapRes.json();
         setSnapshots(snaps ?? []);
+        setFlows(fl ?? []);
+        setSeeds(sd ?? []);
       }
 
       setAsOf(new Date());
@@ -302,9 +324,24 @@ export function DashboardClient() {
     // be slightly LARGER, not smaller.
     const totalReturnPct = totalValue > 0 ? (totalGain / totalValue) * 100 : 0;
 
-    const todayChange = positions.reduce((s, p) => {
-      const pct = (quotes[p.ticker]?.changePct ?? 0) / 100;
-      return s + (p.value / (1 + pct)) * pct;
+    // Daily gain per holding. A position acquired TODAY is measured from its
+    // cost (your entry price), not yesterday's close it was never held through —
+    // otherwise a same-day buy shows the stock's move from the prior close and
+    // disagrees with the broker.
+    const todayStrET = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+    const acquiredToday = (h: DBHolding) =>
+      h.acquired_at != null &&
+      new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date(h.acquired_at)) === todayStrET;
+    const todayChange = investRows.reduce((s, h) => {
+      const isNonEtfBond = h.instrument_type === "bond" && h.bond_type !== "etf";
+      const mark = isNonEtfBond ? bondMarks[h.id] : undefined;
+      const q = quotes[h.ticker];
+      const price = mark ? mark.currentPrice : q?.price ?? Number(h.cost_basis);
+      const shares = Number(h.shares);
+      const value = shares * price;
+      if (acquiredToday(h)) return s + (value - shares * Number(h.cost_basis));
+      const pct = (q?.changePct ?? 0) / 100;
+      return s + (value / (1 + pct)) * pct;
     }, 0);
     const todayPct =
       positionsValue - todayChange > 0
@@ -391,26 +428,136 @@ export function DashboardClient() {
         costBasis: acc.costBasis,
       }));
       
-    // Force the final point to match live data, ensuring the chart perfectly aligns with the hero
-    if (result.length > 0) {
-      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+    // Force the final point to live data so the chart aligns with the hero.
+    // Always add today (even with no stored snapshots) so Total Return is
+    // available from day one — it's a snapshot ratio vs the cost-basis seed.
+    const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+    if (result.length > 0 && result[result.length - 1].date === todayStr) {
       const last = result[result.length - 1];
-      if (last.date === todayStr) {
-        last.value = agg.positionsValue;
-        last.cash = agg.cash;
-        last.costBasis = agg.invested;
-      } else {
-        result.push({
-          date: todayStr,
-          value: agg.positionsValue,
-          cash: agg.cash,
-          costBasis: agg.invested,
-        });
-      }
+      last.value = agg.positionsValue;
+      last.cash = agg.cash;
+      last.costBasis = agg.invested;
+    } else {
+      result.push({
+        date: todayStr,
+        value: agg.positionsValue,
+        cash: agg.cash,
+        costBasis: agg.invested,
+      });
     }
     
     return result;
   }, [snapshots, enabledAccounts, allAccountsOn, agg.positionsValue, agg.cash, agg.invested]);
+
+  /* External cash flow per day, split into money IN (deposits / transfers in)
+     and money OUT (withdrawals / transfers out) — both positive magnitudes —
+     honoring the account toggle exactly like `series`. A rebalance logs no flow
+     (buys/sells are internal), so both stay zero for it. */
+  const flowByDate = useMemo(() => {
+    const m = new Map<string, { inflows: number; outflows: number }>();
+    for (const f of flows) {
+      if (f.account === null) {
+        if (!allAccountsOn) continue; // a legacy combined flow can't be filtered by account
+      } else if (!enabledAccounts.has(f.account)) {
+        continue;
+      }
+      const cur = m.get(f.date) ?? { inflows: 0, outflows: 0 };
+      if (f.amount >= 0) cur.inflows += f.amount; // deposit
+      else cur.outflows += -f.amount; // withdrawal → positive magnitude
+      m.set(f.date, cur);
+    }
+    return m;
+  }, [flows, enabledAccounts, allAccountsOn]);
+
+  /* Effective return anchor: the earliest snapshot that already reflects a
+     substantially-loaded portfolio (NAV ≥ 50% of today's). This skips partial
+     onboarding days that would blow the % up, and — unlike a hardcoded date —
+     always resolves to real history you actually have, so the hero and chart
+     aren't stuck at 0 when there simply aren't ≥2 snapshots since a fixed date.
+     Bounds the max return to ~100%, guarding the tiny-baseline blowup. */
+  const inceptionDate = useMemo(() => {
+    if (series.length === 0) return RETURN_INCEPTION;
+    const navOf = (s: { value: number; cash: number }) => s.value + s.cash;
+    // Reference from STORED history only (exclude the live "today" point, which
+    // is series' last entry) so the anchor can't shift as the current value
+    // updates. Tying the threshold to the live value decoupled the % from the $:
+    // value up + gain up, but % down because the baseline jumped with it.
+    const stored = series.length > 1 ? series.slice(0, -1) : series;
+    const reference = Math.max(...stored.map(navOf));
+    const threshold = 0.5 * reference;
+    const anchor = series.find((s) => navOf(s) >= threshold) ?? series[0];
+    return anchor.date;
+  }, [series]);
+
+  /* Unit-method seed cost basis for the enabled accounts: the stored per-account
+     anchor (portfolio_seed), falling back — for any account not seeded yet —
+     to cost basis + cash as of that account's EARLIEST STORED snapshot (never
+     live/current values: live cash already includes every deposit/withdrawal
+     made since inception, which would double-count them — once baked into the
+     anchor, once minted/redeemed by the flow loop below — making a deposit
+     read as a loss and a withdrawal as a gain). Only an account with NO stored
+     history at all falls back to live cost basis + cash, since there's no
+     later flow yet for it to double-count against. Σ over enabled accounts. */
+  const seedCostBasis = useMemo(() => {
+    const seedByAccount = new Map<string, number>();
+    for (const s of seeds) seedByAccount.set(s.account, s.seedCostBasis);
+    let total = 0;
+    for (const acct of enabledAccounts) {
+      const seeded = seedByAccount.get(acct);
+      if (seeded != null) { total += seeded; continue; }
+      const anchor = earliestStoredCapital(snapshots, new Set([acct]), false);
+      if (anchor) { total += anchor.costBasis + anchor.cash; continue; }
+      const liveCostBasis = holdings
+        .filter((h) => h.account === acct)
+        .reduce((s, h) => s + Number(h.shares) * Number(h.cost_basis), 0);
+      total += liveCostBasis + (cashBalances[acct] ?? 0);
+    }
+    return total;
+  }, [seeds, snapshots, holdings, enabledAccounts, cashBalances]);
+
+  /* Unit (share) method return. Seed units from cost basis
+     (units = seedCostBasis / $10), price = NAV / units, so Total Return =
+     value-vs-cost (your full gain, non-zero from day one) and a rebalance —
+     internal, not a flow — can never reset it. A deposit/withdrawal issues or
+     redeems units at the PRIOR price, so it's return-neutral. Units are tracked
+     over the FULL series; only dates ≥ inceptionDate are exposed to the chart
+     (trims partial onboarding days that would read as big losses vs the full
+     cost basis). `cumByDate` holds the return % per date. */
+  const navReturns = useMemo(() => {
+    const cumByDate = new Map<string, number>();
+    const gainByDate = new Map<string, number>();
+    const navOf = (s: { value: number; cash: number }) => s.value + s.cash;
+    const BASE = 10;
+    if (series.length === 0 || seedCostBasis <= 0) {
+      return { cumByDate, gainByDate, totalReturnPct: 0, totalGain: 0 };
+    }
+    let units = seedCostBasis / BASE;
+    let prevPrice: number | null = null;
+    let netFlow = 0; // Σ (deposits − withdrawals), running
+    for (const s of series) {
+      const { inflows, outflows } = flowByDate.get(s.date) ?? { inflows: 0, outflows: 0 };
+      const flow = inflows - outflows;
+      if (flow !== 0 && prevPrice != null && prevPrice > 0) {
+        units += flow / prevPrice; // issue/redeem units at the prior price
+        netFlow += flow;
+      }
+      const nav = navOf(s);
+      const price = units > 0 ? nav / units : BASE;
+      if (s.date >= inceptionDate) {
+        cumByDate.set(s.date, (price / BASE - 1) * 100);
+        gainByDate.set(s.date, nav - (seedCostBasis + netFlow)); // NAV − contributed capital
+      }
+      prevPrice = price;
+    }
+    const last = series[series.length - 1];
+    const lastPrice = prevPrice ?? BASE;
+    return {
+      cumByDate,
+      gainByDate,
+      totalReturnPct: (lastPrice / BASE - 1) * 100,
+      totalGain: navOf(last) - (seedCostBasis + netFlow),
+    };
+  }, [series, flowByDate, inceptionDate, seedCostBasis]);
 
   /* Performance chart: clip the series to the selected timeframe, then plot
      GAIN VS TOTAL ACCOUNT BALANCE at each point — (value − costBasis) /
@@ -441,81 +588,99 @@ export function DashboardClient() {
       ? series.filter((s) => new Date(`${s.date}T00:00:00`) >= start)
       : series;
 
-    const points: PerfPoint[] = clipped.map((s) => {
-      // Use historical cost basis if available and > 0, otherwise fall back to current.
-      const costBasis = s.costBasis && s.costBasis > 0 ? s.costBasis : agg.invested;
-      // Use historical cash if available and > 0, otherwise fall back to current cash.
-      // (This maintains backward compatibility and avoids the "cliff" issue for old runs).
-      const cashFlat = s.cash && s.cash > 0 ? s.cash : agg.cash;
+    const isReturn = metric === "return";
+    // The Value line spans all history (NAV is always known); the Return line
+    // only exists from RETURN_INCEPTION on. Filtering in return mode makes the
+    // line start at inception instead of plotting fabricated pre-inception points.
+    const rows = isReturn ? clipped.filter((s) => navReturns.cumByDate.has(s.date)) : clipped;
 
-      // Return % = that day's gain ÷ that day's TOTAL BALANCE (holdings value +
-      // cash), matching the hero metric and Fidelity's account Gain/Loss %.
-      // The Value line still plots the true total: securities + cash.
-      const gain = s.value - costBasis;
-      const base = s.value + cashFlat;
-      const returnPct = base > 0 ? (gain / base) * 100 : 0;
-      const totalValue = s.value + s.cash;
+    const points: PerfPoint[] = rows.map((s) => {
+      const totalValue = s.value + s.cash; // NAV — securities + cash, both stored
+      const cumPct = navReturns.cumByDate.get(s.date) ?? 0;
+      const cumGain = navReturns.gainByDate.get(s.date) ?? 0;
       return {
         label: new Date(`${s.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
         date: new Date(`${s.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-        metric: metric === "value" ? totalValue : returnPct,
+        metric: isReturn ? cumPct : totalValue,
         total: totalValue,
         securities: s.value,
         cash: s.cash,
-        gain,
-        returnPct,
+        gain: cumGain,
+        returnPct: cumPct,
       };
     });
-    const last = points[points.length - 1];
+
+    // Window summary (the figures above the chart). Gain $ = NAV change across
+    // the window minus external flows within it; Return % = time-weighted return
+    // chain-linked over the part of the window that has one (≥ inception).
+    const navFirst = clipped.length ? clipped[0].value + clipped[0].cash : 0;
+    const navLast = clipped.length ? clipped[clipped.length - 1].value + clipped[clipped.length - 1].cash : 0;
+    let windowIn = 0;
+    let windowOut = 0;
+    for (let i = 1; i < clipped.length; i++) {
+      const f = flowByDate.get(clipped[i].date);
+      if (f) { windowIn += f.inflows; windowOut += f.outflows; }
+    }
+    // Gain $ over the window = (NAV_now + outflows − inflows) − NAV_prev
+    const windowGain = clipped.length ? (navLast + windowOut - windowIn) - navFirst : 0;
+
+    const cums = clipped
+      .map((s) => navReturns.cumByDate.get(s.date))
+      .filter((v): v is number => v !== undefined);
+    const windowReturnPct =
+      cums.length >= 1 ? ((1 + cums[cums.length - 1] / 100) / (1 + cums[0] / 100) - 1) * 100 : 0;
+
+    const plotted = isReturn ? rows : clipped;
     return {
       points,
-      gain: last?.gain ?? 0,
-      returnPct: last?.returnPct ?? 0,
-      endValue: last?.total ?? 0,
-      since: clipped.length
-        ? new Date(`${clipped[0].date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+      gain: windowGain,
+      returnPct: windowReturnPct,
+      endValue: navLast,
+      since: plotted.length
+        ? new Date(`${plotted[0].date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
         : null,
     };
-  }, [series, timeframe, metric, agg.invested, agg.cash]);
+  }, [series, timeframe, metric, navReturns, flowByDate]);
 
   /* History derivations — period-over-period returns from snapshots. */
   const history = useMemo(() => {
-    const byPeriod = (keyFn: (d: string) => string) => {
-      const m = new Map<string, { firstVal: number; lastVal: number }>();
-      for (const s of series) {
-        const k = keyFn(s.date);
-        const cur = m.get(k);
-        if (!cur) m.set(k, { firstVal: s.value, lastVal: s.value });
-        else { cur.lastVal = s.value; }
+    // Dates that carry a time-weighted return (≥ inception), in order.
+    const dated = series
+      .filter((s) => navReturns.cumByDate.has(s.date))
+      .map((s) => s.date);
+
+    // Per-period return chain-links off the prior period's ending cumulative:
+    //   (1 + cumEnd) / (1 + cumPrevEnd) − 1.  First period is measured vs the
+    //   inception baseline (0%). This is flow-adjusted and rebalance-proof
+    //   because cumByDate already is.
+    const buildReturns = (keyFn: (d: string) => string, labelFn: (key: string) => string): ReturnPoint[] => {
+      const order: string[] = [];
+      const lastCum = new Map<string, number>();
+      for (const d of dated) {
+        const k = keyFn(d);
+        if (!lastCum.has(k)) order.push(k);
+        lastCum.set(k, navReturns.cumByDate.get(d)!);
       }
-      return [...m.entries()];
+      return order.map((k, i) => {
+        const cumEnd = lastCum.get(k)! / 100;
+        const cumPrev = i > 0 ? lastCum.get(order[i - 1])! / 100 : 0;
+        return { label: labelFn(k), pct: ((1 + cumEnd) / (1 + cumPrev) - 1) * 100 };
+      });
     };
 
-    type Period = [string, { firstVal: number; lastVal: number }];
-    const buildReturns = (periods: Period[], labelFn: (key: string) => string): ReturnPoint[] =>
-      periods.map(([key, p], i) => {
-        const baseVal = i > 0 ? periods[i - 1][1].lastVal : p.firstVal;
-        const pnl = p.lastVal - baseVal;
-        return { label: labelFn(key), pct: baseVal > 0 ? (pnl / baseVal) * 100 : 0 };
-      });
-
-    const monthly = byPeriod((d) => d.slice(0, 7));
-    const monthlyReturns = buildReturns(monthly, (key) =>
+    const monthlyReturns = buildReturns((d) => d.slice(0, 7), (key) =>
       new Date(`${key}-15T12:00:00`).toLocaleDateString("en-US", { month: "short" }));
-
-    const yearly = byPeriod((d) => d.slice(0, 4));
-    const yearlyReturns = buildReturns(yearly, (key) => key);
-
-    const bestMonths = buildReturns(monthly, (key) =>
+    const yearlyReturns = buildReturns((d) => d.slice(0, 4), (key) => key);
+    const bestMonths = buildReturns((d) => d.slice(0, 7), (key) =>
       new Date(`${key}-15T12:00:00`).toLocaleDateString("en-US", { month: "short", year: "numeric" }))
       .sort((a, b) => b.pct - a.pct);
 
-    const since = series.length
-      ? new Date(`${series[0].date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    const since = dated.length
+      ? new Date(`${dated[0]}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
       : null;
 
     return { monthlyReturns, yearlyReturns, bestMonths, since };
-  }, [series]);
+  }, [series, navReturns]);
 
   /* Portfolio return per timeframe, vs market. 1D is live (today's quotes);
      longer ranges need a snapshot at/before the period start — null until
@@ -642,15 +807,19 @@ export function DashboardClient() {
 
         {/* Supporting metrics row — above the hero */}
         <div className="flex flex-wrap items-center gap-x-8 gap-y-3 px-1">
+          {/* Hero = cumulative time-weighted return since inception — the SAME
+              chained daily-return figure the chart and monthly/yearly bars use,
+              so every return number in the app agrees. Total Gain is the matching
+              $ earned over that window. */}
           <Metric
             label="Overall Return"
-            value={formatPercent(agg.totalReturnPct)}
-            tone={agg.totalReturnPct >= 0 ? "pos" : "neg"}
+            value={formatPercent(navReturns.totalReturnPct)}
+            tone={navReturns.totalReturnPct >= 0 ? "pos" : "neg"}
           />
           <Metric
             label="Total Gain"
-            value={<Sensitive>{formatCurrency(agg.totalGain)}</Sensitive>}
-            tone={agg.totalGain >= 0 ? "pos" : "neg"}
+            value={<Sensitive>{formatCurrency(navReturns.totalGain)}</Sensitive>}
+            tone={navReturns.totalGain >= 0 ? "pos" : "neg"}
           />
           <Divider />
           {agg.cash > 0 && <Metric label="Cash" value={<Sensitive>{formatCurrency(agg.cash)}</Sensitive>} />}
