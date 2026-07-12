@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
 import { PrivacyProvider } from "@/lib/privacy";
 
@@ -44,10 +45,14 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full`}
     >
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: PRIVACY_BOOT }} />
-      </head>
       <body className="min-h-full bg-background text-foreground">
+        {/* Runs before hydration so private mode masks balances with no flash.
+            next/script (not a raw <script>) avoids React 19's "script tag while
+            rendering" warning. React-state masking in <Sensitive> is the primary
+            mechanism; this class toggle is the first-paint guard. */}
+        <Script id="fintrack-privacy-boot" strategy="beforeInteractive">
+          {PRIVACY_BOOT}
+        </Script>
         <PrivacyProvider>{children}</PrivacyProvider>
       </body>
     </html>
