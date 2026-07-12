@@ -34,6 +34,17 @@ const ReturnsBarChartExpanded = nextDynamic(
 const TIMEFRAMES = ["1M", "3M", "6M", "YTD", "1Y", "ALL"] as const;
 type Timeframe = (typeof TIMEFRAMES)[number];
 
+/* Header caption per timeframe. ALL is anchored to cost basis (matches the
+   hero); narrower windows are period returns, labeled as such. */
+const PERIOD_LABEL: Record<Timeframe, string> = {
+  "1M": "past month",
+  "3M": "past 3 months",
+  "6M": "past 6 months",
+  "YTD": "year to date",
+  "1Y": "past year",
+  "ALL": "vs cost basis",
+};
+
 /* Steel ramp for allocation slices, largest → smallest */
 const STEEL_RAMP = [
   "oklch(0.74 0.08 240)",
@@ -610,31 +621,45 @@ export function DashboardClient() {
       };
     });
 
-    // Window summary (the figures above the chart). Gain $ = NAV change across
-    // the window minus external flows within it; Return % = time-weighted return
-    // chain-linked over the part of the window that has one (≥ inception).
-    const navFirst = clipped.length ? clipped[0].value + clipped[0].cash : 0;
+    // Header summary (the figures above the chart).
+    //
+    // ALL: show the true all-time figures vs cost basis — identical to the hero
+    // and to what hovering the earliest point reads. This is the whole point of
+    // the unit method: an account imported with a pre-existing gain (e.g. a
+    // Fidelity account already up 4%) shows that 4% from day one, because the
+    // seed is the cost-basis anchor, not the first day the app happened to
+    // record. Measuring the window against the first STORED NAV instead (what
+    // the narrower-window math below does) would silently subtract that
+    // pre-existing gain — the bug this fixes.
+    //
+    // Narrower windows (1M/3M/…): a genuine period return — how the portfolio
+    // did over just that window — chain-linked off the cumulative return at the
+    // window's start. The label switches to "past month/…" so it doesn't
+    // mislabel a period figure as "vs cost basis".
     const navLast = clipped.length ? clipped[clipped.length - 1].value + clipped[clipped.length - 1].cash : 0;
+    const navFirst = clipped.length ? clipped[0].value + clipped[0].cash : 0;
     let windowIn = 0;
     let windowOut = 0;
     for (let i = 1; i < clipped.length; i++) {
       const f = flowByDate.get(clipped[i].date);
       if (f) { windowIn += f.inflows; windowOut += f.outflows; }
     }
-    // Gain $ over the window = (NAV_now + outflows − inflows) − NAV_prev
+    // Gain $ over the window = (NAV_now + outflows − inflows) − NAV_window_start
     const windowGain = clipped.length ? (navLast + windowOut - windowIn) - navFirst : 0;
-
     const cums = clipped
       .map((s) => navReturns.cumByDate.get(s.date))
       .filter((v): v is number => v !== undefined);
     const windowReturnPct =
       cums.length >= 1 ? ((1 + cums[cums.length - 1] / 100) / (1 + cums[0] / 100) - 1) * 100 : 0;
 
+    const isAll = timeframe === "ALL";
     const plotted = isReturn ? rows : clipped;
     return {
       points,
-      gain: windowGain,
-      returnPct: windowReturnPct,
+      // ALL ⇒ all-time vs cost basis (= hero); windowed ⇒ period figure.
+      gain: isAll ? navReturns.totalGain : windowGain,
+      returnPct: isAll ? navReturns.totalReturnPct : windowReturnPct,
+      basisLabel: isAll ? "vs cost basis" : PERIOD_LABEL[timeframe],
       endValue: navLast,
       since: plotted.length
         ? new Date(`${plotted[0].date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
@@ -874,7 +899,7 @@ export function DashboardClient() {
                       >
                         <Sensitive>{formatPercent(perf.returnPct)}</Sensitive>
                       </span>
-                      <span className="text-xs text-muted-foreground">vs cost basis</span>
+                      <span className="text-xs text-muted-foreground">{perf.basisLabel}</span>
                     </div>
                   )}
                 </div>
