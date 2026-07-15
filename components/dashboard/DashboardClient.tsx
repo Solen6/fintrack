@@ -6,6 +6,7 @@ import nextDynamic from "next/dynamic";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { Sensitive, PrivateGraphMask } from "@/lib/privacy";
 import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
+import { RemindersCard } from "@/components/dashboard/RemindersCard";
 import { isInvestedType, resolveAccountType, type AccountType } from "@/lib/account-types";
 import { earliestStoredCapital } from "@/lib/portfolio-return";
 
@@ -1084,6 +1085,8 @@ export function DashboardClient() {
               })}
             </ul>
           </Panel>
+
+          <RemindersCard />
           </div>
           <div className="lg:col-span-2">
             <Panel title="Top Holdings">

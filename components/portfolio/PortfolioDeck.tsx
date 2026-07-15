@@ -9,6 +9,7 @@ import type { HoldingWithMetrics } from "@/lib/types";
 import type { ActivityItem, ActivityType } from "@/app/api/transactions/recent/route";
 import type { SeriesRange } from "@/app/api/paper/series/route";
 import type { StockStats } from "@/lib/yahoo";
+import { RatingBadge, RatingBar, useRatings } from "@/components/ratings/RatingBadge";
 
 const HoldingsTreemap = nextDynamic(
   () => import("./HoldingsTreemap").then((m) => m.HoldingsTreemap),
@@ -307,6 +308,9 @@ function TickerChart({ symbol }: { symbol: string }) {
 function HoldingInsights({ symbol, holding }: { symbol: string; holding: HoldingWithMetrics | null }) {
   const [stats, setStats] = useState<StockStats | null>(null);
   const [loading, setLoading] = useState(false);
+  const ratingSymbols = useMemo(() => (symbol ? [symbol] : []), [symbol]);
+  const { ratings, loading: ratingLoading } = useRatings(ratingSymbols);
+  const rating = ratings[symbol.toUpperCase()] ?? null;
 
   useEffect(() => {
     if (!symbol) return;
@@ -348,6 +352,18 @@ function HoldingInsights({ symbol, holding }: { symbol: string; holding: Holding
             pos={rangePos(stats?.weekLow52, stats?.weekHigh52, price)}
           />
         </div>
+      </div>
+
+      <div>
+        <h3 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Analyst Rating</h3>
+        {rating ? (
+          <div className="flex flex-col gap-2">
+            <RatingBadge rating={rating} />
+            <RatingBar rating={rating} />
+          </div>
+        ) : (
+          <RatingBadge rating={null} loading={ratingLoading} />
+        )}
       </div>
 
       {holding && (

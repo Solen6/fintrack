@@ -7,6 +7,7 @@ import { TradeTicket } from "./TradeTicket";
 import type { StockCell, Sp500Timeframe } from "@/app/api/sp500/route";
 import type { StockStats } from "@/lib/yahoo";
 import type { SeriesRange } from "@/app/api/paper/series/route";
+import { RatingBadge, RatingBar, useRatings } from "@/components/ratings/RatingBadge";
 
 const StockTreemap = nextDynamic(
   () => import("@/components/stocks/StockTreemap").then((m) => m.StockTreemap),
@@ -161,6 +162,9 @@ export function StocksDeck({ accountId, onPlaced }: { accountId: string; onPlace
 function StockDetail({ symbol, cell, tf }: { symbol: string; cell: StockCell | null; tf: Sp500Timeframe }) {
   const [stats, setStats] = useState<StockStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
+  const ratingSymbols = useMemo(() => (symbol ? [symbol] : []), [symbol]);
+  const { ratings, loading: ratingLoading } = useRatings(ratingSymbols);
+  const rating = symbol ? ratings[symbol.toUpperCase()] ?? null : null;
 
   useEffect(() => {
     if (!symbol) return;
@@ -239,6 +243,19 @@ function StockDetail({ symbol, cell, tf }: { symbol: string; cell: StockCell | n
             pos={rangePos(stats?.weekLow52, stats?.weekHigh52, price)}
           />
         </div>
+      </div>
+
+      {/* analyst consensus */}
+      <div>
+        <h3 className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Analyst Rating</h3>
+        {rating ? (
+          <div className="flex flex-col gap-2">
+            <RatingBadge rating={rating} />
+            <RatingBar rating={rating} />
+          </div>
+        ) : (
+          <RatingBadge rating={null} loading={ratingLoading} />
+        )}
       </div>
     </section>
   );

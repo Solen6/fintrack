@@ -17,6 +17,7 @@ import { ClosedPositions } from "./ClosedPositions";
 import { DividendHistory } from "./DividendHistory";
 import { FixedIncomeView } from "./FixedIncomeView";
 import { MonthlyReports } from "./MonthlyReports";
+import { WatchlistDeck } from "@/components/watchlist/WatchlistDeck";
 import { computeMetrics } from "@/lib/types";
 import type { HoldingWithMetrics, Quote, BondMetrics, InstrumentType, BondType, DayCount, BondPriceSource } from "@/lib/types";
 
@@ -56,7 +57,7 @@ interface CashBalance {
 
 export function PortfolioClient() {
   const [view, setView] = useState<ViewState>("loading");
-  const [subView, setSubView] = useState<"table" | "heatmap" | "bonds" | "closed" | "income" | "reports">("heatmap");
+  const [subView, setSubView] = useState<"table" | "heatmap" | "bonds" | "closed" | "income" | "reports" | "watchlist">("heatmap");
   const [holdings, setHoldings] = useState<HoldingWithMetrics[]>([]);
   const [cash, setCash] = useState<CashBalance[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
@@ -417,6 +418,16 @@ export function PortfolioClient() {
               >
                 Reports
               </button>
+              <button
+                onClick={() => setSubView("watchlist")}
+                className="text-xs px-2.5 py-1 transition-colors duration-150"
+                style={{
+                  background: subView === "watchlist" ? "oklch(0.16 0 0)" : "transparent",
+                  color: subView === "watchlist" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                }}
+              >
+                Watchlist
+              </button>
             </div>
             <button
               onClick={() => setManagingDividends(true)}
@@ -495,6 +506,7 @@ export function PortfolioClient() {
           <DividendHistory bonds={holdings.filter((h) => h.instrumentType === "bond" && h.bondType !== "etf")} />
         )}
         {subView === "reports" && <MonthlyReports account={selectedAccount} />}
+        {subView === "watchlist" && <WatchlistDeck />}
       </main>
 
       {closingHolding && (
