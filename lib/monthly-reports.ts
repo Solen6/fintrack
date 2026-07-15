@@ -19,13 +19,25 @@ import { resolveAccountType, type AccountType } from "@/lib/account-types";
    tax regenerate on every run through day REFRESH_THROUGH_DAY of the new month
    (Yahoo posts ETF ex-dividends 1-2 days late; the corporate-actions window
    backfills them, and the refresh picks them up), then freeze. portfolio
-   generates once (its positions read live holdings, which drift after month
-   end) unless forced. Everything is idempotent via the unique
-   (user_id, account, period, report_type) upsert key. */
+   generates once unless forced; its positions are month-end reconstructions —
+   live holdings with post-month-end buys/sells/DRIPs reversed from the
+   activity ledgers. Everything is idempotent via the unique
+   (user_id, account, period, report_type) upsert key.
+
+   Versioning: a report written by older logic must not survive a logic fix
+   (e.g. the dividend ex-date entitlement bug lived on in frozen payloads).
+   Bump PAYLOAD_VERSION whenever report math changes; rows carrying an older
+   payload `v` are treated as missing and regenerate on the next run for
+   their period. */
 
 export const ALL_ACCOUNTS = "__all__";
 export const REPORT_TYPES = ["cash_flow", "portfolio", "tax"] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];
+
+/** Bump when report math changes — older-version rows regenerate automatically.
+ *  v2: dividend ex-date entitlement fix, month-end position reconstruction,
+ *  single-snapshot months report null return instead of 0%. */
+export const PAYLOAD_VERSION = 2;
 
 /** Days into the new month during which cash_flow/tax reports keep refreshing. */
 const REFRESH_THROUGH_DAY = 7;
@@ -59,7 +71,7 @@ export interface ReportEvent {
 }
 
 export interface CashFlowReport {
-  v: 1;
+  v: number;
   period: string;
   account: string;
   accountType: AccountType | "all";
@@ -114,12 +126,13 @@ export interface PortfolioPosition {
 }
 
 export interface PortfolioReport {
-  v: 1;
+  v: number;
   period: string;
   account: string;
   accountType: AccountType | "all";
   generatedOn: string;
-  /** Positions reflect live holdings at generation (first market days after month end). */
+  /** Month-end date the positions represent (post-month-end trades reversed);
+   *  prices are still generation-time quotes. */
   positionsAsOf: string;
   positions: PortfolioPosition[];
   totals: {
@@ -142,7 +155,9 @@ export interface PortfolioReport {
     total: number | null;
     /** Prior month's last snapshot (securities), the return base. */
     prevMonthEnd: number | null;
-    /** Securities-only month-over-month return, matching the dashboard math. */
+    /** Securities-only point-to-point month change. NOT flow-adjusted — a
+     *  deposit invested mid-month inflates it; the dashboard's unit-method
+     *  return will differ whenever the month had external cash flows. */
     monthReturnPct: number | null;
   };
 }
@@ -169,7 +184,7 @@ export interface DividendIncome {
 }
 
 export interface TaxReport {
-  v: 1;
+  v: number;
   period: string;
   account: string;
   generatedOn: string;
@@ -316,6 +331,7 @@ interface DivRow {
   name: string | null;
   amount: number | null;
   reinvested: boolean | null;
+  shares_delta: number | null;
   cash_delta: number | null;
   account: string | null;
 }
@@ -353,11 +369,13 @@ function mergeEvents(txns: TxnRow[], closed: ClosedRow[], divs: DivRow[], period
   }
 
   for (const r of divs) {
+    const date = String(r.effective_date).slice(0, 10);
+    if (date.slice(0, 7) !== period) continue; // fetch window extends past month end
     const reinvested = r.reinvested === true;
     const gross = Number(r.amount ?? r.cash_delta ?? 0);
     const amt = reinvested ? 0 : Number(r.cash_delta ?? r.amount ?? 0);
     events.push({
-      date: String(r.effective_date).slice(0, 10),
+      date,
       type: "DIV",
       symbol: r.ticker,
       description: reinvested ? "Dividend · reinvested" : "Dividend · cash",
@@ -372,8 +390,10 @@ function mergeEvents(txns: TxnRow[], closed: ClosedRow[], divs: DivRow[], period
   for (const r of txns) {
     const action = (r.action ?? "").toUpperCase();
     if (!LEDGER_ACTIONS.has(action)) continue; // SELL/DIV covered above
+    const date = String(r.trade_date).slice(0, 10);
+    if (date.slice(0, 7) !== period) continue; // fetch window extends past month end
     events.push({
-      date: String(r.trade_date).slice(0, 10),
+      date,
       type: action,
       symbol: r.symbol,
       description: r.description ?? action,
@@ -439,7 +459,7 @@ function buildCashFlow(
   const endPoint = inMonth.length > 0 ? inMonth[inMonth.length - 1] : null;
 
   return {
-    v: 1,
+    v: PAYLOAD_VERSION,
     period,
     account,
     accountType,
@@ -508,10 +528,29 @@ function buildPortfolio(
     })
     .sort((a, b) => b.value - a.value);
 
+  // Month-end value + monthly return from the snapshot series.
+  const { start } = periodBounds(period);
+  const inMonth = series.filter((s) => s.date >= start && s.date.slice(0, 7) === period);
+  const prev = series.filter((s) => s.date < start);
+  const end = inMonth.length > 0 ? inMonth[inMonth.length - 1] : null;
+  // Base = prior month's close; first tracked month falls back to its own first
+  // snapshot — but only when a later snapshot exists to measure against, else
+  // base and end are the same point and the "return" would be a fake flat 0%.
+  const base =
+    prev.length > 0
+      ? prev[prev.length - 1].securities
+      : inMonth.length > 1
+        ? inMonth[0].securities
+        : null;
+  const monthReturnPct =
+    end && base != null && base > 0 ? r2(((end.securities - base) / base) * 100) : null;
+
   const value = r2(positions.reduce((s, p) => s + p.value, 0));
   const costBasis = r2(positions.reduce((s, p) => s + p.costBasis, 0));
   const gain = r2(value - costBasis);
-  const cash = r2(cashTotal);
+  // Month-end snapshot cash when we have it (live balances drift after month
+  // end, same as positions); live total is the no-snapshot fallback.
+  const cash = r2(end ? end.cash : cashTotal);
   const totalValue = r2(value + cash);
 
   // Sector allocation (value-weighted, cash as its own slice).
@@ -549,24 +588,19 @@ function buildPortfolio(
       .sort((a, b) => b.value - a.value);
   }
 
-  // Month-end value + monthly return from the snapshot series.
-  const { start } = periodBounds(period);
-  const inMonth = series.filter((s) => s.date >= start && s.date.slice(0, 7) === period);
-  const prev = series.filter((s) => s.date < start);
-  const end = inMonth.length > 0 ? inMonth[inMonth.length - 1] : null;
-  // Base = prior month's close; first tracked month falls back to its own first
-  // snapshot (same rule as the dashboard's monthly-returns chart).
-  const base = prev.length > 0 ? prev[prev.length - 1].securities : inMonth[0]?.securities ?? null;
-  const monthReturnPct =
-    end && base != null && base > 0 ? r2(((end.securities - base) / base) * 100) : null;
+  // Last calendar day of the period — positionsAsOf fallback when the month
+  // has no stored snapshot.
+  const monthEndDate =
+    end?.date ??
+    `${period}-${String(new Date(Date.UTC(Number(period.slice(0, 4)), Number(period.slice(5, 7)), 0)).getUTCDate()).padStart(2, "0")}`;
 
   return {
-    v: 1,
+    v: PAYLOAD_VERSION,
     period,
     account,
     accountType,
     generatedOn,
-    positionsAsOf: generatedOn,
+    positionsAsOf: monthEndDate,
     positions,
     totals: {
       costBasis,
@@ -639,7 +673,7 @@ function buildTax(
   const feeEvents = events.filter((e) => e.type === "FEE");
 
   return {
-    v: 1,
+    v: PAYLOAD_VERSION,
     period,
     account,
     generatedOn,
@@ -695,6 +729,78 @@ function snapshotSeries(rows: SnapRow[], scope: string): SnapPoint[] {
     .sort((a, b) => (a.date < b.date ? -1 : 1));
 }
 
+// ── Month-end position reconstruction ────────────────────────────────────────
+
+/** Roll live holdings back to month-end by reversing post-month-end activity:
+ *  ledger BUYs (−shares, −shares×price), closed-position SELLs (+shares,
+ *  +shares×recorded avg cost — exact under average-cost accounting), and
+ *  DRIPs (−shares_delta, −reinvested amount). A position fully sold after
+ *  month end is restored; one fully bought after month end is dropped.
+ *  Limits: bond BUYs carry null quantity/price and can't be reversed, and
+ *  the ledger only covers activity since 2026-06 — both leave the live row
+ *  as-is, which matches the old behavior. */
+export function monthEndHoldings(
+  holdings: HoldingRow[],
+  postTxns: TxnRow[],
+  postClosed: ClosedRow[],
+  postDivs: DivRow[],
+): HoldingRow[] {
+  const key = (account: string | null | undefined, ticker: string) =>
+    `${norm(account)}\u0001${ticker.toUpperCase()}`;
+  const map = new Map<string, { user_id: string; ticker: string; name: string | null; account: string | null; shares: number; cost: number }>();
+  for (const h of holdings) {
+    const k = key(h.account, h.ticker);
+    const shares = Number(h.shares) || 0;
+    const cur = map.get(k) ?? {
+      user_id: h.user_id, ticker: h.ticker.toUpperCase(), name: h.name,
+      account: norm(h.account), shares: 0, cost: 0,
+    };
+    cur.shares += shares;
+    cur.cost += shares * (Number(h.cost_basis) || 0);
+    map.set(k, cur);
+  }
+
+  for (const r of postTxns) {
+    if ((r.action ?? "").toUpperCase() !== "BUY") continue;
+    if (r.symbol == null || r.quantity == null || r.price == null) continue; // bonds
+    const cur = map.get(key(r.account, r.symbol));
+    if (!cur) continue; // bought post-month AND already gone — nothing to reverse
+    cur.shares -= Number(r.quantity) || 0;
+    cur.cost -= (Number(r.quantity) || 0) * (Number(r.price) || 0);
+  }
+  for (const r of postDivs) {
+    if (r.reinvested !== true || !r.ticker) continue;
+    const bought = Number(r.shares_delta) || 0;
+    if (bought <= 0) continue;
+    const cur = map.get(key(r.account, r.ticker));
+    if (!cur) continue;
+    cur.shares -= bought;
+    cur.cost -= Number(r.amount) || 0;
+  }
+  for (const r of postClosed) {
+    const k = key(r.account, r.ticker);
+    const shares = Number(r.shares) || 0;
+    const cur = map.get(k) ?? {
+      user_id: r.user_id, ticker: r.ticker.toUpperCase(), name: r.name,
+      account: norm(r.account), shares: 0, cost: 0,
+    };
+    cur.shares += shares;
+    cur.cost += shares * (Number(r.cost_basis) || 0);
+    map.set(k, cur);
+  }
+
+  return [...map.values()]
+    .filter((p) => p.shares > 1e-9)
+    .map((p) => ({
+      user_id: p.user_id,
+      ticker: p.ticker,
+      name: p.name,
+      shares: p.shares,
+      cost_basis: p.cost > 0 && p.shares > 0 ? p.cost / p.shares : 0,
+      account: p.account,
+    }));
+}
+
 // ── Writes ───────────────────────────────────────────────────────────────────
 
 interface ReportRowInsert {
@@ -743,11 +849,13 @@ export async function generateMonthlyReports(
     period, users: 0, written: 0, failed: 0, skipped: null, refreshWindow,
   };
 
-  // Existing tuples for the period — also the table-exists probe.
-  const existRes = await pageAll<{ user_id: string; account: string; report_type: string }>(
+  // Existing tuples for the period — also the table-exists probe. Rows whose
+  // payload carries an older version are left out of the set, so they count
+  // as missing and regenerate with current logic.
+  const existRes = await pageAll<{ user_id: string; account: string; report_type: string; v: unknown }>(
     (from, to) =>
       db.from("monthly_reports")
-        .select("user_id,account,report_type")
+        .select("user_id,account,report_type,v:payload->v")
         .eq("period", period)
         .order("id")
         .range(from, to),
@@ -757,7 +865,9 @@ export async function generateMonthlyReports(
     return summary;
   }
   const existing = new Set(
-    existRes.rows.map((r) => tupleKey(r.user_id, r.account, r.report_type)),
+    existRes.rows
+      .filter((r) => Number(r.v) >= PAYLOAD_VERSION)
+      .map((r) => tupleKey(r.user_id, r.account, r.report_type)),
   );
 
   // Cheap universe (holdings + cash) to decide whether any work is needed.
@@ -805,13 +915,19 @@ export async function generateMonthlyReports(
   }
 
   // Heavy path: month activity + snapshots + account types (all paged).
+  // Activity fetches run through TODAY, not just month end — the tail past
+  // nextStart is what monthEndHoldings() reverses to roll live positions back
+  // to the month-end close (mergeEvents/buildTax only ever see in-month rows).
   const { start, nextStart, prevStart } = periodBounds(period);
+  const fetchEnd = today >= nextStart
+    ? new Date(new Date(`${today}T12:00:00Z`).getTime() + 86_400_000).toISOString().slice(0, 10)
+    : nextStart;
   const [txnRes, closedRes, divRes, snapRes, metaRes] = await Promise.all([
     pageAll<TxnRow>((from, to) =>
       db.from("transactions")
         .select("user_id,trade_date,action,symbol,description,quantity,price,amount,account")
         .gte("trade_date", start)
-        .lt("trade_date", nextStart)
+        .lt("trade_date", fetchEnd)
         .order("id")
         .range(from, to),
     ),
@@ -819,16 +935,16 @@ export async function generateMonthlyReports(
       db.from("closed_positions")
         .select("user_id,ticker,name,shares,cost_basis,sale_price,realized_gain,account,closed_at")
         .gte("closed_at", `${start}T00:00:00Z`)
-        .lt("closed_at", `${nextStart}T12:00:00Z`) // pad; exact ET filter in mergeEvents
+        .lt("closed_at", `${fetchEnd}T12:00:00Z`) // pad; exact ET filter in mergeEvents
         .order("id")
         .range(from, to),
     ),
     pageAll<DivRow>((from, to) =>
       db.from("applied_corporate_actions")
-        .select("user_id,effective_date,ticker,name,amount,reinvested,cash_delta,account")
+        .select("user_id,effective_date,ticker,name,amount,reinvested,shares_delta,cash_delta,account")
         .eq("action_type", "dividend")
         .gte("effective_date", start)
-        .lt("effective_date", nextStart)
+        .lt("effective_date", fetchEnd)
         .order("id")
         .range(from, to),
     ),
@@ -871,18 +987,29 @@ export async function generateMonthlyReports(
     try {
       const uHoldings = holdingsByUser.get(user_id) ?? [];
       const uCash = cashByUser.get(user_id) ?? [];
-      const uTxns = txnsByUser.get(user_id) ?? [];
-      const uClosed = closedByUser.get(user_id) ?? [];
-      const uDivs = divsByUser.get(user_id) ?? [];
+      const uTxnsAll = txnsByUser.get(user_id) ?? [];
+      const uClosedAll = closedByUser.get(user_id) ?? [];
+      const uDivsAll = divsByUser.get(user_id) ?? [];
       const uSnaps = snapsByUser.get(user_id) ?? [];
       const typeMap: Record<string, string> = {};
       for (const m of metaByUser.get(user_id) ?? []) typeMap[m.account] = m.type;
       const typeOf = (account: string): AccountType => resolveAccountType(account, typeMap);
 
+      // In-month rows feed the reports; post-month-end rows are only used to
+      // roll live holdings back to the month-end close.
+      const uTxns = uTxnsAll.filter((r) => String(r.trade_date).slice(0, 7) === period);
+      const uClosed = uClosedAll.filter((r) => etDate(r.closed_at).slice(0, 7) === period);
+      const uDivs = uDivsAll.filter((r) => String(r.effective_date).slice(0, 7) === period);
+      const postTxns = uTxnsAll.filter((r) => String(r.trade_date).slice(0, 10) >= nextStart);
+      const postClosed = uClosedAll.filter((r) => etDate(r.closed_at) >= nextStart);
+      const postDivs = uDivsAll.filter((r) => String(r.effective_date).slice(0, 10) >= nextStart);
+      const meHoldings = monthEndHoldings(uHoldings, postTxns, postClosed, postDivs);
+
       const allEvents = mergeEvents(uTxns, uClosed, uDivs, period);
 
       const accounts = new Set<string>();
       for (const h of uHoldings) accounts.add(norm(h.account));
+      for (const h of meHoldings) accounts.add(norm(h.account));
       for (const c of uCash) accounts.add(norm(c.account));
       for (const e of allEvents) accounts.add(e.account);
       if (accounts.size === 0) continue;
@@ -932,8 +1059,8 @@ export async function generateMonthlyReports(
       if (portfolioScopes.length > 0) {
         let quotes: Record<string, { price: number }> = {};
         let sectors: Record<string, string> = {};
-        if (uHoldings.length > 0) {
-          const tickers = [...new Set(uHoldings.map((h) => h.ticker.toUpperCase()))];
+        if (meHoldings.length > 0) {
+          const tickers = [...new Set(meHoldings.map((h) => h.ticker.toUpperCase()))];
           quotes = { ...(liveQuotes ?? {}) };
           const missing = tickers.filter((t) => !(t in quotes));
           for (let i = 0; i < missing.length; i += 30) {
@@ -950,7 +1077,7 @@ export async function generateMonthlyReports(
         for (const scope of portfolioScopes) {
           const isAll = scope === ALL_ACCOUNTS;
           const accountType: AccountType | "all" = isAll ? "all" : typeOf(scope);
-          const scopedHoldings = isAll ? uHoldings : uHoldings.filter((h) => norm(h.account) === scope);
+          const scopedHoldings = isAll ? meHoldings : meHoldings.filter((h) => norm(h.account) === scope);
           // Junk guard (mirrors the snapshot cron): holdings but ZERO live
           // quotes means a market-data outage — don't freeze a cost-basis-only
           // portfolio forever; the missing-check retries next market day.
