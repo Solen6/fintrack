@@ -123,6 +123,7 @@ interface Holding {
   cost_basis: number;
   account: string | null;
   drip: boolean;
+  acquired_at: string | null; // null = predates the app / unknown
 }
 
 export interface CorporateActionSummary {
@@ -130,8 +131,12 @@ export interface CorporateActionSummary {
   splits: number;
   dividendsReinvested: number;
   dividendsToCash: number;
+  dividendsSkipped: number; // position not owned before the ex-date
   errors: number;
 }
+
+const ET_DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" });
+const etDateStr = (ts: string) => ET_DATE.format(new Date(ts));
 
 /**
  * Apply every split + dividend effective on `date` to all users' holdings.
@@ -147,6 +152,7 @@ export async function applyCorporateActions(
     splits: 0,
     dividendsReinvested: 0,
     dividendsToCash: 0,
+    dividendsSkipped: 0,
     errors: 0,
   };
 
@@ -189,6 +195,25 @@ export async function applyCorporateActions(
   const exCloseByTicker = new Map<string, number | null>();
   for (const t of tickers) {
     if (divByTicker.get(t)) exCloseByTicker.set(t, await fetchExDateClose(t, date));
+  }
+
+  // Dividend entitlement needs ownership BEFORE the ex-date. `acquired_at`
+  // carries that for holdings first seen after 2026-07-10; for a position
+  // re-added/re-imported later (acquired_at after ex-date but really owned for
+  // years), any earlier BUY in the transactions ledger proves ownership. One
+  // batched read; a missing ledger degrades to acquired_at alone.
+  const divTickers = tickers.filter((t) => divByTicker.get(t));
+  let priorBuys = new Set<string>();
+  if (divTickers.length > 0) {
+    const { data: buyRows } = await db
+      .from("transactions")
+      .select("user_id,symbol")
+      .eq("action", "BUY")
+      .in("symbol", divTickers)
+      .lt("trade_date", date);
+    priorBuys = new Set(
+      (buyRows ?? []).map((r) => `${r.user_id}|${String(r.symbol).toUpperCase()}`),
+    );
   }
 
   // Live-price fallback for DRIP only if the ex-date close is unavailable.
@@ -239,8 +264,18 @@ export async function applyCorporateActions(
       });
     }
 
-    // 2. Dividend.
+    // 2. Dividend — only when the position was owned BEFORE the ex-date
+    // (`date` here IS the action's ex-date; buying on the ex-date doesn't
+    // earn it). Null acquired_at = predates the app → entitled, as before.
+    // This guards both a same-day buy and the look-back window re-crediting
+    // an ex-date that passed before the position existed.
+    let dividendEntitled = false;
     if (dividend && !applied.has(`${h.id}|dividend`)) {
+      const acq = h.acquired_at ? etDateStr(h.acquired_at) : null;
+      dividendEntitled = !acq || acq < date || priorBuys.has(`${h.user_id}|${t}`);
+      if (!dividendEntitled) summary.dividendsSkipped++;
+    }
+    if (dividend && dividendEntitled) {
       const total = dividend.amount * shares;
       // Ex-date close = the price a reinvested dividend buys at. Recorded on
       // every row (cash too) so a later cash↔DRIP switch uses this, not today's
@@ -398,6 +433,7 @@ export async function applyCorporateActionsWindow(
     splits: 0,
     dividendsReinvested: 0,
     dividendsToCash: 0,
+    dividendsSkipped: 0,
     errors: 0,
     datesScanned: dates,
   };
@@ -406,6 +442,7 @@ export async function applyCorporateActionsWindow(
     agg.splits += s.splits;
     agg.dividendsReinvested += s.dividendsReinvested;
     agg.dividendsToCash += s.dividendsToCash;
+    agg.dividendsSkipped += s.dividendsSkipped;
     agg.errors += s.errors;
   }
   return agg;
