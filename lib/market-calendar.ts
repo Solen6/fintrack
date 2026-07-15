@@ -63,30 +63,30 @@ function observed(year: number, month: number, day: number): string {
   return iso(year, month, day);
 }
 
-const holidayCache = new Map<number, Set<string>>();
+const holidayCache = new Map<number, Map<string, string>>();
 
-/** The set of NYSE/Nasdaq full-day closures for a year (observed dates). */
-function holidays(year: number): Set<string> {
+/** NYSE/Nasdaq full-day closures for a year: observed date → holiday name. */
+function holidays(year: number): Map<string, string> {
   const cached = holidayCache.get(year);
   if (cached) return cached;
 
-  const set = new Set<string>();
+  const map = new Map<string, string>();
   const easter = easterSunday(year);
   const goodFriday = new Date(Date.UTC(year, easter.month - 1, easter.day - 2));
 
-  set.add(observed(year, 1, 1)); // New Year's Day
-  set.add(iso(year, 1, nthWeekday(year, 1, 1, 3))); // MLK Day — 3rd Mon Jan
-  set.add(iso(year, 2, nthWeekday(year, 2, 1, 3))); // Presidents' Day — 3rd Mon Feb
-  set.add(iso(goodFriday.getUTCFullYear(), goodFriday.getUTCMonth() + 1, goodFriday.getUTCDate())); // Good Friday
-  set.add(iso(year, 5, lastWeekday(year, 5, 1))); // Memorial Day — last Mon May
-  set.add(observed(year, 6, 19)); // Juneteenth (since 2022)
-  set.add(observed(year, 7, 4)); // Independence Day
-  set.add(iso(year, 9, nthWeekday(year, 9, 1, 1))); // Labor Day — 1st Mon Sep
-  set.add(iso(year, 11, nthWeekday(year, 11, 4, 4))); // Thanksgiving — 4th Thu Nov
-  set.add(observed(year, 12, 25)); // Christmas
+  map.set(observed(year, 1, 1), "New Year's Day");
+  map.set(iso(year, 1, nthWeekday(year, 1, 1, 3)), "MLK Day"); // 3rd Mon Jan
+  map.set(iso(year, 2, nthWeekday(year, 2, 1, 3)), "Presidents' Day"); // 3rd Mon Feb
+  map.set(iso(goodFriday.getUTCFullYear(), goodFriday.getUTCMonth() + 1, goodFriday.getUTCDate()), "Good Friday");
+  map.set(iso(year, 5, lastWeekday(year, 5, 1)), "Memorial Day"); // last Mon May
+  map.set(observed(year, 6, 19), "Juneteenth"); // since 2022
+  map.set(observed(year, 7, 4), "Independence Day");
+  map.set(iso(year, 9, nthWeekday(year, 9, 1, 1)), "Labor Day"); // 1st Mon Sep
+  map.set(iso(year, 11, nthWeekday(year, 11, 4, 4)), "Thanksgiving"); // 4th Thu Nov
+  map.set(observed(year, 12, 25), "Christmas");
 
-  holidayCache.set(year, set);
-  return set;
+  holidayCache.set(year, map);
+  return map;
 }
 
 /**
@@ -100,4 +100,12 @@ export function isMarketDay(dateStr: string): boolean {
   const wd = dow(y, m, d);
   if (wd === 0 || wd === 6) return false; // weekend
   return !holidays(y).has(dateStr);
+}
+
+/** Name of the NYSE full-day closure on `dateStr`, or null if the market is
+    open (or it's a plain weekend). Lets the calendar label closed weekdays. */
+export function marketHolidayName(dateStr: string): string | null {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return holidays(y).get(dateStr) ?? null;
 }
