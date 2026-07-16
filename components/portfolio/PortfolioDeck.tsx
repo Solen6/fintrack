@@ -7,8 +7,55 @@ import { Sensitive } from "@/lib/privacy";
 import { isFaceValueBond, isDerivative } from "@/lib/types";
 import type { HoldingWithMetrics } from "@/lib/types";
 import { recognizeStrategy } from "@/lib/option-strategies";
-import { netCost } from "@/lib/options-math";
+import { netCost, OPTION_MULTIPLIER } from "@/lib/options-math";
 import { toLeg, PayoffPanel } from "./DerivativesView";
+
+/** Merge the legs of each multi-leg strategy into ONE synthetic holding so the
+ *  heatmap shows an iron condor as a single tile, not four. The synthetic row
+ *  keeps the comboId, so the insights panel still finds the REAL legs for the
+ *  payoff chart. One-leg combos (partially closed strategies) stay as-is. */
+function mergeComboLegs(list: HoldingWithMetrics[]): HoldingWithMetrics[] {
+  const out: HoldingWithMetrics[] = [];
+  const combos = new Map<string, HoldingWithMetrics[]>();
+  for (const h of list) {
+    if (h.instrumentType === "option" && h.comboId) {
+      const g = combos.get(h.comboId);
+      if (g) g.push(h); else combos.set(h.comboId, [h]);
+    } else out.push(h);
+  }
+  const seen = new Map<string, number>();
+  for (const [comboId, rows] of combos) {
+    if (rows.length === 1) { out.push(rows[0]); continue; }
+    const legs = rows.map(toLeg);
+    const strat = recognizeStrategy(legs) ?? `${rows.length}-leg strategy`;
+    const first = rows[0];
+    const value = rows.reduce((s, r) => s + r.value, 0);
+    const costTotal = rows.reduce((s, r) => s + r.shares * r.costBasis, 0);
+    const gainDollar = rows.reduce((s, r) => s + r.gainDollar, 0);
+    const baseQty = Math.min(...legs.map((l) => l.qty)) || 1;
+    // Ticker doubles as selection identity + header subtitle — keep it human
+    // ("SPY Iron Condor") and de-collide repeats.
+    let ticker = `${first.underlying} ${strat}`;
+    const n = (seen.get(ticker) ?? 0) + 1;
+    seen.set(ticker, n);
+    if (n > 1) ticker = `${ticker} (${n})`;
+    out.push({
+      ...first,
+      id: `combo-${comboId}`,
+      ticker,
+      name: `${strat} — ${first.underlying}`,
+      value,
+      costTotal,
+      gainDollar,
+      gainPercent: costTotal !== 0 ? (gainDollar / Math.abs(costTotal)) * 100 : 0,
+      todayChangePct: 0,
+      // Net live mark per 1× spread (negative = the position is a liability).
+      currentPrice: value / (OPTION_MULTIPLIER * baseQty),
+      sector: "Derivatives",
+    });
+  }
+  return out;
+}
 import type { ActivityItem, ActivityType } from "@/app/api/transactions/recent/route";
 import type { SeriesRange } from "@/app/api/paper/series/route";
 import type { StockStats } from "@/lib/yahoo";
@@ -62,9 +109,10 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
   const toggleAccount = (a: string) =>
     setHidden((prev) => { const n = new Set(prev); n.has(a) ? n.delete(a) : n.add(a); return n; });
 
-  // Holdings shown in the heatmap: visible accounts + optional synthetic cash tiles.
+  // Holdings shown in the heatmap: visible accounts + optional synthetic cash
+  // tiles, with multi-leg strategies merged into one tile each.
   const treemapHoldings = useMemo(() => {
-    const list = holdings.filter((h) => visible(h.account));
+    const list = mergeComboLegs(holdings.filter((h) => visible(h.account)));
     if (!includeCash) {
       return list.filter((h) => {
         const t = h.ticker.toUpperCase(); const s = h.sector.toLowerCase(); const a = h.account.toLowerCase();
@@ -92,7 +140,11 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
     if (!selected || !selectableTickers.includes(selected)) setSelected(selectableTickers[0]);
   }, [selectableTickers, selected]);
 
-  const selectedHolding = holdings.find((h) => h.ticker === selected) ?? null;
+  // Search the treemap rows first — merged strategy tiles only exist there.
+  const selectedHolding =
+    treemapHoldings.find((h) => h.ticker === selected) ??
+    holdings.find((h) => h.ticker === selected) ??
+    null;
   const selFaceBond = selectedHolding ? isFaceValueBond(selectedHolding) : false;
   const selDeriv = selectedHolding ? isDerivative(selectedHolding) : false;
 

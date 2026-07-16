@@ -43,6 +43,13 @@ interface HCell {
 function fmtPrice(n: number): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
+/** "Iron Condor — SPY" → "IC"; unrecognized "4-leg strategy" → "×4". */
+function strategyAbbrev(name: string): string {
+  const strat = name.split(" — ")[0];
+  const legs = strat.match(/^(\d+)-leg/);
+  if (legs) return `×${legs[1]}`;
+  return (strat.match(/\b[A-Za-z]/g) ?? []).join("").toUpperCase();
+}
 function signedPct(n: number): string {
   return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
@@ -227,12 +234,17 @@ export function HoldingsTreemap({
             ? h.sector
             : "Other";
         const isOption = h.instrumentType === "option";
+        // Merged strategy rows (one tile per combo) come in with a synthetic
+        // "combo-" id and a "Iron Condor — SPY" name → label "SPY IC".
+        const isComboTile = isOption && h.comboId != null && h.id.startsWith("combo-");
         return {
           symbol: h.ticker,
           // Option tickers ("SPY 2026-08-21 510 CALL") never fit a tile.
-          label: isOption && h.underlying && h.strike != null
-            ? `${h.underlying} ${h.strike}${(h.optionType ?? "C")[0]}`
-            : h.ticker,
+          label: isComboTile
+            ? `${h.underlying} ${strategyAbbrev(h.name)}`
+            : isOption && h.underlying && h.strike != null
+              ? `${h.underlying} ${h.strike}${(h.optionType ?? "C")[0]}`
+              : h.ticker,
           name: h.name,
           sector,
           // Shorts carry negative market value — size the tile by exposure,
