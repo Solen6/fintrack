@@ -47,18 +47,38 @@ function cachePut(cache: CacheMap, key: string, events: CalendarEvent[]) {
   cache.set(key, { events, ts: Date.now() });
 }
 
+// Dedupe identical in-flight requests — e.g. commodity-catalysts.ts fans out
+// the same chunk windows across several commodities in parallel, and without
+// this they'd fire duplicate concurrent requests at TradingView's unofficial
+// endpoint, some of which fail/truncate and silently degrade to [].
+const macroInFlight = new Map<string, Promise<CalendarEvent[]>>();
+
 // ── Macro calendar (live from TradingView) ─────────────────────────────────
 // importance: 1 = high, 0 = medium, -1 = low
-async function fetchMacroEvents(from: string, to: string): Promise<CalendarEvent[]> {
-  const key = `${from}|${to}`;
+export async function fetchMacroEvents(from: string, to: string, countries: string[] = ["US"]): Promise<CalendarEvent[]> {
+  const countryParam = [...countries].sort().join(",");
+  const key = `${from}|${to}|${countryParam}`;
   const hit = macroCache.get(key);
   if (hit && Date.now() - hit.ts < MACRO_TTL) return hit.events;
+  const inFlight = macroInFlight.get(key);
+  if (inFlight) return inFlight;
+  const promise = fetchMacroEventsUncached(key, hit?.events);
+  macroInFlight.set(key, promise);
   try {
-    const url = `https://economic-calendar.tradingview.com/events?from=${from}T00:00:00.000Z&to=${to}T00:00:00.000Z&countries=US`;
+    return await promise;
+  } finally {
+    macroInFlight.delete(key);
+  }
+}
+
+async function fetchMacroEventsUncached(key: string, staleEvents: CalendarEvent[] | undefined): Promise<CalendarEvent[]> {
+  const [from, to, countryParam] = key.split("|");
+  try {
+    const url = `https://economic-calendar.tradingview.com/events?from=${from}T00:00:00.000Z&to=${to}T00:00:00.000Z&countries=${countryParam}`;
     const res = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0", "Origin": "https://www.tradingview.com" },
     });
-    if (!res.ok) return hit?.events ?? [];
+    if (!res.ok) return staleEvents ?? [];
     const data = await res.json();
     const raw: Array<{ date: string; title: string; importance: number; source: string; actual: number | null; forecast: number | null; previous: number | null; unit: string }> = data.result ?? [];
     const events: CalendarEvent[] = raw
@@ -81,7 +101,7 @@ async function fetchMacroEvents(from: string, to: string): Promise<CalendarEvent
     cachePut(macroCache, key, events);
     return events;
   } catch {
-    return hit?.events ?? [];
+    return staleEvents ?? [];
   }
 }
 

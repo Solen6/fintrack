@@ -11,6 +11,11 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
+interface Catalyst {
+  date: string;  // ISO date "YYYY-MM-DD"
+  label: string;
+}
+
 interface CommodityData {
   id: string;
   name: string;
@@ -20,11 +25,7 @@ interface CommodityData {
   changePct: number;
   basePrice: number;
   data: Array<{ date: string; price: number }>;
-}
-
-interface Catalyst {
-  date: string;  // ISO date "YYYY-MM-DD"
-  label: string;
+  catalysts: Catalyst[];
 }
 
 const TF_OPTIONS = ["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y"] as const;
@@ -44,38 +45,6 @@ const COMMODITY_COLORS: Record<string, string> = {
 };
 const FALLBACK_COLOR = "oklch(0.66 0.09 240)"; // steel blue, for any unmapped id
 const colorFor = (id: string) => COMMODITY_COLORS[id] ?? FALLBACK_COLOR;
-
-/* ─── Curated catalyst events per commodity ─── */
-const CATALYSTS: Record<string, Catalyst[]> = {
-  GLD: [
-    { date: "2025-07-30", label: "Fed hold" },
-    { date: "2025-09-18", label: "Fed −25bp" },
-    { date: "2025-11-07", label: "Fed −25bp" },
-    { date: "2025-12-18", label: "Fed hold" },
-    { date: "2026-01-29", label: "Fed hold" },
-    { date: "2026-03-19", label: "Fed hold" },
-    { date: "2026-04-02", label: "Tariffs" },
-    { date: "2026-05-07", label: "Fed hold" },
-  ],
-  SLV: [
-    { date: "2025-09-18", label: "Fed −25bp" },
-    { date: "2025-11-07", label: "Fed −25bp" },
-    { date: "2026-01-20", label: "Inauguration" },
-    { date: "2026-04-02", label: "Tariffs" },
-  ],
-  USO: [
-    { date: "2025-08-01", label: "OPEC+ cut" },
-    { date: "2025-11-14", label: "OPEC+ extend" },
-    { date: "2026-02-04", label: "Tariff exec orders" },
-    { date: "2026-04-03", label: "OPEC+ surge" },
-  ],
-  CPER: [
-    { date: "2025-09-24", label: "China stimulus" },
-    { date: "2026-01-20", label: "Inauguration" },
-    { date: "2026-04-02", label: "Tariffs" },
-    { date: "2026-05-12", label: "US-China truce" },
-  ],
-};
 
 /* ─── Timeframe-aware date helpers ─── */
 function parseDate(val: string, tf: Timeframe): Date {
@@ -113,6 +82,7 @@ function formatTooltipDate(val: string, tf: Timeframe): string {
 /* ─── Persist the tracked-commodity selection across tab switches ─── */
 const ACTIVE_STORAGE_KEY = "fintrack:news:commodities";
 const TF_STORAGE_KEY = "fintrack:news:commodities:tf";
+const CUSTOM_STORAGE_KEY = "fintrack:news:commodities:custom";
 
 function loadActive(): string[] {
   if (typeof window === "undefined") return [];
@@ -134,19 +104,36 @@ function loadTimeframe(): Timeframe {
   return "1Y";
 }
 
+/* User-added tickers beyond the 5 curated commodities. */
+function loadCustom(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 export function CommodityChart() {
   const [commodities, setCommodities] = useState<CommodityData[]>([]);
   const [loading, setLoading] = useState(true);
   const [active, setActive] = useState<string[]>(loadActive);
   const [timeframe, setTimeframe] = useState<Timeframe>(loadTimeframe);
+  const [custom, setCustom] = useState<string[]>(loadCustom);
   const [addOpen, setAddOpen] = useState(false);
   const [tfOpen, setTfOpen] = useState(false);
+  const [tickerInput, setTickerInput] = useState("");
+  const [addingTicker, setAddingTicker] = useState(false);
+  const [tickerError, setTickerError] = useState<string | null>(null);
   const addRef = useRef<HTMLDivElement>(null);
   const tfRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setLoading(true);
-    fetch(`/api/commodities?range=${timeframe}`)
+    const extra = custom.length ? `&extra=${encodeURIComponent(custom.join(","))}` : "";
+    fetch(`/api/commodities?range=${timeframe}${extra}`)
       .then((r) => r.json())
       .then((d) => {
         const list: CommodityData[] = d.commodities ?? [];
@@ -160,7 +147,7 @@ export function CommodityChart() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [timeframe]);
+  }, [timeframe, custom]);
 
   // Remember selections so they survive leaving the News tab
   useEffect(() => {
@@ -178,6 +165,13 @@ export function CommodityChart() {
   }, [timeframe]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(CUSTOM_STORAGE_KEY, JSON.stringify(custom));
+    } catch {}
+  }, [custom]);
+
+  useEffect(() => {
     function onClickOutside(e: MouseEvent) {
       if (addRef.current && !addRef.current.contains(e.target as Node)) setAddOpen(false);
       if (tfRef.current && !tfRef.current.contains(e.target as Node)) setTfOpen(false);
@@ -187,7 +181,40 @@ export function CommodityChart() {
   }, []);
 
   const addCommodity    = (id: string) => setActive((p) => [...p, id]);
-  const removeCommodity = (id: string) => setActive((p) => p.filter((x) => x !== id));
+  const removeCommodity = (id: string) => {
+    setActive((p) => p.filter((x) => x !== id));
+    setCustom((p) => p.filter((x) => x.toLowerCase() !== id));
+  };
+
+  const addCustomTicker = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const symbol = tickerInput.trim().toUpperCase();
+    if (!symbol || addingTicker) return;
+    if (active.includes(symbol.toLowerCase())) {
+      setTickerError(`Already tracking ${symbol}`);
+      return;
+    }
+    setAddingTicker(true);
+    setTickerError(null);
+    try {
+      const r = await fetch(`/api/commodities?range=5D&extra=${encodeURIComponent(symbol)}`);
+      const d = await r.json();
+      const list: CommodityData[] = d.commodities ?? [];
+      const found = list.find((c) => c.id === symbol.toLowerCase());
+      if (!found || found.data.length === 0) {
+        setTickerError(`Couldn't find a quote for ${symbol}`);
+        return;
+      }
+      setCustom((p) => [...p, symbol]);
+      setActive((p) => [...p, symbol.toLowerCase()]);
+      setTickerInput("");
+      setAddOpen(false);
+    } catch {
+      setTickerError(`Couldn't find a quote for ${symbol}`);
+    } finally {
+      setAddingTicker(false);
+    }
+  };
 
   const activeCommodities = commodities.filter((c) => active.includes(c.id));
   const available         = commodities.filter((c) => !active.includes(c.id) && c.data.length > 0);
@@ -245,7 +272,7 @@ export function CommodityChart() {
     const minDate = allDates[0] ?? "";
     const maxDate = allDates[allDates.length - 1] ?? "";
 
-    const events = CATALYSTS[primary.symbol] ?? [];
+    const events = primary.catalysts ?? [];
     return events
       .filter((c) => c.date >= minDate && c.date <= maxDate)
       .map((c) => {
@@ -328,8 +355,7 @@ export function CommodityChart() {
               </span>
             ))}
 
-            {available.length > 0 && (
-              <div className="relative" ref={addRef}>
+            <div className="relative" ref={addRef}>
                 <button
                   onClick={() => setAddOpen((o) => !o)}
                   className="text-xs px-2.5 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors duration-150"
@@ -341,7 +367,7 @@ export function CommodityChart() {
                 {addOpen && (
                   <div
                     className="absolute left-0 top-full mt-1 rounded-sm border border-border overflow-hidden"
-                    style={{ background: "oklch(0.14 0 0)", zIndex: 50, minWidth: 160 }}
+                    style={{ background: "oklch(0.14 0 0)", zIndex: 50, minWidth: 180 }}
                     role="listbox"
                   >
                     {available.map((c) => (
@@ -356,10 +382,32 @@ export function CommodityChart() {
                         <span className="text-xs text-muted-foreground ml-1.5">{c.unit}</span>
                       </button>
                     ))}
+                    <div className={`p-2 ${available.length > 0 ? "border-t border-border" : ""}`}>
+                      <form onSubmit={addCustomTicker} className="flex items-center gap-1.5">
+                        <input
+                          value={tickerInput}
+                          onChange={(e) => { setTickerInput(e.target.value.toUpperCase()); setTickerError(null); }}
+                          placeholder="Ticker — e.g. NVDA"
+                          maxLength={15}
+                          className="w-28 rounded-sm border border-border bg-transparent px-2 py-1 text-xs font-mono text-foreground placeholder:text-muted-foreground placeholder:font-sans focus:outline-none focus:border-[var(--primary)]"
+                          aria-label="Add a custom ticker"
+                        />
+                        <button
+                          type="submit"
+                          disabled={addingTicker || !tickerInput.trim()}
+                          className="text-xs px-2 py-1 rounded-sm disabled:opacity-50 shrink-0"
+                          style={{ background: "var(--primary)", color: "oklch(0.08 0 0)" }}
+                        >
+                          {addingTicker ? "…" : "Add"}
+                        </button>
+                      </form>
+                      {tickerError && (
+                        <p className="text-[10px] mt-1" style={{ color: "var(--negative)" }}>{tickerError}</p>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
-            )}
 
             <div className="ml-auto flex items-center gap-4">
               {activeCommodities.map((c) => (

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { fetchCommodityCatalysts } from "@/lib/commodity-catalysts";
 
 // 1-hour cache
 const cache = new Map<string, { data: unknown; ts: number }>();
@@ -67,21 +68,51 @@ const COMMODITIES = [
   { id: "uranium", symbol: "SRUUF", name: "Uranium",   unit: "$/lb (SRUUF)" },
 ];
 
+// Fixed lookback window for catalysts, independent of the requested price
+// timeframe — the client filters catalysts down to whatever price-series
+// date range it's actually showing, so it's fine (and cache-friendlier) to
+// always fetch the same wide window here.
+function catalystWindow(): { from: string; to: string } {
+  const to = new Date();
+  const from = new Date(to);
+  from.setMonth(from.getMonth() - 14);
+  return { from: from.toISOString().split("T")[0], to: to.toISOString().split("T")[0] };
+}
+
+const MAX_EXTRA = 5;
+
+/** User-added tickers beyond the 5 curated commodities — `?extra=NVDA,PL=F`.
+ *  No catalyst keyword mapping exists for these (fetchCommodityCatalysts
+ *  returns [] for an unrecognized id), so they chart price only. */
+function parseExtra(searchParams: URLSearchParams): typeof COMMODITIES {
+  const raw = searchParams.get("extra");
+  if (!raw) return [];
+  const preset = new Set(COMMODITIES.map((c) => c.symbol));
+  const symbols = [...new Set(
+    raw.split(",").map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0 && s.length <= 15 && !preset.has(s))
+  )].slice(0, MAX_EXTRA);
+  return symbols.map((symbol) => ({ id: symbol.toLowerCase(), symbol, name: symbol, unit: "" }));
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const tf = searchParams.get("range") ?? "1Y";
+  const { from, to } = catalystWindow();
+  const allMeta = [...COMMODITIES, ...parseExtra(searchParams)];
 
-  const results = await Promise.allSettled(
-    COMMODITIES.map((c) => yahooCandles(c.symbol, tf))
-  );
+  const [priceResults, catalystResults] = await Promise.all([
+    Promise.allSettled(allMeta.map((c) => yahooCandles(c.symbol, tf))),
+    Promise.allSettled(allMeta.map((c) => fetchCommodityCatalysts(c.id, from, to))),
+  ]);
 
-  const commodities = COMMODITIES.map((meta, i) => {
-    const r = results[i];
+  const commodities = allMeta.map((meta, i) => {
+    const r = priceResults[i];
+    const catalysts = catalystResults[i].status === "fulfilled" ? catalystResults[i].value : [];
     if (r.status !== "fulfilled") {
-      return { ...meta, currentPrice: 0, changePct: 0, data: [] };
+      return { ...meta, currentPrice: 0, changePct: 0, data: [], catalysts };
     }
     const v = r.value as { data: { date: string; price: number }[]; currentPrice: number; changePct: number; basePrice: number };
-    return { ...meta, currentPrice: v.currentPrice, changePct: v.changePct, basePrice: v.basePrice, data: v.data };
+    return { ...meta, currentPrice: v.currentPrice, changePct: v.changePct, basePrice: v.basePrice, data: v.data, catalysts };
   });
 
   return NextResponse.json({ commodities });
