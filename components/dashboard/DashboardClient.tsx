@@ -8,7 +8,7 @@ import { Sensitive, PrivateGraphMask } from "@/lib/privacy";
 import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
 import { RemindersCard } from "@/components/dashboard/RemindersCard";
 import { isInvestedType, resolveAccountType, type AccountType } from "@/lib/account-types";
-import { earliestStoredCapital } from "@/lib/portfolio-return";
+import { earliestStoredCapital, inceptionDateFor, unitCumReturns, chainedPeriodReturns } from "@/lib/portfolio-return";
 
 const chartLoading = () => (
   <div className="skeleton h-full w-full rounded-sm" aria-hidden />
@@ -488,17 +488,13 @@ export function DashboardClient() {
      aren't stuck at 0 when there simply aren't ≥2 snapshots since a fixed date.
      Bounds the max return to ~100%, guarding the tiny-baseline blowup. */
   const inceptionDate = useMemo(() => {
-    if (series.length === 0) return RETURN_INCEPTION;
-    const navOf = (s: { value: number; cash: number }) => s.value + s.cash;
+    const nav = series.map((s) => ({ date: s.date, nav: s.value + s.cash }));
     // Reference from STORED history only (exclude the live "today" point, which
     // is series' last entry) so the anchor can't shift as the current value
     // updates. Tying the threshold to the live value decoupled the % from the $:
     // value up + gain up, but % down because the baseline jumped with it.
-    const stored = series.length > 1 ? series.slice(0, -1) : series;
-    const reference = Math.max(...stored.map(navOf));
-    const threshold = 0.5 * reference;
-    const anchor = series.find((s) => navOf(s) >= threshold) ?? series[0];
-    return anchor.date;
+    const stored = nav.length > 1 ? nav.slice(0, -1) : nav;
+    return inceptionDateFor(nav, stored) ?? RETURN_INCEPTION;
   }, [series]);
 
   /* Unit-method seed cost basis for the enabled accounts: the stored per-account
@@ -534,41 +530,15 @@ export function DashboardClient() {
      redeems units at the PRIOR price, so it's return-neutral. Units are tracked
      over the FULL series; only dates ≥ inceptionDate are exposed to the chart
      (trims partial onboarding days that would read as big losses vs the full
-     cost basis). `cumByDate` holds the return % per date. */
+     cost basis). `cumByDate` holds the return % per date. The math itself
+     lives in lib/portfolio-return.ts `unitCumReturns`, SHARED with the
+     monthly-report generator — same function, so the dashboard's monthly
+     bars and a report's monthly return can't diverge. */
   const navReturns = useMemo(() => {
-    const cumByDate = new Map<string, number>();
-    const gainByDate = new Map<string, number>();
-    const navOf = (s: { value: number; cash: number }) => s.value + s.cash;
-    const BASE = 10;
-    if (series.length === 0 || seedCostBasis <= 0) {
-      return { cumByDate, gainByDate, totalReturnPct: 0, totalGain: 0 };
-    }
-    let units = seedCostBasis / BASE;
-    let prevPrice: number | null = null;
-    let netFlow = 0; // Σ (deposits − withdrawals), running
-    for (const s of series) {
-      const { inflows, outflows } = flowByDate.get(s.date) ?? { inflows: 0, outflows: 0 };
-      const flow = inflows - outflows;
-      if (flow !== 0 && prevPrice != null && prevPrice > 0) {
-        units += flow / prevPrice; // issue/redeem units at the prior price
-        netFlow += flow;
-      }
-      const nav = navOf(s);
-      const price = units > 0 ? nav / units : BASE;
-      if (s.date >= inceptionDate) {
-        cumByDate.set(s.date, (price / BASE - 1) * 100);
-        gainByDate.set(s.date, nav - (seedCostBasis + netFlow)); // NAV − contributed capital
-      }
-      prevPrice = price;
-    }
-    const last = series[series.length - 1];
-    const lastPrice = prevPrice ?? BASE;
-    return {
-      cumByDate,
-      gainByDate,
-      totalReturnPct: (lastPrice / BASE - 1) * 100,
-      totalGain: navOf(last) - (seedCostBasis + netFlow),
-    };
+    const nav = series.map((s) => ({ date: s.date, nav: s.value + s.cash }));
+    const netFlowByDate = new Map<string, number>();
+    for (const [date, f] of flowByDate) netFlowByDate.set(date, f.inflows - f.outflows);
+    return unitCumReturns(nav, netFlowByDate, seedCostBasis, inceptionDate);
   }, [series, flowByDate, inceptionDate, seedCostBasis]);
 
   /* Performance chart: clip the series to the selected timeframe, then plot
@@ -668,31 +638,12 @@ export function DashboardClient() {
     };
   }, [series, timeframe, metric, navReturns, flowByDate]);
 
-  /* History derivations — period-over-period returns from snapshots. */
+  /* History derivations — period-over-period returns from snapshots. The
+     chain-link math is lib/portfolio-return.ts `chainedPeriodReturns`, shared
+     with the monthly-report generator. */
   const history = useMemo(() => {
-    // Dates that carry a time-weighted return (≥ inception), in order.
-    const dated = series
-      .filter((s) => navReturns.cumByDate.has(s.date))
-      .map((s) => s.date);
-
-    // Per-period return chain-links off the prior period's ending cumulative:
-    //   (1 + cumEnd) / (1 + cumPrevEnd) − 1.  First period is measured vs the
-    //   inception baseline (0%). This is flow-adjusted and rebalance-proof
-    //   because cumByDate already is.
-    const buildReturns = (keyFn: (d: string) => string, labelFn: (key: string) => string): ReturnPoint[] => {
-      const order: string[] = [];
-      const lastCum = new Map<string, number>();
-      for (const d of dated) {
-        const k = keyFn(d);
-        if (!lastCum.has(k)) order.push(k);
-        lastCum.set(k, navReturns.cumByDate.get(d)!);
-      }
-      return order.map((k, i) => {
-        const cumEnd = lastCum.get(k)! / 100;
-        const cumPrev = i > 0 ? lastCum.get(order[i - 1])! / 100 : 0;
-        return { label: labelFn(k), pct: ((1 + cumEnd) / (1 + cumPrev) - 1) * 100 };
-      });
-    };
+    const buildReturns = (keyFn: (d: string) => string, labelFn: (key: string) => string): ReturnPoint[] =>
+      chainedPeriodReturns(navReturns.cumByDate, keyFn).map(({ key, pct }) => ({ label: labelFn(key), pct }));
 
     const monthlyReturns = buildReturns((d) => d.slice(0, 7), (key) =>
       new Date(`${key}-15T12:00:00`).toLocaleDateString("en-US", { month: "short" }));
@@ -701,12 +652,13 @@ export function DashboardClient() {
       new Date(`${key}-15T12:00:00`).toLocaleDateString("en-US", { month: "short", year: "numeric" }))
       .sort((a, b) => b.pct - a.pct);
 
-    const since = dated.length
-      ? new Date(`${dated[0]}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    const first = navReturns.cumByDate.keys().next();
+    const since = !first.done
+      ? new Date(`${first.value}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
       : null;
 
     return { monthlyReturns, yearlyReturns, bestMonths, since };
-  }, [series, navReturns]);
+  }, [navReturns]);
 
   /* Portfolio return per timeframe, vs market. 1D is live (today's quotes);
      longer ranges need a snapshot at/before the period start — null until

@@ -167,6 +167,100 @@ function buildFlowByDate(
   return m;
 }
 
+// ── Shared unit-method core (dashboard + monthly reports) ───────────────────
+// The dashboard's hero/chart and the monthly-report generator both call these,
+// so a "monthly return" can never mean two different formulas again.
+
+export interface DatedNav {
+  date: string; // YYYY-MM-DD
+  nav: number; // securities + cash
+}
+
+/** Effective return anchor: the earliest snapshot whose NAV is ≥ 50% of the
+ *  largest NAV in `reference` (defaults to the whole series — the dashboard
+ *  passes stored history only, excluding its live "today" point). Skips
+ *  partial onboarding days that would blow the % up. Null when empty. */
+export function inceptionDateFor(series: DatedNav[], reference?: DatedNav[]): string | null {
+  if (series.length === 0) return null;
+  const ref = reference && reference.length > 0 ? reference : series;
+  const threshold = 0.5 * Math.max(...ref.map((s) => s.nav));
+  return (series.find((s) => s.nav >= threshold) ?? series[0]).date;
+}
+
+export interface UnitCumReturns {
+  /** Return % per date, dates ≥ inception only, in series order. */
+  cumByDate: Map<string, number>;
+  /** NAV − contributed capital per date, dates ≥ inception only. */
+  gainByDate: Map<string, number>;
+  totalReturnPct: number;
+  totalGain: number;
+}
+
+/** The unit-method loop itself: seed units from cost basis, mint/redeem units
+ *  for each date's net external flow at the PRIOR day's price (flows on dates
+ *  with no snapshot are intentionally not applied — identical to the
+ *  dashboard), price = NAV / units. Dates before `inceptionDate` still update
+ *  units/price but aren't exposed. */
+export function unitCumReturns(
+  series: DatedNav[],
+  flowByDate: Map<string, number>,
+  seedCostBasis: number,
+  inceptionDate: string | null,
+): UnitCumReturns {
+  const cumByDate = new Map<string, number>();
+  const gainByDate = new Map<string, number>();
+  if (series.length === 0 || seedCostBasis <= 0) {
+    return { cumByDate, gainByDate, totalReturnPct: 0, totalGain: 0 };
+  }
+  const inception = inceptionDate ?? series[0].date;
+  let units = seedCostBasis / BASE_PRICE;
+  let prevPrice: number | null = null;
+  let netFlow = 0; // Σ (deposits − withdrawals), running
+  for (const s of series) {
+    const flow = flowByDate.get(s.date) ?? 0;
+    if (flow !== 0 && prevPrice != null && prevPrice > 0) {
+      units += flow / prevPrice; // issue/redeem units at the prior price
+      netFlow += flow;
+    }
+    const price = units > 0 ? s.nav / units : BASE_PRICE;
+    if (s.date >= inception) {
+      cumByDate.set(s.date, (price / BASE_PRICE - 1) * 100);
+      gainByDate.set(s.date, s.nav - (seedCostBasis + netFlow));
+    }
+    prevPrice = price;
+  }
+  const last = series[series.length - 1];
+  return {
+    cumByDate,
+    gainByDate,
+    totalReturnPct: ((prevPrice ?? BASE_PRICE) / BASE_PRICE - 1) * 100,
+    totalGain: last.nav - (seedCostBasis + netFlow),
+  };
+}
+
+/** Per-period return chain-linked off the prior period's ending cumulative:
+ *  (1 + cumEnd) / (1 + cumPrevEnd) − 1. The first period measures vs the
+ *  inception baseline (0%). Flow-adjusted and rebalance-proof because
+ *  `cumByDate` already is. Relies on cumByDate's insertion order being
+ *  series (date) order — which `unitCumReturns` guarantees. */
+export function chainedPeriodReturns(
+  cumByDate: Map<string, number>,
+  keyFn: (date: string) => string,
+): { key: string; pct: number }[] {
+  const order: string[] = [];
+  const lastCum = new Map<string, number>();
+  for (const [d, cum] of cumByDate) {
+    const k = keyFn(d);
+    if (!lastCum.has(k)) order.push(k);
+    lastCum.set(k, cum);
+  }
+  return order.map((k, i) => {
+    const cumEnd = lastCum.get(k)! / 100;
+    const cumPrev = i > 0 ? lastCum.get(order[i - 1])! / 100 : 0;
+    return { key: k, pct: ((1 + cumEnd) / (1 + cumPrev) - 1) * 100 };
+  });
+}
+
 /**
  * Unit-method return for the enabled accounts, treated as one fund.
  * @param seedCostBasis  Σ over enabled accounts of the fixed seed cost basis

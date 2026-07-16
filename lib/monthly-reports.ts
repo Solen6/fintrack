@@ -2,6 +2,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchQuotes } from "@/lib/finnhub";
 import { fetchSectors } from "@/lib/sectors";
 import { resolveAccountType, type AccountType } from "@/lib/account-types";
+import {
+  earliestStoredCapital,
+  inceptionDateFor,
+  unitCumReturns,
+  chainedPeriodReturns,
+  type ReturnSnapshot,
+} from "@/lib/portfolio-return";
 
 /* Monthly per-account report generator (supabase/monthly-reports.sql).
    Runs from the daily snapshot cron (service-role client, all users) right
@@ -36,8 +43,11 @@ export type ReportType = (typeof REPORT_TYPES)[number];
 
 /** Bump when report math changes — older-version rows regenerate automatically.
  *  v2: dividend ex-date entitlement fix, month-end position reconstruction,
- *  single-snapshot months report null return instead of 0%. */
-export const PAYLOAD_VERSION = 2;
+ *  single-snapshot months report null return instead of 0%.
+ *  v3: monthReturnPct switched from point-to-point securities change to the
+ *  dashboard's flow-adjusted unit-method return (shared lib/portfolio-return
+ *  math), so reports and the dashboard monthly bars always agree. */
+export const PAYLOAD_VERSION = 3;
 
 /** Days into the new month during which cash_flow/tax reports keep refreshing. */
 const REFRESH_THROUGH_DAY = 7;
@@ -153,11 +163,12 @@ export interface PortfolioReport {
     securities: number | null;
     cash: number | null;
     total: number | null;
-    /** Prior month's last snapshot (securities), the return base. */
+    /** Prior month's last snapshot (securities), shown for context. */
     prevMonthEnd: number | null;
-    /** Securities-only point-to-point month change. NOT flow-adjusted — a
-     *  deposit invested mid-month inflates it; the dashboard's unit-method
-     *  return will differ whenever the month had external cash flows. */
+    /** Flow-adjusted unit-method monthly return — the SAME shared math and
+     *  chain-linking (lib/portfolio-return.ts) as the dashboard's monthly
+     *  returns chart, so the two figures always agree. Null when the month
+     *  carries no return-bearing snapshot. */
     monthReturnPct: number | null;
   };
 }
@@ -340,8 +351,16 @@ interface SnapRow {
   snapshot_date: string;
   total_value: number;
   cash: number;
+  cost_basis: number | null;
   account: string | null;
 }
+interface FlowRow {
+  user_id: string;
+  trade_date: string;
+  account: string | null;
+  amount: number; // signed: deposit +, withdrawal −
+}
+interface SeedRow { user_id: string; account: string; seed_cost_basis: number }
 interface SnapPoint { date: string; securities: number; cash: number }
 
 // ── Event merge (mirrors /api/transactions/recent) ──────────────────────────
@@ -493,6 +512,7 @@ function buildPortfolio(
   sectors: Record<string, string>,
   series: SnapPoint[],
   typeOf: (account: string) => AccountType,
+  monthReturnPct: number | null,
 ): PortfolioReport {
   // Aggregate per ticker (rollup can hold the same ticker in several accounts).
   const byTicker = new Map<string, { name: string; shares: number; cost: number; priced: boolean; value: number }>();
@@ -528,22 +548,13 @@ function buildPortfolio(
     })
     .sort((a, b) => b.value - a.value);
 
-  // Month-end value + monthly return from the snapshot series.
+  // Month-end value from the snapshot series. The monthly return itself is
+  // computed by the caller with the shared unit-method math (same function
+  // the dashboard uses) and passed in.
   const { start } = periodBounds(period);
   const inMonth = series.filter((s) => s.date >= start && s.date.slice(0, 7) === period);
   const prev = series.filter((s) => s.date < start);
   const end = inMonth.length > 0 ? inMonth[inMonth.length - 1] : null;
-  // Base = prior month's close; first tracked month falls back to its own first
-  // snapshot — but only when a later snapshot exists to measure against, else
-  // base and end are the same point and the "return" would be a fake flat 0%.
-  const base =
-    prev.length > 0
-      ? prev[prev.length - 1].securities
-      : inMonth.length > 1
-        ? inMonth[0].securities
-        : null;
-  const monthReturnPct =
-    end && base != null && base > 0 ? r2(((end.securities - base) / base) * 100) : null;
 
   const value = r2(positions.reduce((s, p) => s + p.value, 0));
   const costBasis = r2(positions.reduce((s, p) => s + p.costBasis, 0));
@@ -918,11 +929,11 @@ export async function generateMonthlyReports(
   // Activity fetches run through TODAY, not just month end — the tail past
   // nextStart is what monthEndHoldings() reverses to roll live positions back
   // to the month-end close (mergeEvents/buildTax only ever see in-month rows).
-  const { start, nextStart, prevStart } = periodBounds(period);
+  const { start, nextStart } = periodBounds(period);
   const fetchEnd = today >= nextStart
     ? new Date(new Date(`${today}T12:00:00Z`).getTime() + 86_400_000).toISOString().slice(0, 10)
     : nextStart;
-  const [txnRes, closedRes, divRes, snapRes, metaRes] = await Promise.all([
+  const [txnRes, closedRes, divRes, snapRes, metaRes, flowRes, seedRes] = await Promise.all([
     pageAll<TxnRow>((from, to) =>
       db.from("transactions")
         .select("user_id,trade_date,action,symbol,description,quantity,price,amount,account")
@@ -948,17 +959,34 @@ export async function generateMonthlyReports(
         .order("id")
         .range(from, to),
     ),
+    // FULL snapshot history — the unit-method return needs the whole series
+    // (seed anchoring + inception threshold), exactly like the dashboard.
     pageAll<SnapRow>((from, to) =>
       db.from("portfolio_snapshots")
-        .select("user_id,snapshot_date,total_value,cash,account")
-        .gte("snapshot_date", prevStart)
-        .lt("snapshot_date", nextStart)
+        .select("user_id,snapshot_date,total_value,cash,cost_basis,account")
         .order("id")
         .range(from, to),
     ),
     pageAll<MetaRow>((from, to) =>
       db.from("account_meta")
         .select("user_id,account,type")
+        .order("user_id")
+        .order("account")
+        .range(from, to),
+    ),
+    // External cash flows, full history (mirrors /api/snapshots): buys/sells/
+    // dividends are internal and deliberately excluded.
+    pageAll<FlowRow>((from, to) =>
+      db.from("transactions")
+        .select("user_id,trade_date,account,amount")
+        .in("action", ["DEPOSIT", "WITHDRAWAL", "TRANSFER_IN", "TRANSFER_OUT", "TRANSFER"])
+        .order("id")
+        .range(from, to),
+    ),
+    // Unit-method seeds: the fixed cost-basis anchor per account.
+    pageAll<SeedRow>((from, to) =>
+      db.from("portfolio_seed")
+        .select("user_id,account,seed_cost_basis")
         .order("user_id")
         .order("account")
         .range(from, to),
@@ -972,6 +1000,8 @@ export async function generateMonthlyReports(
   const divsByUser = groupByUser(divRes.error ? [] : divRes.rows);
   const snapsByUser = groupByUser(snapRes.error ? [] : snapRes.rows);
   const metaByUser = groupByUser(metaRes.error ? [] : metaRes.rows);
+  const flowsByUser = groupByUser(flowRes.error ? [] : flowRes.rows);
+  const seedsByUser = groupByUser(seedRes.error ? [] : seedRes.rows);
 
   const users = new Set([
     ...baseUsers,
@@ -1022,6 +1052,55 @@ export async function generateMonthlyReports(
         let s = seriesCache.get(scope);
         if (!s) { s = snapshotSeries(uSnaps, scope); seriesCache.set(scope, s); }
         return s;
+      };
+
+      // ── Unit-method monthly return, mirroring the dashboard exactly ──
+      // Seed resolution per account is the dashboard's chain: stored
+      // portfolio_seed → cost basis + cash at the earliest stored snapshot →
+      // live cost basis + cash (only for accounts with no history at all).
+      const uFlows = flowsByUser.get(user_id) ?? [];
+      const uSeeds = seedsByUser.get(user_id) ?? [];
+      const seedByAccount = new Map<string, number>();
+      for (const s of uSeeds) seedByAccount.set(norm(s.account), Number(s.seed_cost_basis) || 0);
+      const returnSnaps: ReturnSnapshot[] = uSnaps.map((r) => ({
+        date: r.snapshot_date,
+        value: Number(r.total_value) || 0,
+        cash: Number(r.cash) || 0,
+        costBasis: Number(r.cost_basis) || 0,
+        account: r.account == null ? null : norm(r.account),
+      }));
+      const seedFor = (acct: string): number => {
+        const seeded = seedByAccount.get(acct);
+        if (seeded != null) return seeded;
+        const anchor = earliestStoredCapital(returnSnaps, new Set([acct]), false);
+        if (anchor) return anchor.costBasis + anchor.cash;
+        const liveCostBasis = uHoldings
+          .filter((h) => norm(h.account) === acct)
+          .reduce((s, h) => s + (Number(h.shares) || 0) * (Number(h.cost_basis) || 0), 0);
+        const liveCash = uCash
+          .filter((c) => norm(c.account) === acct)
+          .reduce((s, c) => s + (Number(c.balance) || 0), 0);
+        return liveCostBasis + liveCash;
+      };
+      const seedAccounts = new Set([...accounts, ...seedByAccount.keys()]);
+      const monthReturnFor = (scope: string): number | null => {
+        const nav = seriesFor(scope).map((p) => ({ date: p.date, nav: p.securities + p.cash }));
+        const flowByDate = new Map<string, number>();
+        for (const f of uFlows) {
+          if (f.account === null) {
+            if (scope !== ALL_ACCOUNTS) continue; // legacy combined flow → rollup only
+          } else if (scope !== ALL_ACCOUNTS && norm(f.account) !== scope) {
+            continue;
+          }
+          const d = String(f.trade_date).slice(0, 10);
+          flowByDate.set(d, (flowByDate.get(d) ?? 0) + (Number(f.amount) || 0));
+        }
+        const seed = scope === ALL_ACCOUNTS
+          ? [...seedAccounts].reduce((s, a) => s + seedFor(a), 0)
+          : seedFor(scope);
+        const { cumByDate } = unitCumReturns(nav, flowByDate, seed, inceptionDateFor(nav));
+        const m = chainedPeriodReturns(cumByDate, (d) => d.slice(0, 7)).find((p) => p.key === period);
+        return m ? r2(m.pct) : null;
       };
 
       // Phase 1 — cash_flow + tax need no market data. Commit them BEFORE the
@@ -1092,6 +1171,7 @@ export async function generateMonthlyReports(
             payload: buildPortfolio(
               period, scope, accountType, generatedOn,
               scopedHoldings, cashTotal, quotes, sectors, seriesFor(scope), typeOf,
+              monthReturnFor(scope),
             ),
             generated_at: nowISO,
           });
