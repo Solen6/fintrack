@@ -164,11 +164,14 @@ export async function applyCorporateActions(
   if (error) throw new Error(error.message);
   // Non-ETF bonds have no exchange ticker and accrue coupons (not splits/
   // dividends) — exclude them from the sweep. Bond ETFs keep their ticker and
-  // still receive Yahoo distributions like any other fund.
-  const holdings = (holdingsRaw ?? []).filter(
-    (h) => (h as { instrument_type?: string }).instrument_type !== "bond" ||
-      (h as { bond_type?: string }).bond_type === "etf",
-  ) as Holding[];
+  // still receive Yahoo distributions like any other fund. Options/futures
+  // have no exchange ticker either (theirs is a constructed display label)
+  // and don't pay dividends or split.
+  const holdings = (holdingsRaw ?? []).filter((h) => {
+    const row = h as { instrument_type?: string; bond_type?: string };
+    if (row.instrument_type === "option" || row.instrument_type === "future") return false;
+    return row.instrument_type !== "bond" || row.bond_type === "etf";
+  }) as Holding[];
   if (holdings.length === 0) return summary;
 
   // What's already been applied for this date (skip those). Exclude manual

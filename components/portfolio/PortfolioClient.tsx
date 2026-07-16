@@ -9,6 +9,8 @@ import { PortfolioDeck } from "./PortfolioDeck";
 import { CSVUploadPanel } from "./CSVUploadPanel";
 import { AddPositionForm } from "./AddPositionForm";
 import { AddBondForm } from "./AddBondForm";
+import { AddOptionForm } from "./AddOptionForm";
+import { AddFutureForm } from "./AddFutureForm";
 import { AddCashForm } from "./AddCashForm";
 import { DepositForm } from "./DepositForm";
 import { ClosePositionModal } from "./ClosePositionModal";
@@ -16,10 +18,11 @@ import { DividendManager } from "./DividendManager";
 import { ClosedPositions } from "./ClosedPositions";
 import { DividendHistory } from "./DividendHistory";
 import { FixedIncomeView } from "./FixedIncomeView";
+import { DerivativesView } from "./DerivativesView";
 import { MonthlyReports } from "./MonthlyReports";
 import { WatchlistDeck } from "@/components/watchlist/WatchlistDeck";
-import { computeMetrics } from "@/lib/types";
-import type { HoldingWithMetrics, Quote, BondMetrics, InstrumentType, BondType, DayCount, BondPriceSource } from "@/lib/types";
+import { computeMetrics, isDerivative } from "@/lib/types";
+import type { HoldingWithMetrics, Quote, BondMetrics, InstrumentType, BondType, DayCount, BondPriceSource, OptionType, Direction } from "@/lib/types";
 
 interface DBHolding {
   id: string;
@@ -43,11 +46,18 @@ interface DBHolding {
   manual_price: number | null;
   credit_spread_bps: number | null;
   acquired_at: string | null;
+  underlying: string | null;
+  expiry: string | null;
+  strike: number | null;
+  option_type: string | null;
+  multiplier: number | null;
+  direction: string | null;
 }
 
 type BondMark = BondMetrics & { currentPrice: number };
+type DerivativeMark = { currentPrice: number };
 
-type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "addBond" | "addCash" | "deposit" | "ready";
+type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "addBond" | "addOption" | "addFuture" | "addCash" | "deposit" | "ready";
 
 interface CashBalance {
   account: string;
@@ -57,7 +67,7 @@ interface CashBalance {
 
 export function PortfolioClient() {
   const [view, setView] = useState<ViewState>("loading");
-  const [subView, setSubView] = useState<"table" | "heatmap" | "bonds" | "closed" | "income" | "reports" | "watchlist">("heatmap");
+  const [subView, setSubView] = useState<"table" | "heatmap" | "bonds" | "derivatives" | "closed" | "income" | "reports" | "watchlist">("heatmap");
   const [holdings, setHoldings] = useState<HoldingWithMetrics[]>([]);
   const [cash, setCash] = useState<CashBalance[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
@@ -76,6 +86,7 @@ export function PortfolioClient() {
   );
 
   const hasBonds = useMemo(() => holdings.some((h) => h.instrumentType === "bond"), [holdings]);
+  const hasDerivatives = useMemo(() => holdings.some(isDerivative), [holdings]);
 
   const cashByAccount = useMemo(() => {
     const m: Record<string, { label: string; balance: number }> = {};
@@ -152,11 +163,14 @@ export function PortfolioClient() {
         return;
       }
 
-      // Equities + bond ETFs price via /api/quotes; non-ETF bonds via /api/bonds/marks.
+      // Equities + bond ETFs price via /api/quotes; non-ETF bonds via
+      // /api/bonds/marks; options/futures via /api/holdings/derivatives-marks
+      // (their "ticker" is a constructed label, not a real quote symbol).
       const priceableTickers = [
         ...new Set(
           dbHoldings
             .filter((h) => h.instrument_type !== "bond" || h.bond_type === "etf")
+            .filter((h) => h.instrument_type !== "option" && h.instrument_type !== "future")
             .map((h) => h.ticker),
         ),
       ];
@@ -190,18 +204,31 @@ export function PortfolioClient() {
         }
       }
 
+      // Live per-unit marks for options/futures.
+      let derivativeMarks: Record<string, DerivativeMark> = {};
+      if (dbHoldings.some((h) => h.instrument_type === "option" || h.instrument_type === "future")) {
+        try {
+          const dRes = await fetch("/api/holdings/derivatives-marks");
+          if (dRes.ok) derivativeMarks = (await dRes.json()).marks ?? {};
+        } catch {
+          // non-fatal — derivatives fall back to cost basis below
+        }
+      }
+
       const merged: HoldingWithMetrics[] = dbHoldings.map((h) => {
         const isBondRow = h.instrument_type === "bond";
         const isEtfBond = isBondRow && h.bond_type === "etf";
+        const isDerivativeRow = h.instrument_type === "option" || h.instrument_type === "future";
         const q = quotes[h.ticker];
         const mark = isBondRow && !isEtfBond ? marks[h.id] : undefined;
-        const currentPrice = mark ? mark.currentPrice : q?.price ?? h.cost_basis;
+        const dMark = isDerivativeRow ? derivativeMarks[h.id] : undefined;
+        const currentPrice = mark ? mark.currentPrice : dMark ? dMark.currentPrice : q?.price ?? h.cost_basis;
         return computeMetrics(
           {
             id: h.id,
             ticker: h.ticker,
             name: h.name,
-            sector: isBondRow ? "Fixed Income" : sectors[h.ticker] ?? "",
+            sector: isDerivativeRow ? "Derivatives" : isBondRow ? "Fixed Income" : sectors[h.ticker] ?? "",
             shares: h.shares,
             costBasis: h.cost_basis,
             currentPrice,
@@ -209,7 +236,7 @@ export function PortfolioClient() {
             notes: h.notes ?? undefined,
             drip: h.drip ?? false,
             acquiredAt: h.acquired_at,
-            instrumentType: (isBondRow ? "bond" : "equity") as InstrumentType,
+            instrumentType: (h.instrument_type ?? "equity") as InstrumentType,
             bondType: (h.bond_type ?? undefined) as BondType | undefined,
             cusip: h.cusip ?? undefined,
             couponRate: h.coupon_rate ?? undefined,
@@ -221,8 +248,14 @@ export function PortfolioClient() {
             manualPrice: h.manual_price ?? undefined,
             creditSpreadBps: h.credit_spread_bps ?? undefined,
             bondMetrics: mark,
+            underlying: h.underlying ?? undefined,
+            expiry: h.expiry ?? undefined,
+            strike: h.strike ?? undefined,
+            optionType: (h.option_type ?? undefined) as OptionType | undefined,
+            multiplier: h.multiplier ?? undefined,
+            direction: (h.direction ?? undefined) as Direction | undefined,
           },
-          isBondRow && !isEtfBond ? 0 : q?.changePct ?? 0,
+          (isBondRow && !isEtfBond) || isDerivativeRow ? 0 : q?.changePct ?? 0,
         );
       });
 
@@ -293,6 +326,26 @@ export function PortfolioClient() {
       <AddBondForm
         existingAccounts={existingAccounts}
         onSaved={() => { setView("ready"); setSubView("bonds"); loadData(); }}
+        onCancel={() => setView("ready")}
+      />
+    );
+  }
+
+  if (view === "addOption") {
+    return (
+      <AddOptionForm
+        existingAccounts={existingAccounts}
+        onSaved={() => { setView("ready"); setSubView("derivatives"); loadData(); }}
+        onCancel={() => setView("ready")}
+      />
+    );
+  }
+
+  if (view === "addFuture") {
+    return (
+      <AddFutureForm
+        existingAccounts={existingAccounts}
+        onSaved={() => { setView("ready"); setSubView("derivatives"); loadData(); }}
         onCancel={() => setView("ready")}
       />
     );
@@ -388,6 +441,18 @@ export function PortfolioClient() {
                   Bonds
                 </button>
               )}
+              {hasDerivatives && (
+                <button
+                  onClick={() => setSubView("derivatives")}
+                  className="text-xs px-2.5 py-1 transition-colors duration-150"
+                  style={{
+                    background: subView === "derivatives" ? "oklch(0.16 0 0)" : "transparent",
+                    color: subView === "derivatives" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                  }}
+                >
+                  Options/Futures
+                </button>
+              )}
               <button
                 onClick={() => setSubView("closed")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
@@ -451,6 +516,8 @@ export function PortfolioClient() {
                   <div role="menu" className="absolute left-0 mt-1 z-20 min-w-[8rem] rounded-md border border-border bg-card py-1 shadow-lg">
                     <button role="menuitem" onClick={() => { setAddMenuOpen(false); setView("addPosition"); }} className="block w-full text-left text-xs px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">Position</button>
                     <button role="menuitem" onClick={() => { setAddMenuOpen(false); setView("addBond"); }} className="block w-full text-left text-xs px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">Bond</button>
+                    <button role="menuitem" onClick={() => { setAddMenuOpen(false); setView("addOption"); }} className="block w-full text-left text-xs px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">Option</button>
+                    <button role="menuitem" onClick={() => { setAddMenuOpen(false); setView("addFuture"); }} className="block w-full text-left text-xs px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">Future</button>
                     <button role="menuitem" onClick={() => { setAddMenuOpen(false); setView("addCash"); }} className="block w-full text-left text-xs px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">Cash</button>
                   </div>
                 </>
@@ -474,7 +541,7 @@ export function PortfolioClient() {
 
         {subView === "table" && (
           <HoldingsTable
-            holdings={holdings}
+            holdings={holdings.filter((h) => !isDerivative(h))}
             account={selectedAccount}
             onEdit={async (holding, updates) => {
               const res = await fetch("/api/holdings", {
@@ -498,9 +565,12 @@ export function PortfolioClient() {
           />
         )}
         {subView === "heatmap" && (
-          <PortfolioDeck holdings={holdings} cash={cash} />
+          <PortfolioDeck holdings={holdings.filter((h) => !isDerivative(h))} cash={cash} />
         )}
         {subView === "bonds" && <FixedIncomeView holdings={holdings} />}
+        {subView === "derivatives" && (
+          <DerivativesView holdings={holdings} onClose={(holding) => setClosingHolding(holding)} />
+        )}
         {subView === "closed" && <ClosedPositions />}
         {subView === "income" && (
           <DividendHistory bonds={holdings.filter((h) => h.instrumentType === "bond" && h.bondType !== "etf")} />
@@ -535,7 +605,7 @@ export function PortfolioClient() {
 
       {managingDividends && (
         <DividendManager
-          holdings={holdings.filter((h) => h.instrumentType !== "bond")}
+          holdings={holdings.filter((h) => h.instrumentType !== "bond" && !isDerivative(h))}
           account={selectedAccount}
           onSaved={() => { setManagingDividends(false); loadData(); }}
           onCancel={() => setManagingDividends(false)}

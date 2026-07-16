@@ -16,6 +16,8 @@ interface ClosedPosition {
   closed_at: string;
   notes: string | null;
   instrument_type?: string | null;
+  multiplier?: number | null;
+  direction?: string | null;
 }
 
 export function ClosedPositions() {
@@ -46,7 +48,10 @@ export function ClosedPositions() {
   }
 
   const totalGain = positions.reduce((s, p) => s + p.realized_gain, 0);
-  const totalCost = positions.reduce((s, p) => s + p.cost_basis * p.shares, 0);
+  // Abs per row before summing — a short's cost_basis*shares is negative (a
+  // credit received, not a cost), and summing signed would let longs and
+  // shorts cancel out the denominator instead of both contributing capital.
+  const totalCost = positions.reduce((s, p) => s + Math.abs(p.cost_basis * p.shares), 0);
   const totalPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0;
 
   return (
@@ -80,13 +85,26 @@ export function ClosedPositions() {
           {positions.map((p) => {
             const gain = p.realized_gain;
             const color = gain >= 0 ? "var(--positive)" : "var(--negative)";
-            const returnPct = p.cost_basis > 0 ? ((p.sale_price - p.cost_basis) / p.cost_basis) * 100 : 0;
+            // Abs denominator: a short's cost_basis*shares is negative (a
+            // credit received), and dividing by a negative would flip the
+            // sign of a real profit into a misleading negative return.
+            const costTotal = p.cost_basis * p.shares;
+            const returnPct = costTotal !== 0 ? (gain / Math.abs(costTotal)) * 100 : 0;
             const faceBond = p.instrument_type === "bond"; // shares = face, prices = clean/100
+            const isDeriv = p.instrument_type === "option" || p.instrument_type === "future";
+            const multiplier = p.multiplier || 1;
+            const contracts = Math.abs(p.shares) / multiplier;
             return (
               <tr key={p.id} className="border-b border-border/50">
                 <td className="px-4 py-3 font-mono font-semibold text-foreground">{p.ticker}</td>
                 <td className="px-4 py-3 text-muted-foreground">{p.name}</td>
-                <td className="px-4 py-3 text-right font-mono text-muted-foreground"><Sensitive>{faceBond ? formatCurrency(p.shares) : formatShares(p.shares)}</Sensitive></td>
+                <td className="px-4 py-3 text-right font-mono text-muted-foreground">
+                  <Sensitive>
+                    {faceBond ? formatCurrency(p.shares)
+                      : isDeriv ? `${contracts % 1 === 0 ? contracts : contracts.toFixed(2)} (${p.direction === "SHORT" ? "short" : "long"})`
+                      : formatShares(p.shares)}
+                  </Sensitive>
+                </td>
                 <td className="px-4 py-3 text-right font-mono text-muted-foreground"><Sensitive>{faceBond ? (p.cost_basis * 100).toFixed(2) : formatCurrency(p.cost_basis)}</Sensitive></td>
                 <td className="px-4 py-3 text-right font-mono text-foreground"><Sensitive>{faceBond ? (p.sale_price * 100).toFixed(2) : formatCurrency(p.sale_price)}</Sensitive></td>
                 <td className="px-4 py-3 text-right font-mono" style={{ color }}>

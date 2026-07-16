@@ -46,6 +46,11 @@ export async function POST(req: NextRequest) {
     // does not apply and would corrupt the face-value encoding.
     return NextResponse.json({ error: "Bonds accrue coupons, not dividends." }, { status: 400 });
   }
+  if (holding.instrument_type === "option" || holding.instrument_type === "future") {
+    // Options/futures don't pay dividends, and the per-share math here would
+    // corrupt the signed "effective shares" encoding.
+    return NextResponse.json({ error: "Options and futures don't pay dividends." }, { status: 400 });
+  }
 
   const shares = Number(holding.shares);
   const costBasis = Number(holding.cost_basis);

@@ -5,6 +5,7 @@ import { isMarketDay } from "@/lib/market-calendar";
 import { applyCorporateActionsWindow } from "@/lib/corporate-actions";
 import { generateMonthlyReports } from "@/lib/monthly-reports";
 import { computeBondMarks, type BondRow } from "@/lib/bond-marks";
+import { computeDerivativeMarks, type DerivativeRow } from "@/lib/derivative-marks";
 
 /**
  * Scheduled trigger: captures a daily portfolio_snapshots row for every user
@@ -36,6 +37,10 @@ interface HoldingRow {
   price_source: string | null;
   manual_price: number | null;
   credit_spread_bps: number | null;
+  underlying: string | null;
+  expiry: string | null;
+  strike: number | null;
+  option_type: string | null;
 }
 
 async function run() {
@@ -93,6 +98,7 @@ async function run() {
     ...new Set(
       rows
         .filter((h) => h.instrument_type !== "bond" || h.bond_type === "etf")
+        .filter((h) => h.instrument_type !== "option" && h.instrument_type !== "future")
         .map((h) => h.ticker.toUpperCase()),
     ),
   ];
@@ -102,13 +108,18 @@ async function run() {
   const bondRows = rows.filter((h) => h.instrument_type === "bond" && h.bond_type !== "etf");
   const bondMarks = bondRows.length ? await computeBondMarks(bondRows as unknown as BondRow[]) : {};
 
+  // Live marks for every option/future across all users (ids are unique).
+  const derivRows = rows.filter((h) => h.instrument_type === "option" || h.instrument_type === "future");
+  const derivativeMarks = derivRows.length ? await computeDerivativeMarks(derivRows as unknown as DerivativeRow[]) : {};
+
   // Group securities value and cost basis by user → account.
   const byUser = new Map<string, Map<string, number>>();
   const costByUser = new Map<string, Map<string, number>>();
   const pricedByUser = new Map<string, number>();
   for (const h of rows) {
     const isNonEtfBond = h.instrument_type === "bond" && h.bond_type !== "etf";
-    const mark = isNonEtfBond ? bondMarks[h.id] : undefined;
+    const isDeriv = h.instrument_type === "option" || h.instrument_type === "future";
+    const mark = isNonEtfBond ? bondMarks[h.id] : isDeriv ? derivativeMarks[h.id] : undefined;
     const q = quotes[h.ticker.toUpperCase()];
     const price = mark ? mark.currentPrice : q?.price ?? Number(h.cost_basis);
     const acct = (h.account ?? "").trim() || "Unassigned";

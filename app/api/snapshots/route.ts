@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { fetchQuotes } from "@/lib/finnhub";
 import { isMarketDay } from "@/lib/market-calendar";
 import { computeBondMarks, type BondRow } from "@/lib/bond-marks";
+import { computeDerivativeMarks, type DerivativeRow } from "@/lib/derivative-marks";
 
 /* ─── GET: the user's snapshot history, oldest first ───
    Returns one row per (date, account). Legacy rows captured before per-account
@@ -194,11 +195,14 @@ export async function POST() {
     return NextResponse.json({ captured: false, reason: "Market closed.", seeded: seedResult });
   }
 
-  // Equities + bond ETFs price via quotes; non-ETF bonds via computeBondMarks.
+  // Equities + bond ETFs price via quotes; non-ETF bonds via computeBondMarks;
+  // options/futures via computeDerivativeMarks (their "ticker" is a
+  // constructed label, not a real quote symbol — must stay out of `tickers`).
   const tickers = [
     ...new Set(
       (holdings ?? [])
         .filter((h) => h.instrument_type !== "bond" || h.bond_type === "etf")
+        .filter((h) => h.instrument_type !== "option" && h.instrument_type !== "future")
         .map((h) => h.ticker as string),
     ),
   ];
@@ -207,12 +211,16 @@ export async function POST() {
   const bondRows = (holdings ?? []).filter((h) => h.instrument_type === "bond" && h.bond_type !== "etf");
   const bondMarks = bondRows.length ? await computeBondMarks(bondRows as unknown as BondRow[]) : {};
 
+  const derivRows = (holdings ?? []).filter((h) => h.instrument_type === "option" || h.instrument_type === "future");
+  const derivativeMarks = derivRows.length ? await computeDerivativeMarks(derivRows as unknown as DerivativeRow[]) : {};
+
   // Bucket securities value per account.
   const byAccount = new Map<string, number>();
   let pricedPositions = 0;
   for (const h of holdings ?? []) {
     const isNonEtfBond = h.instrument_type === "bond" && h.bond_type !== "etf";
-    const mark = isNonEtfBond ? bondMarks[h.id as string] : undefined;
+    const isDeriv = h.instrument_type === "option" || h.instrument_type === "future";
+    const mark = isNonEtfBond ? bondMarks[h.id as string] : isDeriv ? derivativeMarks[h.id as string] : undefined;
     const q = quotes[(h.ticker as string).toUpperCase()];
     const price = mark ? mark.currentPrice : q?.price ?? Number(h.cost_basis);
     if (q || mark) pricedPositions++;

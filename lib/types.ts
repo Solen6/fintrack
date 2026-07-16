@@ -1,9 +1,11 @@
 export type AccountType = string;
 
-export type InstrumentType = "equity" | "bond";
+export type InstrumentType = "equity" | "bond" | "option" | "future";
 export type BondType = "treasury" | "cd" | "corporate" | "muni" | "agency" | "etf";
 export type DayCount = "actual/actual" | "30/360" | "actual/365";
 export type BondPriceSource = "auto" | "manual" | "cost" | "curve";
+export type OptionType = "CALL" | "PUT";
+export type Direction = "LONG" | "SHORT";
 
 /**
  * Bond fields carried on a Holding when `instrumentType === "bond"`. See
@@ -25,6 +27,24 @@ export interface BondFields {
   /** User clean-price override (per 100 of par), used when priceSource === "manual". */
   manualPrice?: number;
   creditSpreadBps?: number;
+}
+
+/**
+ * Option/future fields carried on a Holding when `instrumentType` is
+ * "option" or "future". See supabase/holdings-derivatives.sql for the
+ * "effective shares" trick: `shares` is contracts × multiplier × sign(direction),
+ * `currentPrice`/`costBasis` are price PER UNIT (not per contract), so all
+ * value/cost/gain math is unchanged — a SHORT position's costTotal comes out
+ * negative, correctly representing a credit received rather than a cost paid.
+ */
+export interface DerivativeFields {
+  underlying?: string;
+  expiry?: string;
+  strike?: number;
+  optionType?: OptionType;
+  /** $ per 1.00 price move per contract — 100 for options, varies for futures. */
+  multiplier?: number;
+  direction?: Direction;
 }
 
 /** Live fixed-income analytics for a bond row, computed by lib/bond-math. */
@@ -52,7 +72,7 @@ export interface BondMetrics {
   source: BondPriceSource;
 }
 
-export interface Holding extends BondFields {
+export interface Holding extends BondFields, DerivativeFields {
   id: string;
   ticker: string;
   name: string;
@@ -84,6 +104,11 @@ export function isBond(h: { instrumentType?: InstrumentType }): boolean {
  */
 export function isFaceValueBond(h: { instrumentType?: InstrumentType; bondType?: BondType }): boolean {
   return h.instrumentType === "bond" && h.bondType !== "etf";
+}
+
+/** True for a real-brokerage option or future position (not the paper simulator). */
+export function isDerivative(h: { instrumentType?: InstrumentType }): boolean {
+  return h.instrumentType === "option" || h.instrumentType === "future";
 }
 
 export type SortField =
@@ -125,6 +150,9 @@ export function computeMetrics(h: Holding, todayChangePct = 0): HoldingWithMetri
   const value = h.shares * h.currentPrice;
   const costTotal = h.shares * h.costBasis;
   const gainDollar = value - costTotal;
-  const gainPercent = costTotal > 0 ? (gainDollar / costTotal) * 100 : 0;
+  // A short derivative's costTotal is negative (it's a credit received, not
+  // a cost paid) — divide by magnitude so gainPercent keeps the right sign
+  // instead of silently returning 0 whenever costTotal < 0.
+  const gainPercent = costTotal !== 0 ? (gainDollar / Math.abs(costTotal)) * 100 : 0;
   return { ...h, value, costTotal, gainDollar, gainPercent, todayChangePct };
 }

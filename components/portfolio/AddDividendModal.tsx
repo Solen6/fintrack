@@ -34,6 +34,7 @@ export function AddDividendModal({ onClose, onAdded }: Props) {
       .then((d) => {
         const list: Holding[] = (d.holdings ?? [])
           .filter((h: { instrument_type?: string }) => h.instrument_type !== "bond") // coupons, not dividends
+          .filter((h: { instrument_type?: string }) => h.instrument_type !== "option" && h.instrument_type !== "future")
           .map((h: Holding) => ({
             id: h.id,
             ticker: h.ticker,

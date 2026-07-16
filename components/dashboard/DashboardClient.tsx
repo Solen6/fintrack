@@ -78,6 +78,8 @@ interface DBHolding {
   acquired_at?: string | null;
 }
 
+const isDerivativeType = (t?: string | null) => t === "option" || t === "future";
+
 interface QuoteData {
   price: number;
   changePct: number;
@@ -134,6 +136,7 @@ export function DashboardClient() {
   const [holdings, setHoldings] = useState<DBHolding[]>([]);
   const [quotes, setQuotes] = useState<Record<string, QuoteData>>({});
   const [bondMarks, setBondMarks] = useState<Record<string, { currentPrice: number }>>({});
+  const [derivativeMarks, setDerivativeMarks] = useState<Record<string, { currentPrice: number }>>({});
   const [sectors, setSectors] = useState<Record<string, string>>({});
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [flows, setFlows] = useState<FlowRow[]>([]);
@@ -166,10 +169,13 @@ export function DashboardClient() {
       }
       setHoldings(rows);
 
-      // Non-ETF bonds have no exchange ticker — exclude them from the quote list.
+      // Non-ETF bonds and derivatives have no exchange ticker — exclude them from the quote list.
       const tickers = [
         ...new Set(
-          rows.filter((h) => h.instrument_type !== "bond" || h.bond_type === "etf").map((h) => h.ticker),
+          rows
+            .filter((h) => h.instrument_type !== "bond" || h.bond_type === "etf")
+            .filter((h) => !isDerivativeType(h.instrument_type))
+            .map((h) => h.ticker),
         ),
       ];
       setQuotesError(false);
@@ -216,6 +222,14 @@ export function DashboardClient() {
         setBondMarks(mRes?.ok ? (await mRes.json()).marks ?? {} : {});
       } else {
         setBondMarks({});
+      }
+
+      // Live marks for options/futures.
+      if (rows.some((h) => isDerivativeType(h.instrument_type))) {
+        const dRes = await fetch("/api/holdings/derivatives-marks").catch(() => null);
+        setDerivativeMarks(dRes?.ok ? (await dRes.json()).marks ?? {} : {});
+      } else {
+        setDerivativeMarks({});
       }
 
       // History after capture so today's point is included
@@ -272,8 +286,14 @@ export function DashboardClient() {
   const agg = useMemo(() => {
     const isCashAcct = (account: string) => !isInvestedType(resolveAccountType(account, accountTypes));
     const filtered = holdings.filter((h) => enabledAccounts.has(h.account));
-    const investRows = filtered.filter((h) => !isCashAcct(h.account));
+    const investRowsAll = filtered.filter((h) => !isCashAcct(h.account));
     const cashRows = filtered.filter((h) => isCashAcct(h.account));
+    // Options/futures are excluded from the top-holdings list and sector pie
+    // (raw "effective shares" would be a confusing, multiplier-scaled number
+    // there — see components/portfolio/DerivativesView.tsx for their real
+    // home) but their value/gain still count toward the portfolio totals below.
+    const investRows = investRowsAll.filter((h) => !isDerivativeType(h.instrument_type));
+    const derivRows = investRowsAll.filter((h) => isDerivativeType(h.instrument_type));
 
     const byTicker = new Map<string, AggHolding>();
     for (const h of investRows) {
@@ -323,8 +343,22 @@ export function DashboardClient() {
     );
     const cash = cashFromHoldings + cashFromBalances;
 
-    const invested = positions.reduce((s, p) => s + p.cost, 0);
-    const positionsValue = positions.reduce((s, p) => s + p.value, 0);
+    // Derivatives contribute value/cost to the portfolio totals (a short's
+    // value/cost are negative — a liability / credit received, by construction
+    // of the signed "effective shares" encoding — so this nets correctly)
+    // without appearing in `positions` (the top-holdings list / sector pie).
+    let derivValue = 0;
+    let derivCost = 0;
+    for (const h of derivRows) {
+      const mark = derivativeMarks[h.id];
+      const price = mark ? mark.currentPrice : Number(h.cost_basis);
+      const shares = Number(h.shares);
+      derivValue += shares * price;
+      derivCost += shares * Number(h.cost_basis);
+    }
+
+    const invested = positions.reduce((s, p) => s + p.cost, 0) + derivCost;
+    const positionsValue = positions.reduce((s, p) => s + p.value, 0) + derivValue;
     const totalValue = positionsValue + cash;
     const totalGain = positionsValue - invested;
     // Return % = dollar gain ÷ TOTAL ACCOUNT BALANCE (current holdings value +
@@ -361,7 +395,7 @@ export function DashboardClient() {
         : 0;
 
     return { positions, cash, invested, positionsValue, totalValue, totalGain, totalReturnPct, todayChange, todayPct };
-  }, [holdings, quotes, bondMarks, sectors, enabledAccounts, accountTypes, cashBalances]);
+  }, [holdings, quotes, bondMarks, derivativeMarks, sectors, enabledAccounts, accountTypes, cashBalances]);
 
   /* Allocation by sector — top 4 + Other, steel ramp */
   const allocation: AllocationPoint[] = useMemo(() => {

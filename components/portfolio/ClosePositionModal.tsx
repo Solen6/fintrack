@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { formatCurrency, formatShares } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
-import { isFaceValueBond } from "@/lib/types";
+import { isFaceValueBond, isDerivative } from "@/lib/types";
 import type { HoldingWithMetrics } from "@/lib/types";
 
 interface Props {
@@ -14,29 +14,46 @@ interface Props {
 
 export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
   const faceBond = isFaceValueBond(holding); // shares = face, price = clean/100
-  const [shares, setShares] = useState(String(holding.shares));
+  const isDeriv = isDerivative(holding);
+  const short = holding.direction === "SHORT";
+  const multiplier = holding.multiplier || 1;
+  // Derivatives are entered/closed in CONTRACTS; `holding.shares` is signed
+  // effective units (contracts × multiplier × ±1) — unwind to a magnitude the
+  // user actually recognizes, and re-scale back to effective units on submit.
+  const heldContracts = Math.abs(holding.shares) / multiplier;
+  const [shares, setShares] = useState(String(isDeriv ? heldContracts : holding.shares));
   const [salePrice, setSalePrice] = useState(String(faceBond ? holding.currentPrice * 100 : holding.currentPrice));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const sharesToClose = parseFloat(shares) || 0;
+  const closeMagnitude = parseFloat(shares) || 0; // contracts for derivatives, shares/face otherwise
+  const effectiveToClose = isDeriv ? closeMagnitude * multiplier : closeMagnitude;
+  const heldMagnitude = isDeriv ? heldContracts : holding.shares;
   const rawPrice = parseFloat(salePrice) || 0;
   // For bonds the user enters a clean price (98.50); realized-gain + storage use clean/100.
   const price = faceBond ? rawPrice / 100 : rawPrice;
-  const realizedGain = (price - holding.costBasis) * sharesToClose;
+  // Sign-aware: a SHORT profits when price falls below cost, so its realized
+  // gain is the negative of the naive (price - cost) × qty (matches the
+  // signed-shares convention /api/holdings/close computes server-side).
+  const closedShares = (short ? -1 : 1) * effectiveToClose;
+  const realizedGain = (price - holding.costBasis) * closedShares;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (sharesToClose <= 0) { setError(faceBond ? "Face value must be > 0" : "Shares must be > 0"); return; }
-    if (sharesToClose > holding.shares) {
-      setError(faceBond ? `Max ${formatCurrency(holding.shares)} face` : `Max ${formatShares(holding.shares)} shares`);
+    if (closeMagnitude <= 0) { setError(faceBond ? "Face value must be > 0" : isDeriv ? "Contracts must be > 0" : "Shares must be > 0"); return; }
+    if (closeMagnitude > heldMagnitude) {
+      setError(
+        faceBond ? `Max ${formatCurrency(heldMagnitude)} face`
+        : isDeriv ? `Max ${heldMagnitude} contract${heldMagnitude === 1 ? "" : "s"}`
+        : `Max ${formatShares(heldMagnitude)} shares`
+      );
       return;
     }
     if (rawPrice <= 0) { setError("Sale price must be > 0"); return; }
     setSaving(true);
     try {
-      await onConfirm(sharesToClose, price);
+      await onConfirm(effectiveToClose, price);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to close position");
       setSaving(false);
@@ -63,6 +80,11 @@ export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
             <>
               <Sensitive>{formatCurrency(holding.shares)}</Sensitive> face @ {(holding.costBasis * 100).toFixed(2)} avg
             </>
+          ) : isDeriv ? (
+            <>
+              <Sensitive>{heldContracts}</Sensitive> contract{heldContracts === 1 ? "" : "s"} ({short ? "short" : "long"}) @{" "}
+              <Sensitive>{formatCurrency(holding.costBasis)}</Sensitive> avg
+            </>
           ) : (
             <>
               <Sensitive>{formatShares(holding.shares)}</Sensitive> shares @ <Sensitive>{formatCurrency(holding.costBasis)}</Sensitive> avg
@@ -72,20 +94,24 @@ export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">{faceBond ? "Face value to close" : "Shares to close"}</label>
+            <label className="text-xs text-muted-foreground mb-1 block">
+              {faceBond ? "Face value to close" : isDeriv ? "Contracts to close" : "Shares to close"}
+            </label>
             <input
               className={inputClass}
               type="number"
               step="any"
               min="0"
-              max={holding.shares}
+              max={heldMagnitude}
               value={shares}
               onChange={(e) => setShares(e.target.value)}
               autoFocus
             />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">{faceBond ? "Sale price (per 100)" : "Sale price per share"}</label>
+            <label className="text-xs text-muted-foreground mb-1 block">
+              {faceBond ? "Sale price (per 100)" : isDeriv ? `${short ? "Buy-to-cover" : "Sale"} price per share` : "Sale price per share"}
+            </label>
             <input
               className={inputClass}
               type="number"
@@ -96,7 +122,7 @@ export function ClosePositionModal({ holding, onConfirm, onCancel }: Props) {
             />
           </div>
 
-          {sharesToClose > 0 && price > 0 && (
+          {closeMagnitude > 0 && price > 0 && (
             <div className="text-xs py-2 border-t border-border">
               <span className="text-muted-foreground">Realized P/L: </span>
               <span
