@@ -56,6 +56,7 @@ export async function POST(request: NextRequest) {
     option_type: holding.option_type ?? null,
     multiplier: holding.multiplier ?? 1,
     direction: holding.direction ?? "LONG",
+    combo_id: holding.combo_id ?? null,
   });
 
   if (insertErr) {

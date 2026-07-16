@@ -27,14 +27,21 @@ type PayoffView = "matrix" | "line";
 
 const DEFAULT_STRATEGY = "long-call";
 
-/** Optional trade integration — supplied by the Paper tab so the builder can
- *  place the strategy it's showing. When absent the builder is analysis-only. */
+/** Optional trade integration — supplied by the Paper tab (place a paper
+ *  trade) or the Portfolio tab (record a real strategy). When absent the
+ *  builder is analysis-only. */
 export interface TradeConfig {
-  /** Place the current legs as a paper trade. Returns a result message to show. */
+  /** Act on the current legs. Returns a result message to show. */
   onPlaceTrade: (
     legs: Leg[],
     info: { underlying: string; strategyName: string; netCost: number },
   ) => Promise<{ ok: boolean; msg: string }>;
+  /** Panel heading — defaults to the paper wording ("Trade in paper"). */
+  panelTitle?: string;
+  /** Action button label — defaults to "Place Trade". */
+  buttonLabel?: string;
+  /** Fine print under the button — defaults to the paper fill/collateral note. */
+  footnote?: string;
 }
 
 export function OptionsBuilder({ trade }: { trade?: TradeConfig }) {
@@ -443,7 +450,7 @@ export function OptionsBuilder({ trade }: { trade?: TradeConfig }) {
                     </p>
                   </div>
 
-                  {/* Place-trade panel (Paper tab) */}
+                  {/* Place-trade panel (Paper tab / Portfolio record) */}
                   {trade && (
                     <TradePanel
                       strategyName={strategyName}
@@ -452,6 +459,9 @@ export function OptionsBuilder({ trade }: { trade?: TradeConfig }) {
                       placing={placing}
                       msg={placeMsg}
                       onPlace={placeTrade}
+                      title={trade.panelTitle}
+                      buttonLabel={trade.buttonLabel}
+                      footnote={trade.footnote}
                     />
                   )}
 
@@ -513,6 +523,9 @@ function TradePanel({
   placing,
   msg,
   onPlace,
+  title = "Trade in paper",
+  buttonLabel = "Place Trade",
+  footnote = "Fills at the live mid as one combo · collateral reserved = the strategy's max loss.",
 }: {
   strategyName: string;
   netCost: number;
@@ -520,12 +533,15 @@ function TradePanel({
   placing: boolean;
   msg: { ok: boolean; msg: string } | null;
   onPlace: () => void;
+  title?: string;
+  buttonLabel?: string;
+  footnote?: string;
 }) {
   const credit = netCost < 0;
   return (
     <div className="rounded-md border border-border bg-card p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium text-foreground truncate">Trade in paper</span>
+        <span className="text-sm font-medium text-foreground truncate">{title}</span>
         <span className="text-xs font-mono" style={{ color: credit ? "var(--positive)" : "var(--muted-foreground)" }}>
           {credit ? "Net Credit " : "Net Debit "}{money(Math.abs(netCost))}
         </span>
@@ -536,14 +552,12 @@ function TradePanel({
         className="h-9 rounded-sm text-sm font-medium transition-opacity disabled:opacity-50"
         style={{ background: "var(--primary)", color: "oklch(0.08 0 0)" }}
       >
-        {placing ? "Placing…" : `Place Trade · ${legCount} leg${legCount === 1 ? "" : "s"}`}
+        {placing ? "Working…" : `${buttonLabel} · ${legCount} leg${legCount === 1 ? "" : "s"}`}
       </button>
       {msg && (
         <p className="text-xs" style={{ color: msg.ok ? "var(--positive)" : "var(--negative)" }}>{msg.msg}</p>
       )}
-      <p className="text-[10px] text-muted-foreground leading-relaxed">
-        Fills at the live mid as one combo · collateral reserved = the strategy&apos;s max loss.
-      </p>
+      <p className="text-[10px] text-muted-foreground leading-relaxed">{footnote}</p>
     </div>
   );
 }

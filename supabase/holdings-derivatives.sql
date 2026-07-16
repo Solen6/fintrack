@@ -81,3 +81,12 @@ end $$;
 
 alter table closed_positions add constraint closed_positions_instrument_type_check
   check (instrument_type in ('equity', 'bond', 'option', 'future'));
+
+-- ── Multi-leg strategies (iron condor, spreads, straddles, …) ──────────────
+-- Legs of one strategy share a combo_id, exactly like paper_positions
+-- (supabase/paper-combo.sql). Single-leg positions keep combo_id null.
+alter table holdings add column if not exists combo_id uuid;
+create index if not exists holdings_combo_idx
+  on holdings (combo_id) where combo_id is not null;
+
+alter table closed_positions add column if not exists combo_id uuid;

@@ -45,6 +45,12 @@ export interface DerivativeFields {
   /** $ per 1.00 price move per contract — 100 for options, varies for futures. */
   multiplier?: number;
   direction?: Direction;
+  /** Legs of one multi-leg strategy (iron condor, spread, …) share a combo id. */
+  comboId?: string;
+  /** Live implied vol (decimal) from the option chain — attached at merge time, not stored. */
+  iv?: number;
+  /** Live underlying spot price — attached at merge time, not stored. */
+  underlyingSpot?: number;
 }
 
 /** Live fixed-income analytics for a bond row, computed by lib/bond-math. */

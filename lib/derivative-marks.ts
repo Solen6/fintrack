@@ -30,11 +30,20 @@ function midOrLast(c: { bid?: number; ask?: number; lastPrice?: number }): numbe
   return c.lastPrice && c.lastPrice > 0 ? c.lastPrice : undefined;
 }
 
+export interface DerivativeMark {
+  currentPrice: number;
+  /** Implied vol (decimal) from the live chain — options only. Feeds the
+   *  payoff heatmap / Greeks in DerivativesView. */
+  iv?: number;
+  /** Live underlying spot price (for futures, the contract price itself). */
+  spot?: number;
+}
+
 /** Live per-unit marks for option/future holdings. Never throws — a row that
  *  can't be priced is simply absent from the result (callers fall back to
  *  cost basis), same contract as computeBondMarks. */
-export async function computeDerivativeMarks(rows: DerivativeRow[]): Promise<Record<string, { currentPrice: number }>> {
-  const marks: Record<string, { currentPrice: number }> = {};
+export async function computeDerivativeMarks(rows: DerivativeRow[]): Promise<Record<string, DerivativeMark>> {
+  const marks: Record<string, DerivativeMark> = {};
 
   const futureRows = rows.filter((r) => r.instrument_type === "future");
   const futureSymbols = [...new Set(futureRows.map((r) => r.underlying))];
@@ -43,7 +52,7 @@ export async function computeDerivativeMarks(rows: DerivativeRow[]): Promise<Rec
       const q = await yahooQuote(sym).catch(() => null);
       if (q?.price != null) {
         for (const r of futureRows.filter((row) => row.underlying === sym)) {
-          marks[r.id] = { currentPrice: q.price };
+          marks[r.id] = { currentPrice: q.price, spot: q.price };
         }
       }
     }),
@@ -65,11 +74,18 @@ export async function computeDerivativeMarks(rows: DerivativeRow[]): Promise<Rec
         const targetExpiry = matchExpiration(base.expirationDates, expiryISO);
         if (targetExpiry == null) return;
         const chain = targetExpiry === base.expirationDates[0] ? base : await fetchOptionChain(underlying, targetExpiry);
+        const spot = chain.quote.regularMarketPrice;
         for (const r of groupRows) {
           const list = r.option_type === "PUT" ? chain.puts : chain.calls;
           const contract = list.find((c) => c.strike === r.strike);
           const price = contract ? midOrLast(contract) : undefined;
-          if (price != null) marks[r.id] = { currentPrice: price };
+          if (price != null) {
+            marks[r.id] = {
+              currentPrice: price,
+              ...(contract?.impliedVolatility && contract.impliedVolatility > 0 ? { iv: contract.impliedVolatility } : {}),
+              ...(spot != null ? { spot } : {}),
+            };
+          }
         }
       } catch {
         // non-fatal — this group's rows fall back to cost basis

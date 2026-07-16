@@ -9,7 +9,7 @@ import { PortfolioDeck } from "./PortfolioDeck";
 import { CSVUploadPanel } from "./CSVUploadPanel";
 import { AddPositionForm } from "./AddPositionForm";
 import { AddBondForm } from "./AddBondForm";
-import { AddOptionForm } from "./AddOptionForm";
+import { AddOptionFlow } from "./AddOptionFlow";
 import { AddFutureForm } from "./AddFutureForm";
 import { AddCashForm } from "./AddCashForm";
 import { DepositForm } from "./DepositForm";
@@ -52,10 +52,11 @@ interface DBHolding {
   option_type: string | null;
   multiplier: number | null;
   direction: string | null;
+  combo_id: string | null;
 }
 
 type BondMark = BondMetrics & { currentPrice: number };
-type DerivativeMark = { currentPrice: number };
+type DerivativeMark = { currentPrice: number; iv?: number; spot?: number };
 
 type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "addBond" | "addOption" | "addFuture" | "addCash" | "deposit" | "ready";
 
@@ -254,6 +255,9 @@ export function PortfolioClient() {
             optionType: (h.option_type ?? undefined) as OptionType | undefined,
             multiplier: h.multiplier ?? undefined,
             direction: (h.direction ?? undefined) as Direction | undefined,
+            comboId: h.combo_id ?? undefined,
+            iv: dMark?.iv,
+            underlyingSpot: dMark?.spot,
           },
           (isBondRow && !isEtfBond) || isDerivativeRow ? 0 : q?.changePct ?? 0,
         );
@@ -333,7 +337,7 @@ export function PortfolioClient() {
 
   if (view === "addOption") {
     return (
-      <AddOptionForm
+      <AddOptionFlow
         existingAccounts={existingAccounts}
         onSaved={() => { setView("ready"); setSubView("derivatives"); loadData(); }}
         onCancel={() => setView("ready")}
