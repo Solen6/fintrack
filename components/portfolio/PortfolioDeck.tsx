@@ -4,8 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import nextDynamic from "next/dynamic";
 import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
-import { isFaceValueBond } from "@/lib/types";
+import { isFaceValueBond, isDerivative } from "@/lib/types";
 import type { HoldingWithMetrics } from "@/lib/types";
+import { recognizeStrategy } from "@/lib/option-strategies";
+import { netCost } from "@/lib/options-math";
+import { toLeg, PayoffPanel } from "./DerivativesView";
 import type { ActivityItem, ActivityType } from "@/app/api/transactions/recent/route";
 import type { SeriesRange } from "@/app/api/paper/series/route";
 import type { StockStats } from "@/lib/yahoo";
@@ -91,6 +94,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
 
   const selectedHolding = holdings.find((h) => h.ticker === selected) ?? null;
   const selFaceBond = selectedHolding ? isFaceValueBond(selectedHolding) : false;
+  const selDeriv = selectedHolding ? isDerivative(selectedHolding) : false;
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-4">
@@ -176,6 +180,12 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
                   <div className="text-sm font-mono tabular-nums mt-1 text-muted-foreground">
                     {selectedHolding.bondMetrics.ytm.toFixed(2)}% YTM
                   </div>
+                ) : selDeriv ? (
+                  // Derivative marks carry no prev-close, so "today" is meaningless —
+                  // show the position's overall return instead.
+                  <div className="text-sm font-mono tabular-nums mt-1" style={{ color: selectedHolding.gainPercent >= 0 ? "var(--positive)" : "var(--negative)" }}>
+                    <Sensitive>{selectedHolding.gainPercent >= 0 ? "+" : ""}{selectedHolding.gainPercent.toFixed(2)}%</Sensitive> overall
+                  </div>
                 ) : (
                   <div className="text-sm font-mono tabular-nums mt-1" style={{ color: selectedHolding.todayChangePct >= 0 ? "var(--positive)" : "var(--negative)" }}>
                     {selectedHolding.todayChangePct >= 0 ? "+" : ""}{selectedHolding.todayChangePct.toFixed(2)}% today
@@ -185,7 +195,9 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
             )}
           </div>
           {selected ? (
-            selFaceBond ? (
+            selDeriv && selectedHolding ? (
+              <DerivativeInsights holding={selectedHolding} all={holdings} />
+            ) : selFaceBond ? (
               <BondInsights holding={selectedHolding} />
             ) : (
               <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
@@ -395,6 +407,54 @@ function fmtBondDate(iso?: string | null): string {
   if (!iso) return "—";
   const [y, mo, d] = iso.slice(0, 10).split("-");
   return `${mo}/${d}/${y.slice(2)}`;
+}
+
+/* ─── Selected-option insights: contract/strategy stats + the same payoff
+       analytics the Options/Futures tab shows. A leg of a multi-leg strategy
+       pulls in its combo siblings so the payoff reflects the WHOLE position. ─── */
+function DerivativeInsights({ holding, all }: { holding: HoldingWithMetrics; all: HoldingWithMetrics[] }) {
+  const rows = holding.comboId ? all.filter((h) => h.comboId === holding.comboId) : [holding];
+  const isCombo = rows.length > 1;
+  const legs = rows.map(toLeg);
+  const name = isCombo
+    ? recognizeStrategy(legs) ?? `${rows.length}-leg strategy`
+    : `${holding.direction === "SHORT" ? "Short" : "Long"} ${holding.optionType === "PUT" ? "Put" : "Call"}`;
+  const entry = netCost(legs); // >0 debit paid, <0 credit received
+  const value = rows.reduce((s, r) => s + r.value, 0);
+  const gain = rows.reduce((s, r) => s + r.gainDollar, 0);
+  const gainTone = gain >= 0 ? "var(--positive)" : "var(--negative)";
+  const contracts = Math.abs(holding.shares) / (holding.multiplier || 1);
+  const expiry = rows[0]?.expiry;
+  const days = expiry ? Math.ceil((new Date(`${expiry.slice(0, 10)}T00:00:00Z`).getTime() - Date.now()) / 86_400_000) : null;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-px rounded-sm overflow-hidden" style={{ background: "var(--border)" }}>
+        <Stat label="Position" value={name} />
+        {isCombo ? (
+          <>
+            <Stat label="Legs" value={rows.length} />
+            <Stat label={entry >= 0 ? "Net debit" : "Net credit"} value={<Sensitive>{formatCurrency(Math.abs(entry))}</Sensitive>} />
+          </>
+        ) : (
+          <>
+            <Stat label="Strike × contracts" value={`${formatCurrency(holding.strike ?? 0)} × ${contracts % 1 === 0 ? contracts : contracts.toFixed(2)}`} />
+            <Stat label="Entry → live" value={`${formatCurrency(holding.costBasis)} → ${formatCurrency(holding.currentPrice)}`} />
+          </>
+        )}
+        <Stat label="Expiry" value={expiry ? `${fmtBondDate(expiry)}${days != null ? ` (${days <= 0 ? "expired" : `${days}d`})` : ""}` : "—"} />
+        <Stat label="Market value" value={<Sensitive>{formatCurrency(value)}</Sensitive>} />
+        <Stat
+          label="Unrealized"
+          tone={gainTone}
+          value={
+            <Sensitive>{gain >= 0 ? "+" : "−"}{formatCurrency(Math.abs(gain))}</Sensitive>
+          }
+        />
+      </div>
+      <PayoffPanel rows={rows} />
+    </div>
+  );
 }
 
 function BondInsights({ holding }: { holding: HoldingWithMetrics | null }) {

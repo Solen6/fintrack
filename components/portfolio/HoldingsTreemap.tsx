@@ -29,11 +29,13 @@ const LABEL_H = 20;      // reserved label strip atop each sector block
 const MIN_BAND_H = 120;  // floor for the narrow vertical-stack fallback
 
 interface HCell {
-  symbol: string;     // ticker
+  symbol: string;      // ticker — selection identity
+  label: string;       // tile text (compact for options: "SPY 510C")
   name: string;
   sector: string;
-  value: number;      // position value → tile area
-  changePct: number;  // daily or total return, per colorBy
+  value: number;       // |position value| → tile area (shorts sized by exposure)
+  signedValue: number; // real market value for display (negative = short liability)
+  changePct: number;   // daily or total return, per colorBy
   price: number;
   isCash: boolean;
 }
@@ -224,11 +226,19 @@ export function HoldingsTreemap({
           : (h.sector ?? "").trim() && h.sector !== "Other"
             ? h.sector
             : "Other";
+        const isOption = h.instrumentType === "option";
         return {
           symbol: h.ticker,
+          // Option tickers ("SPY 2026-08-21 510 CALL") never fit a tile.
+          label: isOption && h.underlying && h.strike != null
+            ? `${h.underlying} ${h.strike}${(h.optionType ?? "C")[0]}`
+            : h.ticker,
           name: h.name,
           sector,
-          value: Math.max(h.value, 1),
+          // Shorts carry negative market value — size the tile by exposure,
+          // display the signed value.
+          value: Math.max(Math.abs(h.value), 1),
+          signedValue: h.value,
           changePct: colorBy === "daily" ? h.todayChangePct : h.gainPercent,
           // Bonds show a clean price (98.50), not currentPrice (0.985).
           price: isFaceValueBond(h) ? h.currentPrice * 100 : h.currentPrice,
@@ -453,7 +463,7 @@ const Tile = memo(function Tile({
             textOverflow: "ellipsis", textShadow: isCash ? "none" : textShadow, lineHeight: 1.1, letterSpacing: "0.01em",
           }}
         >
-          {isCash ? "CASH" : cell.symbol}
+          {isCash ? "CASH" : cell.label}
         </span>
       )}
       {!isCash && (xl || large || medium || small) && (
@@ -473,7 +483,7 @@ const Tile = memo(function Tile({
           className="font-mono tabular-nums"
           style={{ fontSize: 10, color: isCash ? "oklch(0.20 0.03 74)" : "oklch(0.98 0.005 74 / 0.6)", textShadow: isCash ? "none" : textShadow, marginTop: 1 }}
         >
-          <Sensitive>{formatCurrencyCompact(cell.value)}</Sensitive>
+          <Sensitive>{formatCurrencyCompact(cell.signedValue)}</Sensitive>
         </span>
       )}
       {/* color-not-only fallback for the tiniest legible non-cash tiles */}
@@ -507,11 +517,11 @@ function Tooltip({ cell, cx, cy, maskPct }: { cell: HCell; cx: number; cy: numbe
       }}
     >
       <div className="font-sans" style={{ fontSize: 12.5, fontWeight: 600, color: "oklch(0.98 0.005 74)" }}>
-        {cell.isCash ? "Cash" : cell.symbol}{" "}
+        {cell.isCash ? "Cash" : cell.label}{" "}
         <span style={{ fontWeight: 400, color: "oklch(0.7 0.008 74)" }}>{cell.name}</span>
       </div>
       <div style={{ fontSize: 10.5, color: "oklch(0.6 0.008 74)", marginTop: 1 }}>
-        {cell.sector} · <Sensitive>{formatCurrencyCompact(cell.value)}</Sensitive>
+        {cell.sector} · <Sensitive>{formatCurrencyCompact(cell.signedValue)}</Sensitive>
       </div>
       {cell.isCash ? (
         <div style={{ fontSize: 11, color: "oklch(0.78 0.12 74)", marginTop: 4 }}>cash balance</div>

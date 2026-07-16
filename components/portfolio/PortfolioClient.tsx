@@ -569,7 +569,13 @@ export function PortfolioClient() {
           />
         )}
         {subView === "heatmap" && (
-          <PortfolioDeck holdings={holdings.filter((h) => !isDerivative(h))} cash={cash} />
+          // Options join the heatmap (sized by |value|, like bonds get tiles);
+          // futures stay out — their market value is notional exposure and
+          // would dwarf every equity tile.
+          <PortfolioDeck
+            holdings={holdings.filter((h) => !isDerivative(h) || h.instrumentType === "option")}
+            cash={cash}
+          />
         )}
         {subView === "bonds" && <FixedIncomeView holdings={holdings} />}
         {subView === "derivatives" && (

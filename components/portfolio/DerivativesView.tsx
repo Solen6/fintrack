@@ -37,7 +37,7 @@ function dte(iso?: string | null): number | null {
 }
 
 /** Map a real holdings row into the options-math Leg the payoff engine uses. */
-function toLeg(h: HoldingWithMetrics): Leg {
+export function toLeg(h: HoldingWithMetrics): Leg {
   return {
     type: h.optionType === "PUT" ? "put" : "call",
     side: h.direction === "SHORT" ? "short" : "long",
@@ -355,9 +355,10 @@ function LegsTable({ rows, onClose }: { rows: HoldingWithMetrics[]; onClose?: (h
   );
 }
 
-/* ─── Payoff panel — same analytics block the options builder shows ─── */
+/* ─── Payoff panel — same analytics block the options builder shows.
+       Also reused by the portfolio heatmap's selected-option insights. ─── */
 
-function PayoffPanel({ rows }: { rows: HoldingWithMetrics[] }) {
+export function PayoffPanel({ rows }: { rows: HoldingWithMetrics[] }) {
   const [view, setView] = useState<"line" | "matrix">("line");
   const legs = useMemo(() => rows.map(toLeg), [rows]);
   const spot = rows.find((r) => r.underlyingSpot != null)?.underlyingSpot;
