@@ -141,28 +141,42 @@ export const fmtSignedPct = (pct: number, digits = 2) =>
    Collapses per-account snapshot rows into one NAV per day (same rule as the
    dashboard series: per-account rows summed; a legacy account==null row is a
    pre-split combined total, used only when a date has NO per-account rows).
-   Day change is flow-adjusted: a deposit lifts NAV but is not a gain. */
+
+   Day $ is the unit-method day gain: NAV change net of external flows — a
+   deposit lifts NAV but is not a gain (identical to consecutive gainByDate
+   deltas in lib/portfolio-return.ts).
+
+   Day % divides that gain by the prior day's POSITIONS value (cash excluded)
+   — the dashboard hero's convention (agg.todayPct, which matches Fidelity's
+   daily %). Dividing by whole NAV instead quietly diluted every day's % by
+   the cash share and made the calendar disagree with the dashboard. */
 
 interface SnapRow { date: string; value: number; cash: number; account: string | null }
 interface FlowRow { date: string; amount: number } // signed: deposits +, withdrawals −
 
 export interface DayPnl {
   change: number; // $ vs previous stored day, net of external flows
-  pct: number;    // change / previous NAV
+  pct: number;    // change / previous day's positions value (dashboard convention)
   nav: number;
 }
 
 export function buildDayPnl(snapshots: SnapRow[], flows: FlowRow[]): Map<string, DayPnl> {
-  const perAccount = new Map<string, number>();
-  const legacy = new Map<string, number>();
+  const perAccount = new Map<string, { nav: number; positions: number }>();
+  const legacy = new Map<string, { nav: number; positions: number }>();
   for (const s of snapshots) {
-    const nav = (s.value ?? 0) + (s.cash ?? 0);
-    if (s.account === null) legacy.set(s.date, nav);
-    else perAccount.set(s.date, (perAccount.get(s.date) ?? 0) + nav);
+    const positions = s.value ?? 0;
+    const nav = positions + (s.cash ?? 0);
+    if (s.account === null) {
+      const prev = legacy.get(s.date);
+      legacy.set(s.date, { nav: (prev?.nav ?? 0) + nav, positions: (prev?.positions ?? 0) + positions });
+    } else {
+      const prev = perAccount.get(s.date);
+      perAccount.set(s.date, { nav: (prev?.nav ?? 0) + nav, positions: (prev?.positions ?? 0) + positions });
+    }
   }
-  const byDate = new Map<string, number>(perAccount);
-  for (const [date, nav] of legacy) {
-    if (!byDate.has(date)) byDate.set(date, nav);
+  const byDate = new Map(perAccount);
+  for (const [date, row] of legacy) {
+    if (!byDate.has(date)) byDate.set(date, row);
   }
 
   const flowByDate = new Map<string, number>();
@@ -173,14 +187,16 @@ export function buildDayPnl(snapshots: SnapRow[], flows: FlowRow[]): Map<string,
   const days = [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b));
   const out = new Map<string, DayPnl>();
   for (let i = 1; i < days.length; i++) {
-    const [date, nav] = days[i];
-    const [prevDate, prevNav] = days[i - 1];
+    const [date, row] = days[i];
+    const [prevDate, prevRow] = days[i - 1];
     // A gap wider than a long weekend means missing history (import seam,
     // snapshot outage) — a "day" change across it would be misleading.
     if (parseDs(date) - parseDs(prevDate) > 7 * DAY_MS) continue;
-    if (prevNav <= 0) continue;
-    const change = nav - prevNav - (flowByDate.get(date) ?? 0);
-    out.set(date, { change, pct: change / prevNav, nav });
+    if (prevRow.nav <= 0) continue;
+    const change = row.nav - prevRow.nav - (flowByDate.get(date) ?? 0);
+    // All-cash days (positions ≤ 0) fall back to NAV so the % stays defined.
+    const denom = prevRow.positions > 0 ? prevRow.positions : prevRow.nav;
+    out.set(date, { change, pct: change / denom, nav: row.nav });
   }
   return out;
 }
