@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface Props {
   existingAccounts: string[];
@@ -11,6 +11,9 @@ interface Props {
 export function AddPositionForm({ existingAccounts, onSaved, onCancel }: Props) {
   const [ticker, setTicker] = useState("");
   const [name, setName] = useState("");
+  // Autofill owns the Name field until the user types their own; clearing it hands control back.
+  const [nameIsAuto, setNameIsAuto] = useState(true);
+  const [nameLoading, setNameLoading] = useState(false);
   const [shares, setShares] = useState("");
   const [costBasis, setCostBasis] = useState("");
   const [account, setAccount] = useState(existingAccounts[0] ?? "");
@@ -18,6 +21,40 @@ export function AddPositionForm({ existingAccounts, onSaved, onCancel }: Props) 
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  // Look up the company/fund name once the ticker settles (debounced; Yahoo via
+  // /api/stocks/detail carries longName for stocks AND ETFs). Never overwrites a
+  // hand-typed name.
+  useEffect(() => {
+    if (!nameIsAuto) return;
+    const sym = ticker.trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(sym)) return;
+
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      setNameLoading(true);
+      try {
+        const res = await fetch(
+          `/api/stocks/detail?symbol=${encodeURIComponent(sym)}`,
+          { signal: ctrl.signal },
+        );
+        if (res.ok) {
+          const d = await res.json();
+          const found = d?.stats?.name;
+          if (typeof found === "string" && found) setName(found);
+        }
+      } catch {
+        /* unknown ticker or network hiccup — leave the field as-is */
+      } finally {
+        if (!ctrl.signal.aborted) setNameLoading(false);
+      }
+    }, 450);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+      setNameLoading(false);
+    };
+  }, [ticker, nameIsAuto]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,12 +111,17 @@ export function AddPositionForm({ existingAccounts, onSaved, onCancel }: Props) 
             />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Name</label>
+            <label className="text-xs text-muted-foreground mb-1 block">
+              Name{nameLoading ? <span className="opacity-60"> · looking up…</span> : null}
+            </label>
             <input
               className={inputClass}
               value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Apple Inc."
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameIsAuto(e.target.value.trim() === "");
+              }}
+              placeholder="Auto-fills from ticker"
             />
           </div>
         </div>

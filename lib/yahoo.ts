@@ -251,6 +251,7 @@ export async function yahooFundCategory(symbol: string): Promise<string | null> 
    them. 5-min cache (these barely move within a session). */
 
 export interface StockStats {
+  name:         string | null; // longName (fallback shortName) — covers stocks AND funds
   price:        number | null;
   changePct:    number | null;
   marketCap:    number | null;
@@ -298,7 +299,11 @@ export async function yahooStockStats(symbol: string): Promise<StockStats | null
     const p = result.price ?? {};
     const sd = result.summaryDetail ?? {};
 
+    const str = (v: unknown): string | null =>
+      typeof v === "string" && v.trim() ? v.trim() : null;
+
     return remember({
+      name: str(p.longName) ?? str(p.shortName),
       price: num(p.regularMarketPrice),
       changePct: num(p.regularMarketChangePercent) != null ? num(p.regularMarketChangePercent)! * 100 : null,
       marketCap: num(p.marketCap),
