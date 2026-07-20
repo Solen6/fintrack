@@ -58,6 +58,7 @@ function mergeComboLegs(list: HoldingWithMetrics[]): HoldingWithMetrics[] {
 }
 import type { ActivityItem, ActivityType } from "@/app/api/transactions/recent/route";
 import type { SeriesRange } from "@/app/api/paper/series/route";
+import type { HeatmapView } from "@/app/api/heatmap-views/route";
 import type { StockStats } from "@/lib/yahoo";
 import { RatingBadge, RatingBar, useRatings } from "@/components/ratings/RatingBadge";
 
@@ -140,6 +141,88 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
     if (!selected || !selectableTickers.includes(selected)) setSelected(selectableTickers[0]);
   }, [selectableTickers, selected]);
 
+  // ── Saved custom heatmap views ("Auto" is implicit + never stored) ──
+  const [views, setViews] = useState<HeatmapView[]>([]);
+  const [activeViewId, setActiveViewId] = useState<string>("auto"); // "auto" | view.id
+  const [editing, setEditing] = useState(false);
+  const [viewsMsg, setViewsMsg] = useState("");
+
+  useEffect(() => {
+    fetch("/api/heatmap-views")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.needsMigration) setViewsMsg("Run supabase/heatmap-views.sql to save custom layouts.");
+        setViews(d.views ?? []);
+      })
+      .catch(() => {});
+  }, []);
+
+  // If the active view was deleted (elsewhere), fall back to Auto.
+  useEffect(() => {
+    if (activeViewId !== "auto" && !views.some((v) => v.id === activeViewId)) {
+      setActiveViewId("auto");
+      setEditing(false);
+    }
+  }, [views, activeViewId]);
+
+  const activeView = activeViewId === "auto" ? null : views.find((v) => v.id === activeViewId) ?? null;
+
+  // Full id order of what's currently shown, largest-first — seeds a new view.
+  const currentIdOrder = useMemo(
+    () => treemapHoldings.slice().sort((a, b) => b.value - a.value).map((h) => h.id),
+    [treemapHoldings],
+  );
+
+  const selectView = (id: string) => { setActiveViewId(id); setEditing(false); };
+
+  const createView = async () => {
+    setViewsMsg("");
+    const name = `Custom view ${views.length + 1}`;
+    const res = await fetch("/api/heatmap-views", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, ordering: currentIdOrder }),
+    });
+    const d = await res.json();
+    if (!res.ok) { setViewsMsg(d.error ?? "Couldn't create view"); return; }
+    setViews((v) => [...v, d.view]);
+    setActiveViewId(d.view.id);
+    setEditing(true);
+  };
+
+  const persistOrder = (id: string, ordering: string[]) => {
+    setViews((v) => v.map((x) => (x.id === id ? { ...x, ordering } : x))); // optimistic
+    fetch("/api/heatmap-views", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, ordering }),
+    }).catch(() => {});
+  };
+
+  const renameView = (id: string) => {
+    const cur = views.find((v) => v.id === id);
+    if (!cur) return;
+    const name = window.prompt("Rename view", cur.name)?.trim();
+    if (!name || name === cur.name) return;
+    setViews((v) => v.map((x) => (x.id === id ? { ...x, name } : x)));
+    fetch("/api/heatmap-views", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, name }),
+    }).catch(() => {});
+  };
+
+  const deleteView = (id: string) => {
+    if (!window.confirm("Delete this heatmap view?")) return;
+    setViews((v) => v.filter((x) => x.id !== id));
+    if (activeViewId === id) { setActiveViewId("auto"); setEditing(false); }
+    fetch("/api/heatmap-views", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).catch(() => {});
+  };
+
   // Search the treemap rows first — merged strategy tiles only exist there.
   const selectedHolding =
     treemapHoldings.find((h) => h.ticker === selected) ??
@@ -201,17 +284,66 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
 
         {/* ── heatmap ── */}
         <section className="rounded-md border border-border bg-card p-4 flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs uppercase tracking-wide text-muted-foreground">Portfolio Heatmap</h2>
-            <p className="text-xs text-muted-foreground">Click a holding to chart it.</p>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <h2 className="text-xs uppercase tracking-wide text-muted-foreground mr-1">Heatmap</h2>
+              {/* View tabs: Auto (traditional) + saved custom layouts */}
+              <ViewPill label="Auto" active={activeViewId === "auto"} onClick={() => selectView("auto")} />
+              {views.map((v) => (
+                <ViewPill key={v.id} label={v.name} active={activeViewId === v.id} onClick={() => selectView(v.id)} />
+              ))}
+              <button
+                onClick={createView}
+                title="New custom view from the current layout"
+                className="text-xs px-2 py-1 rounded-sm border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-[var(--primary)] transition-colors"
+              >
+                + New
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              {activeView ? (
+                <>
+                  <button
+                    onClick={() => setEditing((e) => !e)}
+                    aria-pressed={editing}
+                    className="text-xs px-2.5 py-1 rounded-sm border transition-colors"
+                    style={{
+                      borderColor: editing ? "var(--primary)" : "var(--border)",
+                      background: editing ? "oklch(0.72 0.14 74 / 0.14)" : "transparent",
+                      color: editing ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                    }}
+                  >
+                    {editing ? "Done arranging" : "Edit layout"}
+                  </button>
+                  <button onClick={() => renameView(activeView.id)} className="text-xs px-2 py-1 text-muted-foreground hover:text-foreground transition-colors">Rename</button>
+                  <button onClick={() => deleteView(activeView.id)} className="text-xs px-2 py-1 text-muted-foreground transition-colors" style={{ color: "oklch(0.55 0.12 28)" }}>Delete</button>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">Click a holding to chart it.</p>
+              )}
+            </div>
           </div>
+          {(editing || viewsMsg) && (
+            <p className="text-xs" style={{ color: viewsMsg ? "var(--negative)" : "var(--primary)" }}>
+              {viewsMsg || "Drag tiles to rearrange — your order saves automatically. Sizes still track position value."}
+            </p>
+          )}
           <div style={{ height: 440 }}>
             {treemapHoldings.length === 0 ? (
               <div className="h-full flex items-center justify-center">
                 <p className="text-sm text-muted-foreground">No positions to show — adjust account filters.</p>
               </div>
             ) : (
-              <HoldingsTreemap holdings={treemapHoldings} colorBy={colorBy} onSelect={setSelected} selected={selected} />
+              <HoldingsTreemap
+                holdings={treemapHoldings}
+                colorBy={colorBy}
+                onSelect={setSelected}
+                selected={selected}
+                layout={activeView ? "ordered" : "sector"}
+                order={activeView?.ordering}
+                editable={!!activeView && editing}
+                onReorder={activeView ? (ids) => persistOrder(activeView.id, ids) : undefined}
+              />
             )}
           </div>
         </section>
@@ -272,6 +404,24 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
         <ActivityFeed accounts={accounts} hidden={hidden} />
       </div>
     </div>
+  );
+}
+
+function ViewPill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className="text-xs px-2.5 py-1 rounded-sm border transition-colors max-w-[160px] truncate"
+      style={{
+        borderColor: active ? "var(--primary)" : "var(--border)",
+        background: active ? "oklch(0.72 0.14 74 / 0.14)" : "transparent",
+        color: active ? "var(--primary)" : "oklch(0.7 0.008 74)",
+      }}
+      title={label}
+    >
+      {label}
+    </button>
   );
 }
 

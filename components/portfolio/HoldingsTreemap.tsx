@@ -29,6 +29,7 @@ const LABEL_H = 20;      // reserved label strip atop each sector block
 const MIN_BAND_H = 120;  // floor for the narrow vertical-stack fallback
 
 interface HCell {
+  id: string;          // holding id — stable, unique layout & ordering identity
   symbol: string;      // ticker — selection identity
   label: string;       // tile text (compact for options: "SPY 510C")
   name: string;
@@ -144,6 +145,69 @@ function squarify<T>(
   return out;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Strip treemap (Bederson/Shneiderman/Wattenberg) — the ORDER-PRESERVING layout
+   used by custom views. Unlike squarify (which sorts by area), this walks nodes
+   in the given order and greedily packs left-to-right rows, closing a row when
+   the next tile would worsen its average aspect ratio. Reading order (row-major)
+   equals the user's dragged order, while tiles stay sized by value.
+   ────────────────────────────────────────────────────────────────────────── */
+function rowAvgAspect<T>(row: SqNode<T>[], width: number): number {
+  const area = row.reduce((s, r) => s + r.area, 0);
+  if (area <= 0) return Infinity;
+  const rowH = area / width;
+  let sum = 0;
+  for (const r of row) {
+    const tileW = r.area / rowH;
+    if (tileW <= 0 || rowH <= 0) return Infinity;
+    sum += Math.max(tileW / rowH, rowH / tileW);
+  }
+  return sum / row.length;
+}
+
+function stripTreemap<T>(
+  nodes: SqNode<T>[],
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): Placed<T>[] {
+  const out: Placed<T>[] = [];
+  if (width <= 0 || height <= 0 || nodes.length === 0) return out;
+  const total = nodes.reduce((s, n) => s + n.area, 0);
+  if (total <= 0) return out;
+
+  const scale = (width * height) / total;
+  const items = nodes.map((n) => ({ item: n.item, area: Math.max(n.area * scale, 1e-6) }));
+
+  let i = 0;
+  let cy = y;
+  const n = items.length;
+  while (i < n) {
+    let row: SqNode<T>[] = [items[i]];
+    let next = i + 1;
+    while (next < n) {
+      const candidate = row.concat(items[next]);
+      // Add the next tile only while it keeps the row closer to square.
+      if (rowAvgAspect(candidate, width) <= rowAvgAspect(row, width)) {
+        row = candidate;
+        next++;
+      } else break;
+    }
+    const rowArea = row.reduce((s, r) => s + r.area, 0);
+    const rowH = rowArea / width;
+    let cx = x;
+    for (const r of row) {
+      const tileW = r.area / rowH;
+      out.push({ item: r.item, x: cx, y: cy, w: tileW, h: rowH });
+      cx += tileW;
+    }
+    cy += rowH;
+    i = next;
+  }
+  return out;
+}
+
 /* ─── Band-height solver for the narrow vertical-stack fallback ─── */
 function solveBandHeights(weights: number[], totalH: number, minH: number): number[] {
   const n = weights.length;
@@ -202,17 +266,32 @@ export function HoldingsTreemap({
   colorBy,
   onSelect,
   selected,
+  layout = "sector",
+  order,
+  editable = false,
+  onReorder,
 }: {
   holdings: HoldingWithMetrics[];
   colorBy: "daily" | "total";
   onSelect?: (ticker: string) => void;
   selected?: string;
+  /** "sector" = traditional squarified (Auto view); "ordered" = order-preserving
+   *  strip treemap driven by `order` (custom views). */
+  layout?: "sector" | "ordered";
+  /** Holding ids in display order (ordered layout only). Ids not present fall to
+   *  the end by value; unknown ids are ignored. */
+  order?: string[];
+  /** Enable pointer drag-to-reorder (ordered layout only). */
+  editable?: boolean;
+  /** Fired on drop with the new full id order (ordered layout only). */
+  onReorder?: (ids: string[]) => void;
 }) {
   const scale = colorBy === "daily" ? 3 : 20;
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState({ w: 0, h: 0 });
   const [hover, setHover] = useState<HoverState | null>(null);
   const reduce = usePrefersReducedMotion();
+  const ordered = layout === "ordered";
 
   useLayoutEffect(() => {
     const el = wrapRef.current;
@@ -238,6 +317,7 @@ export function HoldingsTreemap({
         // "combo-" id and a "Iron Condor — SPY" name → label "SPY IC".
         const isComboTile = isOption && h.comboId != null && h.id.startsWith("combo-");
         return {
+          id: h.id,
           symbol: h.ticker,
           // Option tickers ("SPY 2026-08-21 510 CALL") never fit a tile.
           label: isComboTile
@@ -315,7 +395,109 @@ export function HoldingsTreemap({
     return { blocks, contentH: totalH };
   }, [groups, dims, narrow]);
 
-  const hoveredCell = hover ? cells.find((c) => c.symbol === hover.symbol) ?? null : null;
+  /* ─── Ordered (custom-view) layout + drag-to-reorder ─── */
+  // Full id sequence: saved `order` first (existing only), then any newer
+  // holdings by value so a saved view survives buys.
+  const orderedIds = useMemo(() => {
+    const present = new Set(cells.map((c) => c.id));
+    const seen = new Set<string>();
+    const head: string[] = [];
+    for (const id of order ?? []) {
+      if (present.has(id) && !seen.has(id)) { head.push(id); seen.add(id); }
+    }
+    const tail = cells
+      .filter((c) => !seen.has(c.id))
+      .sort((a, b) => b.value - a.value || a.symbol.localeCompare(b.symbol))
+      .map((c) => c.id);
+    return [...head, ...tail];
+  }, [cells, order]);
+
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOrder, setDragOrder] = useState<string[] | null>(null);
+  const effectiveIds = dragOrder ?? orderedIds;
+
+  const orderedTiles = useMemo<Placed<{ cell: HCell }>[]>(() => {
+    if (!ordered || dims.w <= 0) return [];
+    const byId = new Map(cells.map((c) => [c.id, c]));
+    const seq = effectiveIds.map((id) => byId.get(id)).filter(Boolean) as HCell[];
+    return stripTreemap(
+      seq.map((cell) => ({ item: { cell }, area: cell.value })),
+      0, 0, dims.w, Math.max(1, dims.h),
+    );
+  }, [ordered, cells, effectiveIds, dims]);
+
+  // Refs so the window drag listeners always see the latest layout/order.
+  const tilesRef = useRef<Placed<{ cell: HCell }>[]>([]);
+  tilesRef.current = orderedTiles;
+  const effectiveIdsRef = useRef<string[]>(effectiveIds);
+  effectiveIdsRef.current = effectiveIds;
+  const dragMeta = useRef<{ symbol: string; startX: number; startY: number; grabDX: number; grabDY: number; moved: boolean } | null>(null);
+  const [chip, setChip] = useState<{ x: number; y: number; w: number; h: number; cell: HCell } | null>(null);
+
+  const startTileDrag = useCallback((cell: HCell, e: React.PointerEvent<HTMLDivElement>) => {
+    if (!editable || !ordered) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    dragMeta.current = {
+      symbol: cell.symbol, startX: e.clientX, startY: e.clientY,
+      grabDX: e.clientX - r.left, grabDY: e.clientY - r.top, moved: false,
+    };
+    setDragOrder(effectiveIdsRef.current.slice());
+    setDragId(cell.id);
+    setChip({ x: e.clientX, y: e.clientY, w: r.width, h: r.height, cell });
+    setHover(null);
+  }, [editable, ordered]);
+
+  useEffect(() => {
+    if (!dragId) return;
+    const onMove = (e: PointerEvent) => {
+      const meta = dragMeta.current;
+      if (meta && !meta.moved && Math.hypot(e.clientX - meta.startX, e.clientY - meta.startY) > 4) meta.moved = true;
+      setChip((c) => (c ? { ...c, x: e.clientX, y: e.clientY } : c));
+      const wrap = wrapRef.current;
+      if (!wrap) return;
+      const wr = wrap.getBoundingClientRect();
+      const px = e.clientX - wr.left;
+      const py = e.clientY - wr.top;
+      let targetId: string | null = null;
+      for (const t of tilesRef.current) {
+        if (t.item.cell.id === dragId) continue;
+        if (px >= t.x && px <= t.x + t.w && py >= t.y && py <= t.y + t.h) { targetId = t.item.cell.id; break; }
+      }
+      if (!targetId) return;
+      setDragOrder((prev) => {
+        const cur = prev ?? effectiveIdsRef.current;
+        const from = cur.indexOf(dragId);
+        const to = cur.indexOf(targetId!);
+        if (from === -1 || to === -1 || from === to) return cur;
+        const nextArr = cur.slice();
+        nextArr.splice(from, 1);
+        nextArr.splice(to, 0, dragId);
+        return nextArr;
+      });
+    };
+    const onUp = () => {
+      const meta = dragMeta.current;
+      if (meta?.moved) {
+        onReorder?.(effectiveIdsRef.current.slice());
+      } else if (meta && onSelect) {
+        // A click (no drag) still selects the holding to chart it.
+        const cell = cells.find((c) => c.id === dragId);
+        if (cell && !cell.isCash) onSelect(cell.symbol);
+      }
+      setDragId(null);
+      setDragOrder(null);
+      setChip(null);
+      dragMeta.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragId, onReorder, onSelect, cells]);
+
+  const hoveredCell = hover && !dragId ? cells.find((c) => c.symbol === hover.symbol) ?? null : null;
   const transition = reduce ? "none" : "filter 150ms ease, border-color 150ms ease";
 
   // Stable handlers so the memoized Tile only re-renders the 1-2 tiles whose
@@ -332,8 +514,26 @@ export function HoldingsTreemap({
     >
       {/* Amber focus ring (single-lamp rule) on keyboard focus only — not on mouse hover. */}
       <style>{`.hmtile:focus-visible{outline:2px solid oklch(${AMBER});outline-offset:-2px;z-index:7;}`}</style>
-      <div style={{ position: "relative", width: "100%", height: contentH || "100%" }}>
-        {blocks.map((b) => (
+      <div style={{ position: "relative", width: "100%", height: ordered ? "100%" : (contentH || "100%") }}>
+        {ordered
+          ? orderedTiles.map((t) => (
+              <Tile
+                key={t.item.cell.id}
+                placed={t}
+                scale={scale}
+                transition={dragId ? "none" : transition}
+                hovered={hover?.symbol === t.item.cell.symbol}
+                selected={selected === t.item.cell.symbol}
+                onSelect={onSelect}
+                onEnter={handleEnter}
+                onLeave={handleLeave}
+                maskPct={colorBy === "total"}
+                editable={editable}
+                dragging={dragId === t.item.cell.id}
+                onDragStart={startTileDrag}
+              />
+            ))
+          : blocks.map((b) => (
           <div key={b.item.sector}>
             {/* Sector macro-block label */}
             <div
@@ -368,7 +568,7 @@ export function HoldingsTreemap({
             {/* Tiles */}
             {b.tiles.map((t) => (
               <Tile
-                key={t.item.cell.symbol}
+                key={t.item.cell.id}
                 placed={t}
                 scale={scale}
                 transition={transition}
@@ -384,6 +584,30 @@ export function HoldingsTreemap({
         ))}
       </div>
 
+      {chip && dragMeta.current && (
+        <div
+          className="font-mono flex items-center justify-center"
+          style={{
+            position: "fixed",
+            left: chip.x - dragMeta.current.grabDX,
+            top: chip.y - dragMeta.current.grabDY,
+            width: Math.max(48, Math.min(chip.w, 160)),
+            height: Math.max(28, Math.min(chip.h, 90)),
+            pointerEvents: "none",
+            zIndex: 80,
+            background: chip.cell.isCash ? "var(--primary)" : tileColor(chip.cell.changePct, scale).fill,
+            border: `1px solid oklch(${AMBER})`,
+            borderRadius: 4,
+            boxShadow: "0 8px 24px oklch(0 0 0 / 0.55)",
+            color: chip.cell.isCash ? "oklch(0.18 0.03 74)" : "oklch(0.99 0.005 74)",
+            fontSize: 12, fontWeight: 700,
+            transform: "rotate(-1.5deg)",
+          }}
+        >
+          {chip.cell.isCash ? "CASH" : chip.cell.label}
+        </div>
+      )}
+
       {hoveredCell && hover && <Tooltip cell={hoveredCell} cx={hover.cx} cy={hover.cy} maskPct={colorBy === "total"} />}
     </div>
   );
@@ -392,6 +616,7 @@ export function HoldingsTreemap({
 /* ─── A single tile (memoized — only re-renders on hovered/selected flip) ─── */
 const Tile = memo(function Tile({
   placed, scale, transition, hovered, selected, onSelect, onEnter, onLeave, maskPct,
+  editable = false, dragging = false, onDragStart,
 }: {
   placed: Placed<{ cell: HCell }>;
   scale: number;
@@ -402,6 +627,9 @@ const Tile = memo(function Tile({
   onEnter: (symbol: string, cx: number, cy: number) => void;
   onLeave: (symbol: string) => void;
   maskPct?: boolean;
+  editable?: boolean;
+  dragging?: boolean;
+  onDragStart?: (cell: HCell, e: React.PointerEvent<HTMLDivElement>) => void;
 }) {
   const { x, y, w, h } = placed;
   const cell = placed.item.cell;
@@ -436,34 +664,41 @@ const Tile = memo(function Tile({
   const labelColor = isCash ? "oklch(0.18 0.03 74)" : "oklch(0.99 0.005 74)";
 
   const handleEnter = (e: React.MouseEvent<HTMLDivElement> | React.FocusEvent<HTMLDivElement>) => {
+    if (editable) return; // no tooltip while arranging
     const r = e.currentTarget.getBoundingClientRect();
     onEnter(cell.symbol, r.left + r.width / 2, r.top);
   };
-  const handleLeave = () => onLeave(cell.symbol);
-  const handleSelect = () => { if (selectable) onSelect!(cell.symbol); };
+  const handleLeave = () => { if (!editable) onLeave(cell.symbol); };
+  // In edit mode the parent owns click-vs-drag (via pointer events); the tile's
+  // own onClick is disabled so a drop doesn't also fire a select.
+  const handleSelect = () => { if (!editable && selectable) onSelect!(cell.symbol); };
 
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-label={`${cell.name}, ${cell.symbol}, ${cell.sector}, ${ariaDir}${selectable ? ", select to chart" : ""}`}
+      aria-label={`${cell.name}, ${cell.symbol}, ${cell.sector}, ${ariaDir}${editable ? ", drag to reorder" : selectable ? ", select to chart" : ""}`}
       aria-pressed={onSelect ? !!selected : undefined}
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}
       onFocus={handleEnter}
       onBlur={handleLeave}
       onClick={handleSelect}
-      onKeyDown={(e) => { if (selectable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleSelect(); } }}
-      className={`hmtile absolute flex flex-col items-center justify-center overflow-hidden focus:outline-none ${selectable ? "cursor-pointer" : "cursor-default"}`}
+      onPointerDown={editable && onDragStart ? (e) => { e.preventDefault(); onDragStart(cell, e); } : undefined}
+      onKeyDown={(e) => { if (!editable && selectable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleSelect(); } }}
+      className={`hmtile absolute flex flex-col items-center justify-center overflow-hidden focus:outline-none ${editable ? "cursor-grab" : selectable ? "cursor-pointer" : "cursor-default"}`}
       style={{
         left: x, top: y, width: tw, height: th,
         background: bg,
-        border: `1px solid ${selected ? `oklch(${AMBER})` : hovered ? hoverBorder : borderColor}`,
-        boxShadow: selected ? `inset 0 0 0 2px oklch(${AMBER}), 0 0 0 1px oklch(${AMBER} / 0.5)` : "none",
+        border: `1px solid ${dragging ? `oklch(${AMBER})` : selected ? `oklch(${AMBER})` : hovered ? hoverBorder : borderColor}`,
+        borderStyle: dragging ? "dashed" : "solid",
+        boxShadow: selected && !dragging ? `inset 0 0 0 2px oklch(${AMBER}), 0 0 0 1px oklch(${AMBER} / 0.5)` : "none",
         boxSizing: "border-box",
-        filter: hovered && !isCash ? "brightness(1.12)" : "none",
+        opacity: dragging ? 0.32 : 1,
+        filter: hovered && !isCash && !editable ? "brightness(1.12)" : "none",
         transition,
-        zIndex: selected ? 6 : hovered ? 5 : 1,
+        touchAction: editable ? "none" : undefined,
+        zIndex: dragging ? 8 : selected ? 6 : hovered ? 5 : 1,
       }}
     >
       {(xl || large || medium) && (
