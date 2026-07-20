@@ -6,10 +6,17 @@ import { createClient } from "@/lib/supabase/server";
    All routes degrade to a clear setup hint until supabase/heatmap-views.sql is
    run (mirrors /api/watchlist). */
 
+/** A user-named sector within a custom heatmap view. */
+export interface HeatmapGroup {
+  name: string;     // "" = unnamed (renders flat, no label)
+  ids: string[];    // holding ids in this sector, in display order
+}
+
 export interface HeatmapView {
   id: string;
   name: string;
-  ordering: string[]; // holding ids in display order
+  ordering: string[];       // flat holding-id order (kept in sync for flat views)
+  groups: HeatmapGroup[];   // user-named sectors; empty = flat/ungrouped
 }
 
 const MIGRATION_HINT = "Heatmap views table missing — run supabase/heatmap-views.sql";
@@ -22,6 +29,20 @@ function toOrdering(raw: unknown): string[] {
   return raw.filter((v): v is string => typeof v === "string");
 }
 
+/** Coerce the JSONB groups column into clean {name, ids}[] shape. */
+function toGroups(raw: unknown): HeatmapGroup[] {
+  if (!Array.isArray(raw)) return [];
+  const out: HeatmapGroup[] = [];
+  for (const g of raw) {
+    if (g && typeof g === "object" && !Array.isArray(g)) {
+      const name = typeof (g as { name?: unknown }).name === "string" ? (g as { name: string }).name : "";
+      const ids = toOrdering((g as { ids?: unknown }).ids);
+      out.push({ name, ids });
+    }
+  }
+  return out;
+}
+
 export async function GET() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -29,7 +50,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("heatmap_views")
-    .select("id,name,ordering")
+    .select("id,name,ordering,groups")
     .eq("user_id", user.id)
     .order("created_at", { ascending: true });
 
@@ -42,6 +63,7 @@ export async function GET() {
     id: r.id as string,
     name: r.name as string,
     ordering: toOrdering(r.ordering),
+    groups: toGroups((r as { groups?: unknown }).groups),
   }));
   return NextResponse.json({ views });
 }
@@ -54,13 +76,14 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const ordering = toOrdering(body.ordering);
+  const groups = toGroups(body.groups);
   if (!name) return NextResponse.json({ error: "name is required" }, { status: 400 });
   if (name.length > 60) return NextResponse.json({ error: "name too long (max 60)" }, { status: 400 });
 
   const { data, error } = await supabase
     .from("heatmap_views")
-    .insert({ user_id: user.id, name, ordering })
-    .select("id,name,ordering")
+    .insert({ user_id: user.id, name, ordering, groups })
+    .select("id,name,ordering,groups")
     .single();
 
   if (error) {
@@ -68,7 +91,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
   return NextResponse.json({
-    view: { id: data.id, name: data.name, ordering: toOrdering(data.ordering) } as HeatmapView,
+    view: {
+      id: data.id, name: data.name,
+      ordering: toOrdering(data.ordering),
+      groups: toGroups((data as { groups?: unknown }).groups),
+    } as HeatmapView,
   });
 }
 
@@ -89,6 +116,7 @@ export async function PATCH(req: NextRequest) {
     updates.name = name;
   }
   if (body.ordering !== undefined) updates.ordering = toOrdering(body.ordering);
+  if (body.groups !== undefined) updates.groups = toGroups(body.groups);
 
   const { error } = await supabase
     .from("heatmap_views")

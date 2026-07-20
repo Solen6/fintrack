@@ -11,9 +11,15 @@ create table if not exists heatmap_views (
   user_id    uuid not null references auth.users(id) on delete cascade,
   name       text not null,
   ordering   jsonb not null default '[]'::jsonb,
+  -- User-named sectors: [{ "name": "...", "ids": ["<holding id>", ...] }, ...].
+  -- Empty = flat/ungrouped (order comes from `ordering`).
+  groups     jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Added after the initial ship — safe for existing installs.
+alter table heatmap_views add column if not exists groups jsonb not null default '[]'::jsonb;
 
 alter table heatmap_views enable row level security;
 

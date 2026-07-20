@@ -58,7 +58,7 @@ function mergeComboLegs(list: HoldingWithMetrics[]): HoldingWithMetrics[] {
 }
 import type { ActivityItem, ActivityType } from "@/app/api/transactions/recent/route";
 import type { SeriesRange } from "@/app/api/paper/series/route";
-import type { HeatmapView } from "@/app/api/heatmap-views/route";
+import type { HeatmapView, HeatmapGroup } from "@/app/api/heatmap-views/route";
 import type { StockStats } from "@/lib/yahoo";
 import { RatingBadge, RatingBar, useRatings } from "@/components/ratings/RatingBadge";
 
@@ -167,21 +167,43 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
 
   const activeView = activeViewId === "auto" ? null : views.find((v) => v.id === activeViewId) ?? null;
 
-  // Full id order of what's currently shown, largest-first — seeds a new view.
-  const currentIdOrder = useMemo(
-    () => treemapHoldings.slice().sort((a, b) => b.value - a.value).map((h) => h.id),
-    [treemapHoldings],
-  );
+  // Auto-detected sectors of what's currently shown → seed a new custom view so
+  // it opens looking like Auto, with sectors you can then rename/reorganize.
+  const seedGroups = useMemo<HeatmapGroup[]>(() => {
+    const map = new Map<string, { id: string; value: number }[]>();
+    for (const h of treemapHoldings) {
+      const isCash = h.ticker === "CASH" && (h.sector || "").toLowerCase() === "cash";
+      const sector = isCash ? "Cash" : ((h.sector ?? "").trim() && h.sector !== "Other" ? h.sector : "Other");
+      if (!map.has(sector)) map.set(sector, []);
+      map.get(sector)!.push({ id: h.id, value: h.value });
+    }
+    return [...map.entries()]
+      .map(([name, items]) => ({
+        name,
+        ids: items.sort((a, b) => b.value - a.value).map((i) => i.id),
+        total: items.reduce((s, i) => s + i.value, 0),
+      }))
+      .sort((a, b) => b.total - a.total)
+      .map(({ name, ids }) => ({ name, ids }));
+  }, [treemapHoldings]);
+
+  // Active view's sectors: stored groups, or a single unnamed (flat) group.
+  const activeGroups = useMemo<HeatmapGroup[] | undefined>(() => {
+    if (!activeView) return undefined;
+    if (activeView.groups && activeView.groups.length) return activeView.groups;
+    return [{ name: "", ids: activeView.ordering ?? [] }];
+  }, [activeView]);
 
   const selectView = (id: string) => { setActiveViewId(id); setEditing(false); };
 
   const createView = async () => {
     setViewsMsg("");
     const name = `Custom view ${views.length + 1}`;
+    const ordering = seedGroups.flatMap((g) => g.ids);
     const res = await fetch("/api/heatmap-views", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, ordering: currentIdOrder }),
+      body: JSON.stringify({ name, ordering, groups: seedGroups }),
     });
     const d = await res.json();
     if (!res.ok) { setViewsMsg(d.error ?? "Couldn't create view"); return; }
@@ -190,13 +212,20 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
     setEditing(true);
   };
 
-  const persistOrder = (id: string, ordering: string[]) => {
-    setViews((v) => v.map((x) => (x.id === id ? { ...x, ordering } : x))); // optimistic
+  const persistGroups = (id: string, groups: HeatmapGroup[]) => {
+    const ordering = groups.flatMap((g) => g.ids);
+    setViews((v) => v.map((x) => (x.id === id ? { ...x, groups, ordering } : x))); // optimistic
     fetch("/api/heatmap-views", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, ordering }),
+      body: JSON.stringify({ id, groups, ordering }),
     }).catch(() => {});
+  };
+
+  const addSector = () => {
+    if (!activeView || !activeGroups) return;
+    const n = activeGroups.filter((g) => /^Sector \d+$/.test(g.name)).length + 1;
+    persistGroups(activeView.id, [...activeGroups, { name: `Sector ${n}`, ids: [] }]);
   };
 
   const renameView = (id: string) => {
@@ -303,6 +332,15 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
             <div className="flex items-center gap-2">
               {activeView ? (
                 <>
+                  {editing && (
+                    <button
+                      onClick={addSector}
+                      className="text-xs px-2 py-1 rounded-sm border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-[var(--primary)] transition-colors"
+                      title="Add a new named sector, then drag holdings into it"
+                    >
+                      + Sector
+                    </button>
+                  )}
                   <button
                     onClick={() => setEditing((e) => !e)}
                     aria-pressed={editing}
@@ -325,7 +363,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
           </div>
           {(editing || viewsMsg) && (
             <p className="text-xs" style={{ color: viewsMsg ? "var(--negative)" : "var(--primary)" }}>
-              {viewsMsg || "Drag tiles to rearrange — your order saves automatically. Sizes still track position value."}
+              {viewsMsg || "Drag tiles to reorder or move them between sectors — click a sector name to rename it. Saves automatically; sizes still track position value."}
             </p>
           )}
           <div style={{ height: 440 }}>
@@ -339,10 +377,10 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
                 colorBy={colorBy}
                 onSelect={setSelected}
                 selected={selected}
-                layout={activeView ? "ordered" : "sector"}
-                order={activeView?.ordering}
+                layout={activeView ? "custom" : "sector"}
+                groups={activeGroups}
                 editable={!!activeView && editing}
-                onReorder={activeView ? (ids) => persistOrder(activeView.id, ids) : undefined}
+                onGroupsChange={activeView ? (g) => persistGroups(activeView.id, g) : undefined}
               />
             )}
           </div>
