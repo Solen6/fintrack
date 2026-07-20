@@ -5,7 +5,7 @@ import { formatCurrencyCompact } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { isFaceValueBond } from "@/lib/types";
 import type { HoldingWithMetrics } from "@/lib/types";
-import type { HeatmapGroup } from "@/app/api/heatmap-views/route";
+import { type HeatmapGroup, pruneGroups } from "@/lib/heatmap-groups";
 
 /* ──────────────────────────────────────────────────────────────────────────
    Holdings heatmap — the same "Quiet Quilt" squarified engine as the Paper-tab
@@ -27,6 +27,7 @@ const RUBY = "0.66 0.19 25";
 const AMBER = "0.72 0.14 74";
 
 const LABEL_H = 20;      // reserved label strip atop each sector block
+const SUB_LABEL_H = 15;  // shorter strip atop a sub-sector block
 const MIN_BAND_H = 120;  // floor for the narrow vertical-stack fallback
 
 interface HCell {
@@ -248,6 +249,31 @@ interface SectorBlock extends Placed<SectorGroup> {
   tiles: Placed<{ cell: HCell }>[];
 }
 
+/* ─── Custom-view tree helpers (max 2 levels: sector → sub-sector → tiles) ─── */
+interface NormSub { name: string; path: number[]; cells: HCell[]; }
+interface NormTop { name: string; path: number[]; leaf: boolean; cells: HCell[]; subs: NormSub[]; }
+interface LeafBlock { path: number[]; x: number; y: number; w: number; h: number; tiles: Placed<{ cell: HCell }>[]; }
+interface GroupLabel { path: number[]; name: string; x: number; y: number; w: number; level: 0 | 1; synthetic: boolean; }
+
+/** Move a holding into the leaf at `path` (before `beforeId`, else append),
+ *  removing it from wherever it currently sits. Pure; returns a new tree. */
+function moveIdInTree(tree: HeatmapGroup[], dragId: string, path: number[], beforeId: string | null): HeatmapGroup[] {
+  const next: HeatmapGroup[] = tree.map((g) => ({
+    name: g.name, ids: g.ids.slice(),
+    ...(g.children ? { children: g.children.map((c) => ({ name: c.name, ids: c.ids.slice() })) } : {}),
+  }));
+  for (const g of next) {
+    const i = g.ids.indexOf(dragId); if (i >= 0) g.ids.splice(i, 1);
+    if (g.children) for (const c of g.children) { const k = c.ids.indexOf(dragId); if (k >= 0) c.ids.splice(k, 1); }
+  }
+  const target = path.length === 1 ? next[path[0]]?.ids : next[path[0]]?.children?.[path[1]]?.ids;
+  if (!target) return tree;
+  let at = target.length;
+  if (beforeId) { const bi = target.indexOf(beforeId); if (bi >= 0) at = bi; }
+  target.splice(at, 0, dragId);
+  return next;
+}
+
 function usePrefersReducedMotion(): boolean {
   const [reduce, setReduce] = useState(false);
   useEffect(() => {
@@ -279,13 +305,15 @@ export function HoldingsTreemap({
   /** "sector" = traditional squarified (Auto view); "custom" = user-defined
    *  named sectors + order-preserving tiles (custom views). */
   layout?: "sector" | "custom";
-  /** User's named sectors (custom layout). A single group with an empty name
-   *  renders flat (no label). Holdings not in any group fall to an "Unsorted"
-   *  trailing group; unknown ids are ignored — so a view survives buys/sells. */
+  /** User's named sectors (custom layout), optionally 2 levels deep (a sector
+   *  can hold sub-sectors). A single unnamed leaf renders flat (no label).
+   *  Holdings not in any group fall to an "Unsorted" trailing group (and loose
+   *  holdings under a branch to an "Other" sub); unknown ids are ignored — so a
+   *  view survives buys/sells. */
   groups?: HeatmapGroup[];
   /** Enable pointer drag (move tiles within/between sectors) + label editing. */
   editable?: boolean;
-  /** Fired on any layout change (drag, rename, delete) with the full groups. */
+  /** Fired on any layout change (drag, rename, delete, add sub-sector). */
   onGroupsChange?: (groups: HeatmapGroup[]) => void;
 }) {
   const scale = colorBy === "daily" ? 3 : 20;
@@ -397,74 +425,109 @@ export function HoldingsTreemap({
     return { blocks, contentH: totalH };
   }, [sectorGroups, dims, narrow]);
 
-  /* ─── Custom-view layout (user-named sectors) + drag ─── */
+  /* ─── Custom-view layout (2-level named sectors) + drag ─── */
   const [dragId, setDragId] = useState<string | null>(null);
-  // Working groups (ids) during a drag; null when idle → derived from props.
+  // Working tree during a drag; null when idle → derived from props.
   const [dragGroups, setDragGroups] = useState<HeatmapGroup[] | null>(null);
 
-  // Normalize props → concrete groups of live cells, in stored order. Unknown
-  // ids drop out; unassigned holdings gather into a trailing "Unsorted" group.
-  // While editing, empty groups are kept as droppable placeholders.
-  const customGroups = useMemo<{ name: string; cells: HCell[] }[]>(() => {
-    if (!custom) return [];
+  // Normalize props → a tree of live cells, in stored order. Unknown ids drop
+  // out; loose holdings under a branch gather into an "Other" sub, and holdings
+  // in no group at all into a trailing "Unsorted" top. Empty nodes are kept
+  // while editing (droppable placeholders), hidden in view mode.
+  const norm = useMemo(() => {
+    if (!custom) return { tops: [] as NormTop[], grouped: false };
     const byId = new Map(cells.map((c) => [c.id, c]));
     const assigned = new Set<string>();
+    const take = (ids: string[]): HCell[] => {
+      const out: HCell[] = [];
+      for (const id of ids) { const c = byId.get(id); if (c && !assigned.has(id)) { assigned.add(id); out.push(c); } }
+      return out;
+    };
     const src = dragGroups ?? groups ?? [];
-    const gs = src.map((g) => {
-      const gc: HCell[] = [];
-      for (const id of g.ids) {
-        const c = byId.get(id);
-        if (c && !assigned.has(id)) { assigned.add(id); gc.push(c); }
+    const tops: NormTop[] = [];
+    src.forEach((g, i) => {
+      if (g.children?.length) {
+        const subs = g.children.map((c, j) => ({ name: c.name ?? "", path: [i, j], cells: take(c.ids) }));
+        const loose = take(g.ids);
+        if (loose.length) subs.push({ name: "Other", path: [i, subs.length], cells: loose });
+        tops.push({ name: g.name ?? "", path: [i], leaf: false, cells: [], subs });
+      } else {
+        tops.push({ name: g.name ?? "", path: [i], leaf: true, cells: take(g.ids), subs: [] });
       }
-      return { name: g.name ?? "", cells: gc };
     });
     const leftovers = cells
       .filter((c) => !assigned.has(c.id))
       .sort((a, b) => b.value - a.value || a.symbol.localeCompare(b.symbol));
-    if (leftovers.length) gs.push({ name: gs.length ? "Unsorted" : "", cells: leftovers });
-    return editable ? gs : gs.filter((g) => g.cells.length > 0);
+    if (leftovers.length) tops.push({ name: tops.length ? "Unsorted" : "", path: [tops.length], leaf: true, cells: leftovers, subs: [] });
+    const grouped = tops.length > 1 || (tops[0]?.name ?? "") !== "" || !(tops[0]?.leaf ?? true);
+    const visTops = editable
+      ? tops
+      : tops
+          .map((t) => (t.leaf ? t : { ...t, subs: t.subs.filter((s) => s.cells.length > 0) }))
+          .filter((t) => (t.leaf ? t.cells.length > 0 : t.subs.length > 0));
+    return { tops: visTops, grouped };
   }, [custom, cells, dragGroups, groups, editable]);
 
-  const groupTotal = (g: { cells: HCell[] }) => g.cells.reduce((s, c) => s + c.value, 0);
+  const sumCells = (cs: HCell[]) => cs.reduce((s, c) => s + c.value, 0);
+  const topValue = useCallback((t: NormTop) => (t.leaf ? sumCells(t.cells) : t.subs.reduce((s, su) => s + sumCells(su.cells), 0)), []);
 
-  // Two-level layout: sectors squarified by value (compact, like Auto), tiles
-  // strip-treemapped inside each in the user's order. A single unnamed group
-  // fills flat with no label.
-  const customBlocks = useMemo(() => {
-    if (!custom || dims.w <= 0 || customGroups.length === 0) return [];
-    const grouped = customGroups.length > 1 || (customGroups[0]?.name ?? "") !== "";
+  const customLayout = useMemo<{ leafBlocks: LeafBlock[]; labels: GroupLabel[] }>(() => {
+    if (!custom || dims.w <= 0 || norm.tops.length === 0) return { leafBlocks: [], labels: [] };
+    const { tops, grouped } = norm;
 
-    let outer: Placed<{ name: string; cells: HCell[] }>[];
-    if (customGroups.length === 1) {
-      outer = [{ item: customGroups[0], x: 0, y: 0, w: dims.w, h: dims.h }];
+    let topRects: Placed<NormTop>[];
+    if (tops.length === 1) {
+      topRects = [{ item: tops[0], x: 0, y: 0, w: dims.w, h: dims.h }];
     } else {
-      // While editing, floor each sector's weight so small/empty ones stay
-      // easy to drop into; faithful areas resume once you're done.
-      const sum = customGroups.reduce((s, g) => s + groupTotal(g), 0);
-      const floor = editable ? sum * 0.06 : 0;
-      outer = squarify(
-        customGroups.map((g) => ({ item: g, area: Math.max(groupTotal(g), floor, 1) })),
-        0, 0, dims.w, dims.h,
-      );
+      const total = tops.reduce((s, t) => s + topValue(t), 0);
+      const floor = editable ? total * 0.06 : 0; // keep small/empty sectors droppable
+      topRects = squarify(tops.map((t) => ({ item: t, area: Math.max(topValue(t), floor, 1) })), 0, 0, dims.w, dims.h);
     }
 
-    return outer.map((o) => {
-      const labeled = grouped;
-      const top = o.y + (labeled ? LABEL_H : 0);
-      const tiles = stripTreemap(
-        o.item.cells.map((cell) => ({ item: { cell }, area: cell.value })),
-        o.x, top, o.w, Math.max(1, o.h - (labeled ? LABEL_H : 0)),
-      );
-      return { x: o.x, y: o.y, w: o.w, h: o.h, name: o.item.name, labeled, tiles };
-    });
-  }, [custom, customGroups, dims, editable]);
+    const leafBlocks: LeafBlock[] = [];
+    const labels: GroupLabel[] = [];
+    for (const tr of topRects) {
+      const t = tr.item;
+      const labelH = grouped ? LABEL_H : 0;
+      if (grouped) labels.push({ path: t.path, name: t.name, x: tr.x, y: tr.y, w: tr.w, level: 0, synthetic: t.name === "Unsorted" });
+      const innerY = tr.y + labelH;
+      const innerH = Math.max(1, tr.h - labelH);
+      if (t.leaf) {
+        leafBlocks.push({
+          path: t.path, x: tr.x, y: innerY, w: tr.w, h: innerH,
+          tiles: stripTreemap(t.cells.map((c) => ({ item: { cell: c }, area: c.value })), tr.x, innerY, tr.w, innerH),
+        });
+      } else {
+        const subTotal = t.subs.reduce((s, su) => s + sumCells(su.cells), 0);
+        const subFloor = editable ? Math.max(subTotal, 1) * 0.12 : 0;
+        const subRects = squarify(t.subs.map((su) => ({ item: su, area: Math.max(sumCells(su.cells), subFloor, 1) })), tr.x, innerY, tr.w, innerH);
+        for (const sr of subRects) {
+          const su = sr.item;
+          labels.push({ path: su.path, name: su.name, x: sr.x, y: sr.y, w: sr.w, level: 1, synthetic: su.name === "Other" });
+          const sInnerY = sr.y + SUB_LABEL_H;
+          const sInnerH = Math.max(1, sr.h - SUB_LABEL_H);
+          leafBlocks.push({
+            path: su.path, x: sr.x, y: sInnerY, w: sr.w, h: sInnerH,
+            tiles: stripTreemap(su.cells.map((c) => ({ item: { cell: c }, area: c.value })), sr.x, sInnerY, sr.w, sInnerH),
+          });
+        }
+      }
+    }
+    return { leafBlocks, labels };
+  }, [custom, norm, dims, editable, topValue]);
 
-  // Refs so the window drag listeners always see the latest layout.
-  const blocksRef = useRef(customBlocks);
-  blocksRef.current = customBlocks;
-  // The working group structure (as ids) that a drag mutates.
-  const workGroupsRef = useRef<HeatmapGroup[]>([]);
-  workGroupsRef.current = customGroups.map((g) => ({ name: g.name, ids: g.cells.map((c) => c.id) }));
+  // Serialize the normalized tree back to persistable groups (branch loose ids
+  // already folded into an "Other" sub, so a branch top carries ids: []).
+  const serializeTops = (tops: NormTop[]): HeatmapGroup[] =>
+    tops.map((t) => (t.leaf
+      ? { name: t.name, ids: t.cells.map((c) => c.id) }
+      : { name: t.name, ids: [], children: t.subs.map((s) => ({ name: s.name, ids: s.cells.map((c) => c.id) })) }));
+
+  // Refs so the window drag listeners always see the latest layout + tree.
+  const leafBlocksRef = useRef<LeafBlock[]>(customLayout.leafBlocks);
+  leafBlocksRef.current = customLayout.leafBlocks;
+  const workTreeRef = useRef<HeatmapGroup[]>([]);
+  workTreeRef.current = serializeTops(norm.tops);
   const dragMeta = useRef<{ symbol: string; startX: number; startY: number; grabDX: number; grabDY: number; moved: boolean } | null>(null);
   const [chip, setChip] = useState<{ x: number; y: number; w: number; h: number; cell: HCell } | null>(null);
 
@@ -475,7 +538,7 @@ export function HoldingsTreemap({
       symbol: cell.symbol, startX: e.clientX, startY: e.clientY,
       grabDX: e.clientX - r.left, grabDY: e.clientY - r.top, moved: false,
     };
-    setDragGroups(workGroupsRef.current.map((g) => ({ name: g.name, ids: g.ids.slice() })));
+    setDragGroups(workTreeRef.current);
     setDragId(cell.id);
     setChip({ x: e.clientX, y: e.clientY, w: r.width, h: r.height, cell });
     setHover(null);
@@ -493,42 +556,29 @@ export function HoldingsTreemap({
       const px = e.clientX - wr.left;
       const py = e.clientY - wr.top;
 
-      // Which sector block is the cursor over?
-      let gi = -1;
-      for (let k = 0; k < blocksRef.current.length; k++) {
-        const b = blocksRef.current[k];
-        if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) { gi = k; break; }
+      // Which leaf block (a sub-sector, or a leaf sector) is the cursor over?
+      let target: LeafBlock | null = null;
+      for (const lb of leafBlocksRef.current) {
+        if (px >= lb.x && px <= lb.x + lb.w && py >= lb.y && py <= lb.y + lb.h) { target = lb; break; }
       }
-      if (gi < 0) return;
-      // Which tile in that block sits under the cursor? (insert before it)
+      if (!target) return;
+      // Which tile in it sits under the cursor? (insert before it)
       let beforeId: string | null = null;
-      for (const t of blocksRef.current[gi].tiles) {
+      for (const t of target.tiles) {
         if (t.item.cell.id === dragId) continue;
         if (px >= t.x && px <= t.x + t.w && py >= t.y && py <= t.y + t.h) { beforeId = t.item.cell.id; break; }
       }
-
+      const path = target.path;
       setDragGroups((prev) => {
-        const cur = prev ?? workGroupsRef.current;
-        const next = cur.map((g) => ({ name: g.name, ids: g.ids.slice() }));
-        const tg = next[gi];
-        if (!tg) return cur;
-        // no-op if already in place
-        const inTarget = tg.ids.indexOf(dragId);
-        const targetPos = beforeId ? tg.ids.indexOf(beforeId) : tg.ids.length;
-        if (inTarget !== -1 && (inTarget === targetPos || inTarget + 1 === targetPos)) return cur;
-        for (const g of next) { const i = g.ids.indexOf(dragId); if (i >= 0) g.ids.splice(i, 1); }
-        let at = tg.ids.length;
-        if (beforeId) { const bi = tg.ids.indexOf(beforeId); if (bi >= 0) at = bi; }
-        tg.ids.splice(at, 0, dragId);
-        return next;
+        const cur = prev ?? workTreeRef.current;
+        const nx = moveIdInTree(cur, dragId, path, beforeId);
+        return JSON.stringify(nx) === JSON.stringify(cur) ? cur : nx;
       });
     };
     const onUp = () => {
       const meta = dragMeta.current;
       if (meta?.moved) {
-        // Persist, dropping empty groups (but never below one group).
-        const cleaned = workGroupsRef.current.filter((g) => g.ids.length > 0);
-        onGroupsChange?.(cleaned.length ? cleaned : workGroupsRef.current);
+        onGroupsChange?.(pruneGroups(workTreeRef.current));
       } else if (meta && onSelect) {
         // A click (no drag) still selects the holding to chart it.
         const cell = cells.find((c) => c.id === dragId);
@@ -547,31 +597,63 @@ export function HoldingsTreemap({
     };
   }, [dragId, onGroupsChange, onSelect, cells]);
 
-  // Rename / delete a sector (edit mode). Both emit the full materialized groups.
-  const emitFromCurrent = useCallback((mutate: (gs: HeatmapGroup[]) => HeatmapGroup[]) => {
-    const base = customGroups.map((g) => ({ name: g.name, ids: g.cells.map((c) => c.id) }));
-    onGroupsChange?.(mutate(base));
-  }, [customGroups, onGroupsChange]);
+  // Sector management (edit mode). All emit the full tree; PortfolioDeck persists.
+  const emitTree = useCallback((mutate: (t: HeatmapGroup[]) => HeatmapGroup[]) => {
+    onGroupsChange?.(mutate(serializeTops(norm.tops)));
+  }, [norm, onGroupsChange]);
 
-  const renameGroup = useCallback((idx: number) => {
-    const cur = customGroups[idx];
-    if (!cur) return;
-    const name = window.prompt("Sector name", cur.name || "Sector")?.trim();
-    if (name == null) return;
-    emitFromCurrent((gs) => gs.map((g, i) => (i === idx ? { ...g, name } : g)));
-  }, [customGroups, emitFromCurrent]);
-
-  const deleteGroup = useCallback((idx: number) => {
-    // Merge the removed sector's holdings into the previous one (or the next),
-    // so nothing disappears; never drop below a single group.
-    emitFromCurrent((gs) => {
-      if (gs.length <= 1) return gs;
-      const removed = gs[idx];
-      const into = idx > 0 ? idx - 1 : 1;
-      const next = gs.map((g, i) => (i === into ? { ...g, ids: [...g.ids, ...removed.ids] } : g));
-      return next.filter((_, i) => i !== idx);
+  const renameGroup = useCallback((path: number[]) => {
+    emitTree((tree) => {
+      const next = tree.map((g) => ({ ...g, ids: g.ids.slice(), children: g.children?.map((c) => ({ ...c })) }));
+      const cur = path.length === 1 ? next[path[0]] : next[path[0]]?.children?.[path[1]];
+      if (!cur) return tree;
+      const name = window.prompt(path.length === 1 ? "Sector name" : "Sub-sector name", cur.name || "")?.trim();
+      if (name == null) return tree;
+      cur.name = name;
+      return next;
     });
-  }, [emitFromCurrent]);
+  }, [emitTree]);
+
+  const deleteGroup = useCallback((path: number[]) => {
+    emitTree((tree) => {
+      if (path.length === 1) {
+        if (tree.length <= 1) return tree; // never drop the last top sector
+        const removed = tree[path[0]];
+        const removedIds = [...removed.ids, ...(removed.children?.flatMap((c) => c.ids) ?? [])];
+        const into = path[0] > 0 ? path[0] - 1 : 1; // merge into a neighbor
+        const next = tree
+          .map((g, i) => (i === into ? { ...g, ids: [...g.ids, ...removedIds] } : g))
+          .filter((_, i) => i !== path[0]);
+        return next;
+      }
+      // Remove a sub-sector: its holdings become loose on the parent (→ "Other").
+      const [i, j] = path;
+      const parent = tree[i];
+      if (!parent?.children) return tree;
+      const removed = parent.children[j];
+      const children = parent.children.filter((_, k) => k !== j);
+      const newParent: HeatmapGroup = children.length
+        ? { name: parent.name, ids: [...parent.ids, ...removed.ids], children }
+        : { name: parent.name, ids: [...parent.ids, ...removed.ids] }; // collapse to leaf
+      return tree.map((g, k) => (k === i ? newParent : g));
+    });
+  }, [emitTree]);
+
+  const addSubSector = useCallback((path: number[]) => {
+    // Split a top sector into sub-sectors; its holdings stay loose ("Other")
+    // until dragged into the new sub.
+    emitTree((tree) => {
+      const i = path[0];
+      const top = tree[i];
+      if (!top) return tree;
+      const existing = top.children ?? [];
+      const n = existing.filter((c) => /^Sub-sector \d+$/.test(c.name)).length + 1;
+      const name = window.prompt("Sub-sector name", `Sub-sector ${n}`)?.trim();
+      if (name == null) return tree;
+      const children = [...existing, { name: name || `Sub-sector ${n}`, ids: [] as string[] }];
+      return tree.map((g, k) => (k === i ? { name: top.name, ids: top.ids, children } : g));
+    });
+  }, [emitTree]);
 
   const hoveredCell = hover && !dragId ? cells.find((c) => c.symbol === hover.symbol) ?? null : null;
   const transition = reduce ? "none" : "filter 150ms ease, border-color 150ms ease";
@@ -592,39 +674,20 @@ export function HoldingsTreemap({
       <style>{`.hmtile:focus-visible{outline:2px solid oklch(${AMBER});outline-offset:-2px;z-index:7;}`}</style>
       <div style={{ position: "relative", width: "100%", height: custom ? "100%" : (contentH || "100%") }}>
         {custom
-          ? customBlocks.map((b, gi) => (
-              <div key={`${b.name}-${gi}`}>
-                {b.labeled && (
-                  <div
-                    className="absolute flex items-center gap-1.5 select-none"
-                    style={{ left: b.x + 6, top: b.y + 3, maxWidth: b.w - 10, height: LABEL_H - 4 }}
-                  >
-                    <span
-                      onClick={editable ? () => renameGroup(gi) : undefined}
-                      className="font-sans"
-                      style={{
-                        fontSize: 10, fontWeight: 600, letterSpacing: "0.06em",
-                        textTransform: "uppercase", color: b.name === "Unsorted" ? "oklch(0.5 0.006 74)" : "oklch(0.72 0.09 74)",
-                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                        cursor: editable ? "text" : "default",
-                      }}
-                      title={editable ? "Click to rename this sector" : b.name}
-                    >
-                      {b.name || (editable ? "＋ name this sector" : "")}
-                    </span>
-                    {editable && customGroups.length > 1 && (
-                      <button
-                        onClick={() => deleteGroup(gi)}
-                        className="font-sans shrink-0"
-                        style={{ fontSize: 12, lineHeight: 1, color: "oklch(0.5 0.02 74)" }}
-                        title="Remove sector (its holdings move to a neighbor)"
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                )}
-                {b.tiles.map((t) => (
+          ? (
+            <>
+              {customLayout.labels.map((l) => (
+                <CustomLabel
+                  key={`${l.path.join("-")}-${l.name}`}
+                  label={l}
+                  editable={editable}
+                  onRename={renameGroup}
+                  onDelete={deleteGroup}
+                  onAddSub={addSubSector}
+                />
+              ))}
+              {customLayout.leafBlocks.flatMap((lb) =>
+                lb.tiles.map((t) => (
                   <Tile
                     key={t.item.cell.id}
                     placed={t}
@@ -640,9 +703,10 @@ export function HoldingsTreemap({
                     dragging={dragId === t.item.cell.id}
                     onDragStart={startTileDrag}
                   />
-                ))}
-              </div>
-            ))
+                )),
+              )}
+            </>
+          )
           : blocks.map((b) => (
           <div key={b.item.sector}>
             {/* Sector macro-block label */}
@@ -856,6 +920,67 @@ const Tile = memo(function Tile({
     </div>
   );
 });
+
+/* ─── A sector / sub-sector label (custom views), editable in edit mode ─── */
+function CustomLabel({
+  label, editable, onRename, onDelete, onAddSub,
+}: {
+  label: GroupLabel;
+  editable: boolean;
+  onRename: (path: number[]) => void;
+  onDelete: (path: number[]) => void;
+  onAddSub: (path: number[]) => void;
+}) {
+  const top = label.level === 0;
+  const strip = top ? LABEL_H : SUB_LABEL_H;
+  const placeholder = top ? "＋ name this sector" : "＋ name";
+  return (
+    <div
+      className="absolute flex items-center gap-1 select-none"
+      style={{ left: label.x + 6, top: label.y + (top ? 3 : 2), maxWidth: label.w - 10, height: strip - 3 }}
+    >
+      <span
+        onClick={editable ? () => onRename(label.path) : undefined}
+        className="font-sans"
+        style={{
+          fontSize: top ? 10 : 9, fontWeight: 600, letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: label.synthetic ? "oklch(0.5 0.006 74)" : top ? "oklch(0.72 0.09 74)" : "oklch(0.6 0.05 74)",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          cursor: editable ? "text" : "default",
+          pointerEvents: editable ? "auto" : "none",
+        }}
+        title={editable ? "Click to rename" : label.name}
+      >
+        {label.name || (editable ? placeholder : "")}
+      </span>
+      {editable && (
+        <>
+          {top && !label.synthetic && (
+            <button
+              onClick={() => onAddSub(label.path)}
+              className="font-sans shrink-0"
+              style={{ fontSize: 11, lineHeight: 1, color: "oklch(0.6 0.05 74)" }}
+              title="Split into sub-sectors"
+            >
+              ＋
+            </button>
+          )}
+          {!label.synthetic && (
+            <button
+              onClick={() => onDelete(label.path)}
+              className="font-sans shrink-0"
+              style={{ fontSize: 12, lineHeight: 1, color: "oklch(0.5 0.02 74)" }}
+              title={top ? "Remove sector (holdings move to a neighbor)" : "Remove sub-sector (holdings move up)"}
+            >
+              ×
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 /* ─── Crisp dark tooltip (the one allowed soft shadow — popover layer) ─── */
 function Tooltip({ cell, cx, cy, maskPct }: { cell: HCell; cx: number; cy: number; maskPct?: boolean }) {

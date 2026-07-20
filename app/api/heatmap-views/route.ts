@@ -1,22 +1,19 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { type HeatmapGroup, coerceGroups } from "@/lib/heatmap-groups";
 
 /* Saved custom heatmap layouts (Portfolio tab → heatmap). The "Auto" view is
    implicit and never stored — only the user's dragged arrangements live here.
    All routes degrade to a clear setup hint until supabase/heatmap-views.sql is
    run (mirrors /api/watchlist). */
 
-/** A user-named sector within a custom heatmap view. */
-export interface HeatmapGroup {
-  name: string;     // "" = unnamed (renders flat, no label)
-  ids: string[];    // holding ids in this sector, in display order
-}
+export type { HeatmapGroup };
 
 export interface HeatmapView {
   id: string;
   name: string;
   ordering: string[];       // flat holding-id order (kept in sync for flat views)
-  groups: HeatmapGroup[];   // user-named sectors; empty = flat/ungrouped
+  groups: HeatmapGroup[];   // user-named sectors (may hold sub-sectors); empty = flat
 }
 
 const MIGRATION_HINT = "Heatmap views table missing — run supabase/heatmap-views.sql";
@@ -29,19 +26,7 @@ function toOrdering(raw: unknown): string[] {
   return raw.filter((v): v is string => typeof v === "string");
 }
 
-/** Coerce the JSONB groups column into clean {name, ids}[] shape. */
-function toGroups(raw: unknown): HeatmapGroup[] {
-  if (!Array.isArray(raw)) return [];
-  const out: HeatmapGroup[] = [];
-  for (const g of raw) {
-    if (g && typeof g === "object" && !Array.isArray(g)) {
-      const name = typeof (g as { name?: unknown }).name === "string" ? (g as { name: string }).name : "";
-      const ids = toOrdering((g as { ids?: unknown }).ids);
-      out.push({ name, ids });
-    }
-  }
-  return out;
-}
+const toGroups = (raw: unknown): HeatmapGroup[] => coerceGroups(raw);
 
 export async function GET() {
   const supabase = await createClient();

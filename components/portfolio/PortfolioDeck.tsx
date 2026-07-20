@@ -58,7 +58,8 @@ function mergeComboLegs(list: HoldingWithMetrics[]): HoldingWithMetrics[] {
 }
 import type { ActivityItem, ActivityType } from "@/app/api/transactions/recent/route";
 import type { SeriesRange } from "@/app/api/paper/series/route";
-import type { HeatmapView, HeatmapGroup } from "@/app/api/heatmap-views/route";
+import type { HeatmapView } from "@/app/api/heatmap-views/route";
+import { type HeatmapGroup, flattenGroupIds } from "@/lib/heatmap-groups";
 import type { StockStats } from "@/lib/yahoo";
 import { RatingBadge, RatingBar, useRatings } from "@/components/ratings/RatingBadge";
 
@@ -199,7 +200,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
   const createView = async () => {
     setViewsMsg("");
     const name = `Custom view ${views.length + 1}`;
-    const ordering = seedGroups.flatMap((g) => g.ids);
+    const ordering = flattenGroupIds(seedGroups);
     const res = await fetch("/api/heatmap-views", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -213,7 +214,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
   };
 
   const persistGroups = (id: string, groups: HeatmapGroup[]) => {
-    const ordering = groups.flatMap((g) => g.ids);
+    const ordering = flattenGroupIds(groups);
     setViews((v) => v.map((x) => (x.id === id ? { ...x, groups, ordering } : x))); // optimistic
     fetch("/api/heatmap-views", {
       method: "PATCH",
