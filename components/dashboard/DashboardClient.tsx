@@ -9,6 +9,10 @@ import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/comp
 import { RemindersCard } from "@/components/dashboard/RemindersCard";
 import { isInvestedType, resolveAccountType, type AccountType } from "@/lib/account-types";
 import { earliestStoredCapital, inceptionDateFor, unitCumReturns, chainedPeriodReturns } from "@/lib/portfolio-return";
+import { topSectorById } from "@/lib/heatmap-groups";
+import type { HeatmapView } from "@/app/api/heatmap-views/route";
+
+const ALLOC_VIEW_KEY = "fintrack:allocView"; // persisted pie grouping ("auto" | view id)
 
 const chartLoading = () => (
   <div className="skeleton h-full w-full rounded-sm" aria-hidden />
@@ -149,6 +153,21 @@ export function DashboardClient() {
   const [allocOpen, setAllocOpen] = useState(false);
   const [returnsOpen, setReturnsOpen] = useState<"monthly" | "yearly" | null>(null);
 
+  // Saved heatmap views drive the allocation pie's grouping. The choice
+  // ("auto" = auto-detected sectors, or a saved view id) persists per device.
+  const [heatmapViews, setHeatmapViews] = useState<HeatmapView[]>([]);
+  const [allocViewId, setAllocViewId] = useState<string>("auto");
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(ALLOC_VIEW_KEY);
+      if (saved) setAllocViewId(saved);
+    } catch { /* localStorage unavailable */ }
+  }, []);
+  const chooseAllocView = useCallback((id: string) => {
+    setAllocViewId(id);
+    try { localStorage.setItem(ALLOC_VIEW_KEY, id); } catch { /* ignore */ }
+  }, []);
+
   // Performance-chart controls.
   const [metric, setMetric] = useState<PerfMetric>("value");
   const [timeframe, setTimeframe] = useState<Timeframe>("ALL");
@@ -209,6 +228,13 @@ export function DashboardClient() {
         const { types } = await tRes.json();
         setAccountTypes(types ?? {});
       }
+
+      // Saved heatmap views (for the allocation-pie grouping selector). Optional
+      // — the pie falls back to auto sectors if this fails or isn't migrated.
+      fetch("/api/heatmap-views")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d?.views) setHeatmapViews(d.views); })
+        .catch(() => {});
       if (cRes?.ok) {
         const { balances } = await cRes.json();
         const m: Record<string, number> = {};
@@ -397,11 +423,40 @@ export function DashboardClient() {
     return { positions, cash, invested, positionsValue, totalValue, totalGain, totalReturnPct, todayChange, todayPct };
   }, [holdings, quotes, bondMarks, derivativeMarks, sectors, enabledAccounts, accountTypes, cashBalances]);
 
+  // Resolved allocation view (null = auto sectors). Falls back to auto if the
+  // saved id is gone (view deleted elsewhere).
+  const allocView = useMemo(
+    () => (allocViewId === "auto" ? null : heatmapViews.find((v) => v.id === allocViewId) ?? null),
+    [allocViewId, heatmapViews],
+  );
+
+  // When a saved view drives the pie, map each ticker → the view's top-level
+  // sector (via holding id). Holdings the view never filed → "Unsorted".
+  const sectorByTicker = useMemo(() => {
+    if (!allocView) return null;
+    const idMap = topSectorById(allocView.groups);
+    const byTicker = new Map<string, string>();
+    for (const h of holdings) {
+      if (!enabledAccounts.has(h.account)) continue;
+      if (isDerivativeType(h.instrument_type)) continue;
+      const label = idMap.get(h.id);
+      if (label && !byTicker.has(h.ticker)) byTicker.set(h.ticker, label);
+    }
+    return byTicker;
+  }, [allocView, holdings, enabledAccounts]);
+
+  // A position's slice label — the chosen view's sector, or the auto sector.
+  const sectorOf = useCallback(
+    (p: AggHolding) => (sectorByTicker ? sectorByTicker.get(p.ticker) ?? "Unsorted" : p.sector),
+    [sectorByTicker],
+  );
+
   /* Allocation by sector — top 4 + Other, steel ramp */
   const allocation: AllocationPoint[] = useMemo(() => {
     const bySector = new Map<string, number>();
     for (const p of agg.positions) {
-      bySector.set(p.sector, (bySector.get(p.sector) ?? 0) + p.value);
+      const label = sectorOf(p);
+      bySector.set(label, (bySector.get(label) ?? 0) + p.value);
     }
     if (agg.cash > 0) bySector.set("Cash", (bySector.get("Cash") ?? 0) + agg.cash);
     const sorted = [...bySector.entries()].sort((a, b) => b[1] - a[1]);
@@ -413,19 +468,20 @@ export function DashboardClient() {
       value,
       color: STEEL_RAMP[Math.min(i, STEEL_RAMP.length - 1)],
     }));
-  }, [agg]);
+  }, [agg, sectorOf]);
 
   /* Full allocation — every sector (+ cash), for the expanded view */
   const fullAllocation: AllocationPoint[] = useMemo(() => {
     const bySector = new Map<string, number>();
     for (const p of agg.positions) {
-      bySector.set(p.sector, (bySector.get(p.sector) ?? 0) + p.value);
+      const label = sectorOf(p);
+      bySector.set(label, (bySector.get(label) ?? 0) + p.value);
     }
     if (agg.cash > 0) bySector.set("Cash", (bySector.get("Cash") ?? 0) + agg.cash);
     const sorted = [...bySector.entries()].sort((a, b) => b[1] - a[1]);
     const ramp = steelRamp(sorted.length);
     return sorted.map(([label, value], i) => ({ label, value, color: ramp[i] }));
-  }, [agg]);
+  }, [agg, sectorOf]);
 
   /* Source series for all history panels: collapse per-account snapshots into
      one daily total honoring the account toggle.
@@ -937,8 +993,19 @@ export function DashboardClient() {
             aria-label="Expand full allocation breakdown"
             className="group rounded-md border border-border bg-card p-4 text-left transition-colors hover:border-[oklch(0.30_0_0)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
           >
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-xs uppercase tracking-wide text-muted-foreground">Allocation by Sector</h2>
+            <div className="flex items-center justify-between mb-3 gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <h2 className="text-xs uppercase tracking-wide text-muted-foreground shrink-0">Allocation by Sector</h2>
+                {allocView && (
+                  <span
+                    className="text-[10px] px-1.5 py-0.5 rounded-sm truncate max-w-[120px]"
+                    style={{ background: "oklch(0.72 0.14 74 / 0.14)", color: "var(--primary)" }}
+                    title={`Grouped by your "${allocView.name}" view`}
+                  >
+                    {allocView.name}
+                  </span>
+                )}
+              </div>
               <ExpandIcon />
             </div>
             <div className="flex items-center gap-4">
@@ -1087,6 +1154,9 @@ export function DashboardClient() {
         onClose={() => setAllocOpen(false)}
         data={fullAllocation}
         totalValue={agg.totalValue}
+        views={heatmapViews}
+        activeViewId={allocViewId}
+        onChooseView={chooseAllocView}
       />
 
       <ReturnsModal
@@ -1119,17 +1189,42 @@ function ExpandIcon() {
   );
 }
 
+function ViewChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className="text-xs px-2.5 py-1 rounded-sm border transition-colors max-w-[160px] truncate"
+      style={{
+        borderColor: active ? "var(--primary)" : "var(--border)",
+        background: active ? "oklch(0.72 0.14 74 / 0.14)" : "transparent",
+        color: active ? "var(--primary)" : "oklch(0.7 0.008 74)",
+      }}
+      title={label}
+    >
+      {label}
+    </button>
+  );
+}
+
 /* ─── Expanded allocation modal (full coverage, every sector) ─── */
 function AllocationModal({
   open,
   onClose,
   data,
   totalValue,
+  views,
+  activeViewId,
+  onChooseView,
 }: {
   open: boolean;
   onClose: () => void;
   data: AllocationPoint[];
   totalValue: number;
+  views: HeatmapView[];
+  activeViewId: string;
+  onChooseView: (id: string) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -1162,6 +1257,18 @@ function AllocationModal({
               <path d="M18 6 6 18M6 6l12 12" />
             </svg>
           </button>
+        </div>
+
+        {/* Group-by selector: auto sectors, or any saved heatmap view */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs text-muted-foreground mr-1">Group by:</span>
+          <ViewChip label="Auto sectors" active={activeViewId === "auto"} onClick={() => onChooseView("auto")} />
+          {views.map((v) => (
+            <ViewChip key={v.id} label={v.name} active={activeViewId === v.id} onClick={() => onChooseView(v.id)} />
+          ))}
+          {views.length === 0 && (
+            <span className="text-xs text-muted-foreground">Save a layout in Accounts → Heatmap to group by your own sectors.</span>
+          )}
         </div>
 
         <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center sm:gap-6">

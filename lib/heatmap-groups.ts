@@ -44,6 +44,19 @@ export function coerceGroups(raw: unknown, depth = 0): HeatmapGroup[] {
   return out;
 }
 
+/** Map every holding id → its TOP-level sector name (sub-sectors roll up into
+ *  their parent). Used to group the dashboard allocation pie by a saved view.
+ *  Unnamed top groups fall back to "Unsorted". */
+export function topSectorById(groups: HeatmapGroup[]): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const g of groups) {
+    const label = g.name || "Unsorted";
+    for (const id of g.ids) m.set(id, label);
+    if (g.children) for (const c of g.children) for (const id of c.ids) m.set(id, label);
+  }
+  return m;
+}
+
 /** Drop empty leaves/sub-sectors after an edit; never return fewer than one
  *  top-level group. A branch left with no sub-sectors collapses to a leaf. */
 export function pruneGroups(groups: HeatmapGroup[]): HeatmapGroup[] {
