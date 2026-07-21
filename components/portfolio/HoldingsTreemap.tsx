@@ -5,7 +5,7 @@ import { formatCurrencyCompact } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { isFaceValueBond } from "@/lib/types";
 import type { HoldingWithMetrics } from "@/lib/types";
-import { type HeatmapGroup, pruneGroups } from "@/lib/heatmap-groups";
+import type { HeatmapGroup } from "@/lib/heatmap-groups";
 
 /* ──────────────────────────────────────────────────────────────────────────
    Holdings heatmap — the same "Quiet Quilt" squarified engine as the Paper-tab
@@ -147,68 +147,6 @@ function squarify<T>(
   return out;
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Strip treemap (Bederson/Shneiderman/Wattenberg) — the ORDER-PRESERVING layout
-   used by custom views. Unlike squarify (which sorts by area), this walks nodes
-   in the given order and greedily packs left-to-right rows, closing a row when
-   the next tile would worsen its average aspect ratio. Reading order (row-major)
-   equals the user's dragged order, while tiles stay sized by value.
-   ────────────────────────────────────────────────────────────────────────── */
-function rowAvgAspect<T>(row: SqNode<T>[], width: number): number {
-  const area = row.reduce((s, r) => s + r.area, 0);
-  if (area <= 0) return Infinity;
-  const rowH = area / width;
-  let sum = 0;
-  for (const r of row) {
-    const tileW = r.area / rowH;
-    if (tileW <= 0 || rowH <= 0) return Infinity;
-    sum += Math.max(tileW / rowH, rowH / tileW);
-  }
-  return sum / row.length;
-}
-
-function stripTreemap<T>(
-  nodes: SqNode<T>[],
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-): Placed<T>[] {
-  const out: Placed<T>[] = [];
-  if (width <= 0 || height <= 0 || nodes.length === 0) return out;
-  const total = nodes.reduce((s, n) => s + n.area, 0);
-  if (total <= 0) return out;
-
-  const scale = (width * height) / total;
-  const items = nodes.map((n) => ({ item: n.item, area: Math.max(n.area * scale, 1e-6) }));
-
-  let i = 0;
-  let cy = y;
-  const n = items.length;
-  while (i < n) {
-    let row: SqNode<T>[] = [items[i]];
-    let next = i + 1;
-    while (next < n) {
-      const candidate = row.concat(items[next]);
-      // Add the next tile only while it keeps the row closer to square.
-      if (rowAvgAspect(candidate, width) <= rowAvgAspect(row, width)) {
-        row = candidate;
-        next++;
-      } else break;
-    }
-    const rowArea = row.reduce((s, r) => s + r.area, 0);
-    const rowH = rowArea / width;
-    let cx = x;
-    for (const r of row) {
-      const tileW = r.area / rowH;
-      out.push({ item: r.item, x: cx, y: cy, w: tileW, h: rowH });
-      cx += tileW;
-    }
-    cy += rowH;
-    i = next;
-  }
-  return out;
-}
 
 /* ─── Band-height solver for the narrow vertical-stack fallback ─── */
 function solveBandHeights(weights: number[], totalH: number, minH: number): number[] {
@@ -249,29 +187,58 @@ interface SectorBlock extends Placed<SectorGroup> {
   tiles: Placed<{ cell: HCell }>[];
 }
 
-/* ─── Custom-view tree helpers (max 2 levels: sector → sub-sector → tiles) ─── */
-interface NormSub { name: string; path: number[]; cells: HCell[]; }
-interface NormTop { name: string; path: number[]; leaf: boolean; cells: HCell[]; subs: NormSub[]; }
+/* ─── Custom-view tree helpers (max 2 levels: sector → sub-sector → tiles) ───
+   The normalized tree carries live cells + a `synthetic` flag. Synthetic nodes
+   ("Unsorted" top for unfiled holdings, "Other" sub for loose holdings under a
+   branch) are DERIVED for display/drag and never persisted as user sectors —
+   that's what lets an empty USER sector survive a save while transient buckets
+   don't. Drag/edit operate on this tree; `serializeUser` converts back. */
+interface NormSub { name: string; path: number[]; cells: HCell[]; synthetic: boolean; }
+interface NormTop { name: string; path: number[]; leaf: boolean; cells: HCell[]; subs: NormSub[]; synthetic: boolean; }
 interface LeafBlock { path: number[]; x: number; y: number; w: number; h: number; tiles: Placed<{ cell: HCell }>[]; }
 interface GroupLabel { path: number[]; name: string; x: number; y: number; w: number; level: 0 | 1; synthetic: boolean; }
 
-/** Move a holding into the leaf at `path` (before `beforeId`, else append),
- *  removing it from wherever it currently sits. Pure; returns a new tree. */
-function moveIdInTree(tree: HeatmapGroup[], dragId: string, path: number[], beforeId: string | null): HeatmapGroup[] {
-  const next: HeatmapGroup[] = tree.map((g) => ({
-    name: g.name, ids: g.ids.slice(),
-    ...(g.children ? { children: g.children.map((c) => ({ name: c.name, ids: c.ids.slice() })) } : {}),
+function cloneTops(tops: NormTop[]): NormTop[] {
+  return tops.map((t) => ({
+    name: t.name, path: t.path.slice(), leaf: t.leaf, synthetic: t.synthetic,
+    cells: t.cells.slice(),
+    subs: t.subs.map((s) => ({ name: s.name, path: s.path.slice(), cells: s.cells.slice(), synthetic: s.synthetic })),
   }));
-  for (const g of next) {
-    const i = g.ids.indexOf(dragId); if (i >= 0) g.ids.splice(i, 1);
-    if (g.children) for (const c of g.children) { const k = c.ids.indexOf(dragId); if (k >= 0) c.ids.splice(k, 1); }
-  }
-  const target = path.length === 1 ? next[path[0]]?.ids : next[path[0]]?.children?.[path[1]]?.ids;
-  if (!target) return tree;
+}
+
+/** Move a holding cell into the leaf/sub at `path` (before `beforeId`, else
+ *  append), removing it from wherever it currently sits. Pure. */
+function moveCellInTree(tops: NormTop[], dragId: string, path: number[], beforeId: string | null): NormTop[] {
+  const next = cloneTops(tops);
+  let moved: HCell | undefined;
+  const pull = (arr: HCell[]) => { const i = arr.findIndex((c) => c.id === dragId); if (i >= 0) { moved = arr[i]; arr.splice(i, 1); } };
+  for (const t of next) { pull(t.cells); for (const s of t.subs) pull(s.cells); }
+  if (!moved) return tops;
+  const target = path.length === 1 ? next[path[0]]?.cells : next[path[0]]?.subs?.[path[1]]?.cells;
+  if (!target) return tops;
   let at = target.length;
-  if (beforeId) { const bi = target.indexOf(beforeId); if (bi >= 0) at = bi; }
-  target.splice(at, 0, dragId);
+  if (beforeId) { const bi = target.findIndex((c) => c.id === beforeId); if (bi >= 0) at = bi; }
+  target.splice(at, 0, moved);
   return next;
+}
+
+/** Convert the normalized tree back to persistable user sectors: drop the
+ *  synthetic "Unsorted" top (its holdings become unassigned), fold each "Other"
+ *  sub back into its parent's loose `ids`, and KEEP empty user sectors so they
+ *  survive a save (only the user deletes them). */
+function serializeUser(tops: NormTop[]): HeatmapGroup[] {
+  const out: HeatmapGroup[] = [];
+  for (const t of tops) {
+    if (t.synthetic) continue;
+    if (t.leaf) {
+      out.push({ name: t.name, ids: t.cells.map((c) => c.id) });
+    } else {
+      const loose = t.subs.find((s) => s.synthetic)?.cells ?? [];
+      const children = t.subs.filter((s) => !s.synthetic).map((s) => ({ name: s.name, ids: s.cells.map((c) => c.id) }));
+      out.push({ name: t.name, ids: loose.map((c) => c.id), children });
+    }
+  }
+  return out;
 }
 
 function usePrefersReducedMotion(): boolean {
@@ -427,14 +394,14 @@ export function HoldingsTreemap({
 
   /* ─── Custom-view layout (2-level named sectors) + drag ─── */
   const [dragId, setDragId] = useState<string | null>(null);
-  // Working tree during a drag; null when idle → derived from props.
-  const [dragGroups, setDragGroups] = useState<HeatmapGroup[] | null>(null);
+  // Working tree (normalized, synthetic flags preserved) during a drag.
+  const [dragTree, setDragTree] = useState<NormTop[] | null>(null);
 
   // Normalize props → a tree of live cells, in stored order. Unknown ids drop
-  // out; loose holdings under a branch gather into an "Other" sub, and holdings
-  // in no group at all into a trailing "Unsorted" top. Empty nodes are kept
-  // while editing (droppable placeholders), hidden in view mode.
-  const norm = useMemo(() => {
+  // out; loose holdings under a branch gather into a synthetic "Other" sub, and
+  // holdings in no group at all into a synthetic "Unsorted" top. EMPTY USER
+  // sectors are kept (they only vanish when the user deletes them).
+  const baseNorm = useMemo(() => {
     if (!custom) return { tops: [] as NormTop[], grouped: false };
     const byId = new Map(cells.map((c) => [c.id, c]));
     const assigned = new Set<string>();
@@ -443,37 +410,36 @@ export function HoldingsTreemap({
       for (const id of ids) { const c = byId.get(id); if (c && !assigned.has(id)) { assigned.add(id); out.push(c); } }
       return out;
     };
-    const src = dragGroups ?? groups ?? [];
+    const src = groups ?? [];
     const tops: NormTop[] = [];
     src.forEach((g, i) => {
       if (g.children?.length) {
-        const subs = g.children.map((c, j) => ({ name: c.name ?? "", path: [i, j], cells: take(c.ids) }));
+        const subs: NormSub[] = g.children.map((c, j) => ({ name: c.name ?? "", path: [i, j], cells: take(c.ids), synthetic: false }));
         const loose = take(g.ids);
-        if (loose.length) subs.push({ name: "Other", path: [i, subs.length], cells: loose });
-        tops.push({ name: g.name ?? "", path: [i], leaf: false, cells: [], subs });
+        if (loose.length) subs.push({ name: "Other", path: [i, subs.length], cells: loose, synthetic: true });
+        tops.push({ name: g.name ?? "", path: [i], leaf: false, cells: [], subs, synthetic: false });
       } else {
-        tops.push({ name: g.name ?? "", path: [i], leaf: true, cells: take(g.ids), subs: [] });
+        tops.push({ name: g.name ?? "", path: [i], leaf: true, cells: take(g.ids), subs: [], synthetic: false });
       }
     });
     const leftovers = cells
       .filter((c) => !assigned.has(c.id))
       .sort((a, b) => b.value - a.value || a.symbol.localeCompare(b.symbol));
-    if (leftovers.length) tops.push({ name: tops.length ? "Unsorted" : "", path: [tops.length], leaf: true, cells: leftovers, subs: [] });
+    if (leftovers.length) tops.push({ name: tops.length ? "Unsorted" : "", path: [tops.length], leaf: true, cells: leftovers, subs: [], synthetic: true });
     const grouped = tops.length > 1 || (tops[0]?.name ?? "") !== "" || !(tops[0]?.leaf ?? true);
-    const visTops = editable
-      ? tops
-      : tops
-          .map((t) => (t.leaf ? t : { ...t, subs: t.subs.filter((s) => s.cells.length > 0) }))
-          .filter((t) => (t.leaf ? t.cells.length > 0 : t.subs.length > 0));
-    return { tops: visTops, grouped };
-  }, [custom, cells, dragGroups, groups, editable]);
+    return { tops, grouped };
+  }, [custom, cells, groups]);
+
+  // During a drag we edit the normalized tree in place (keeps synthetic flags);
+  // otherwise the props-derived tree drives the layout.
+  const tops = dragTree ?? baseNorm.tops;
+  const grouped = baseNorm.grouped;
 
   const sumCells = (cs: HCell[]) => cs.reduce((s, c) => s + c.value, 0);
   const topValue = useCallback((t: NormTop) => (t.leaf ? sumCells(t.cells) : t.subs.reduce((s, su) => s + sumCells(su.cells), 0)), []);
 
   const customLayout = useMemo<{ leafBlocks: LeafBlock[]; labels: GroupLabel[] }>(() => {
-    if (!custom || dims.w <= 0 || norm.tops.length === 0) return { leafBlocks: [], labels: [] };
-    const { tops, grouped } = norm;
+    if (!custom || dims.w <= 0 || tops.length === 0) return { leafBlocks: [], labels: [] };
 
     let topRects: Placed<NormTop>[];
     if (tops.length === 1) {
@@ -484,50 +450,42 @@ export function HoldingsTreemap({
       topRects = squarify(tops.map((t) => ({ item: t, area: Math.max(topValue(t), floor, 1) })), 0, 0, dims.w, dims.h);
     }
 
+    // Tiles inside a sector are squarified by value, so the biggest allocations
+    // cluster together (not left in an arbitrary drag order).
+    const tilesFor = (cs: HCell[], x: number, y: number, w: number, h: number) =>
+      squarify(cs.map((c) => ({ item: { cell: c }, area: Math.max(c.value, 1) })), x, y, w, Math.max(1, h));
+
     const leafBlocks: LeafBlock[] = [];
     const labels: GroupLabel[] = [];
     for (const tr of topRects) {
       const t = tr.item;
       const labelH = grouped ? LABEL_H : 0;
-      if (grouped) labels.push({ path: t.path, name: t.name, x: tr.x, y: tr.y, w: tr.w, level: 0, synthetic: t.name === "Unsorted" });
+      if (grouped) labels.push({ path: t.path, name: t.name, x: tr.x, y: tr.y, w: tr.w, level: 0, synthetic: t.synthetic });
       const innerY = tr.y + labelH;
       const innerH = Math.max(1, tr.h - labelH);
       if (t.leaf) {
-        leafBlocks.push({
-          path: t.path, x: tr.x, y: innerY, w: tr.w, h: innerH,
-          tiles: stripTreemap(t.cells.map((c) => ({ item: { cell: c }, area: c.value })), tr.x, innerY, tr.w, innerH),
-        });
+        leafBlocks.push({ path: t.path, x: tr.x, y: innerY, w: tr.w, h: innerH, tiles: tilesFor(t.cells, tr.x, innerY, tr.w, innerH) });
       } else {
         const subTotal = t.subs.reduce((s, su) => s + sumCells(su.cells), 0);
         const subFloor = editable ? Math.max(subTotal, 1) * 0.12 : 0;
         const subRects = squarify(t.subs.map((su) => ({ item: su, area: Math.max(sumCells(su.cells), subFloor, 1) })), tr.x, innerY, tr.w, innerH);
         for (const sr of subRects) {
           const su = sr.item;
-          labels.push({ path: su.path, name: su.name, x: sr.x, y: sr.y, w: sr.w, level: 1, synthetic: su.name === "Other" });
+          labels.push({ path: su.path, name: su.name, x: sr.x, y: sr.y, w: sr.w, level: 1, synthetic: su.synthetic });
           const sInnerY = sr.y + SUB_LABEL_H;
           const sInnerH = Math.max(1, sr.h - SUB_LABEL_H);
-          leafBlocks.push({
-            path: su.path, x: sr.x, y: sInnerY, w: sr.w, h: sInnerH,
-            tiles: stripTreemap(su.cells.map((c) => ({ item: { cell: c }, area: c.value })), sr.x, sInnerY, sr.w, sInnerH),
-          });
+          leafBlocks.push({ path: su.path, x: sr.x, y: sInnerY, w: sr.w, h: sInnerH, tiles: tilesFor(su.cells, sr.x, sInnerY, sr.w, sInnerH) });
         }
       }
     }
     return { leafBlocks, labels };
-  }, [custom, norm, dims, editable, topValue]);
-
-  // Serialize the normalized tree back to persistable groups (branch loose ids
-  // already folded into an "Other" sub, so a branch top carries ids: []).
-  const serializeTops = (tops: NormTop[]): HeatmapGroup[] =>
-    tops.map((t) => (t.leaf
-      ? { name: t.name, ids: t.cells.map((c) => c.id) }
-      : { name: t.name, ids: [], children: t.subs.map((s) => ({ name: s.name, ids: s.cells.map((c) => c.id) })) }));
+  }, [custom, tops, grouped, dims, editable, topValue]);
 
   // Refs so the window drag listeners always see the latest layout + tree.
   const leafBlocksRef = useRef<LeafBlock[]>(customLayout.leafBlocks);
   leafBlocksRef.current = customLayout.leafBlocks;
-  const workTreeRef = useRef<HeatmapGroup[]>([]);
-  workTreeRef.current = serializeTops(norm.tops);
+  const topsRef = useRef<NormTop[]>(tops);
+  topsRef.current = tops;
   const dragMeta = useRef<{ symbol: string; startX: number; startY: number; grabDX: number; grabDY: number; moved: boolean } | null>(null);
   const [chip, setChip] = useState<{ x: number; y: number; w: number; h: number; cell: HCell } | null>(null);
 
@@ -538,7 +496,7 @@ export function HoldingsTreemap({
       symbol: cell.symbol, startX: e.clientX, startY: e.clientY,
       grabDX: e.clientX - r.left, grabDY: e.clientY - r.top, moved: false,
     };
-    setDragGroups(workTreeRef.current);
+    setDragTree(cloneTops(topsRef.current));
     setDragId(cell.id);
     setChip({ x: e.clientX, y: e.clientY, w: r.width, h: r.height, cell });
     setHover(null);
@@ -569,23 +527,23 @@ export function HoldingsTreemap({
         if (px >= t.x && px <= t.x + t.w && py >= t.y && py <= t.y + t.h) { beforeId = t.item.cell.id; break; }
       }
       const path = target.path;
-      setDragGroups((prev) => {
-        const cur = prev ?? workTreeRef.current;
-        const nx = moveIdInTree(cur, dragId, path, beforeId);
-        return JSON.stringify(nx) === JSON.stringify(cur) ? cur : nx;
+      setDragTree((prev) => {
+        const cur = prev ?? topsRef.current;
+        const nx = moveCellInTree(cur, dragId, path, beforeId);
+        return nx === cur ? cur : nx;
       });
     };
     const onUp = () => {
       const meta = dragMeta.current;
       if (meta?.moved) {
-        onGroupsChange?.(pruneGroups(workTreeRef.current));
+        onGroupsChange?.(serializeUser(topsRef.current)); // keeps empty user sectors
       } else if (meta && onSelect) {
         // A click (no drag) still selects the holding to chart it.
         const cell = cells.find((c) => c.id === dragId);
         if (cell && !cell.isCash) onSelect(cell.symbol);
       }
       setDragId(null);
-      setDragGroups(null);
+      setDragTree(null);
       setChip(null);
       dragMeta.current = null;
     };
@@ -597,63 +555,69 @@ export function HoldingsTreemap({
     };
   }, [dragId, onGroupsChange, onSelect, cells]);
 
-  // Sector management (edit mode). All emit the full tree; PortfolioDeck persists.
-  const emitTree = useCallback((mutate: (t: HeatmapGroup[]) => HeatmapGroup[]) => {
-    onGroupsChange?.(mutate(serializeTops(norm.tops)));
-  }, [norm, onGroupsChange]);
+  // Sector management (edit mode). Each mutates a clone of the DISPLAYED tree by
+  // path (so a rename prompt always shows the name currently on screen) and
+  // persists via serializeUser — which keeps empty user sectors.
+  const mutateTops = useCallback((fn: (t: NormTop[]) => NormTop[] | null) => {
+    const result = fn(cloneTops(baseNorm.tops));
+    if (result) onGroupsChange?.(serializeUser(result));
+  }, [baseNorm, onGroupsChange]);
 
   const renameGroup = useCallback((path: number[]) => {
-    emitTree((tree) => {
-      const next = tree.map((g) => ({ ...g, ids: g.ids.slice(), children: g.children?.map((c) => ({ ...c })) }));
-      const cur = path.length === 1 ? next[path[0]] : next[path[0]]?.children?.[path[1]];
-      if (!cur) return tree;
-      const name = window.prompt(path.length === 1 ? "Sector name" : "Sub-sector name", cur.name || "")?.trim();
-      if (name == null) return tree;
-      cur.name = name;
-      return next;
+    const node = path.length === 1 ? baseNorm.tops[path[0]] : baseNorm.tops[path[0]]?.subs?.[path[1]];
+    if (!node) return;
+    const name = window.prompt(path.length === 1 ? "Sector name" : "Sub-sector name", node.name || "")?.trim();
+    if (name == null) return;
+    mutateTops((t) => {
+      const target = path.length === 1 ? t[path[0]] : t[path[0]]?.subs?.[path[1]];
+      if (!target) return null;
+      target.name = name;
+      return t;
     });
-  }, [emitTree]);
+  }, [baseNorm, mutateTops]);
 
   const deleteGroup = useCallback((path: number[]) => {
-    emitTree((tree) => {
+    mutateTops((t) => {
       if (path.length === 1) {
-        if (tree.length <= 1) return tree; // never drop the last top sector
-        const removed = tree[path[0]];
-        const removedIds = [...removed.ids, ...(removed.children?.flatMap((c) => c.ids) ?? [])];
-        const into = path[0] > 0 ? path[0] - 1 : 1; // merge into a neighbor
-        const next = tree
-          .map((g, i) => (i === into ? { ...g, ids: [...g.ids, ...removedIds] } : g))
-          .filter((_, i) => i !== path[0]);
-        return next;
+        // Delete a top sector — its holdings become unassigned (→ Unsorted).
+        if (!t[path[0]]) return null;
+        t.splice(path[0], 1);
+        return t;
       }
-      // Remove a sub-sector: its holdings become loose on the parent (→ "Other").
+      // Delete a sub-sector — its holdings stay in the parent as loose ("Other").
       const [i, j] = path;
-      const parent = tree[i];
-      if (!parent?.children) return tree;
-      const removed = parent.children[j];
-      const children = parent.children.filter((_, k) => k !== j);
-      const newParent: HeatmapGroup = children.length
-        ? { name: parent.name, ids: [...parent.ids, ...removed.ids], children }
-        : { name: parent.name, ids: [...parent.ids, ...removed.ids] }; // collapse to leaf
-      return tree.map((g, k) => (k === i ? newParent : g));
+      const parent = t[i];
+      const removed = parent?.subs?.[j];
+      if (!parent || !removed) return null;
+      parent.subs.splice(j, 1);
+      let other = parent.subs.find((s) => s.synthetic);
+      if (!other) { other = { name: "Other", path: [i, parent.subs.length], cells: [], synthetic: true }; parent.subs.push(other); }
+      other.cells.push(...removed.cells);
+      return t;
     });
-  }, [emitTree]);
+  }, [mutateTops]);
 
   const addSubSector = useCallback((path: number[]) => {
-    // Split a top sector into sub-sectors; its holdings stay loose ("Other")
-    // until dragged into the new sub.
-    emitTree((tree) => {
+    const top = baseNorm.tops[path[0]];
+    if (!top) return;
+    const n = top.subs.filter((s) => /^Sub-sector \d+$/.test(s.name)).length + 1;
+    const name = window.prompt("Sub-sector name", `Sub-sector ${n}`)?.trim();
+    if (name == null) return;
+    mutateTops((t) => {
       const i = path[0];
-      const top = tree[i];
-      if (!top) return tree;
-      const existing = top.children ?? [];
-      const n = existing.filter((c) => /^Sub-sector \d+$/.test(c.name)).length + 1;
-      const name = window.prompt("Sub-sector name", `Sub-sector ${n}`)?.trim();
-      if (name == null) return tree;
-      const children = [...existing, { name: name || `Sub-sector ${n}`, ids: [] as string[] }];
-      return tree.map((g, k) => (k === i ? { name: top.name, ids: top.ids, children } : g));
+      const target = t[i];
+      if (!target) return null;
+      // Splitting a leaf into sub-sectors: its holdings become loose ("Other").
+      if (target.leaf) {
+        target.leaf = false;
+        const loose = target.cells;
+        target.cells = [];
+        target.subs = loose.length ? [{ name: "Other", path: [i, 1], cells: loose, synthetic: true }] : [];
+      }
+      target.subs.push({ name: name || `Sub-sector ${n}`, path: [i, target.subs.length], cells: [], synthetic: false });
+      return t;
     });
-  }, [emitTree]);
+  }, [baseNorm, mutateTops]);
 
   const hoveredCell = hover && !dragId ? cells.find((c) => c.symbol === hover.symbol) ?? null : null;
   const transition = reduce ? "none" : "filter 150ms ease, border-color 150ms ease";
