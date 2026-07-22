@@ -196,7 +196,19 @@ interface SectorBlock extends Placed<SectorGroup> {
 interface NormSub { name: string; path: number[]; cells: HCell[]; synthetic: boolean; }
 interface NormTop { name: string; path: number[]; leaf: boolean; cells: HCell[]; subs: NormSub[]; synthetic: boolean; }
 interface LeafBlock { path: number[]; x: number; y: number; w: number; h: number; tiles: Placed<{ cell: HCell }>[]; }
-interface GroupLabel { path: number[]; name: string; x: number; y: number; w: number; level: 0 | 1; synthetic: boolean; }
+interface GroupLabel {
+  path: number[]; name: string; x: number; y: number; w: number; level: 0 | 1; synthetic: boolean;
+  aggPct: number; priced: number; up: number; down: number; // value-weighted % + up/down counts
+}
+
+/** Value-weighted mean % change + up/down counts for a set of cells (cash excluded). */
+function cellStats(cells: HCell[]): { aggPct: number; priced: number; up: number; down: number } {
+  const priced = cells.filter((c) => !c.isCash);
+  const wsum = priced.reduce((s, c) => s + c.value, 0) || 1;
+  const aggPct = priced.reduce((s, c) => s + c.value * c.changePct, 0) / wsum;
+  const up = priced.filter((c) => c.changePct >= 0).length;
+  return { aggPct, priced: priced.length, up, down: priced.length - up };
+}
 
 function cloneTops(tops: NormTop[]): NormTop[] {
   return tops.map((t) => ({
@@ -460,7 +472,10 @@ export function HoldingsTreemap({
     for (const tr of topRects) {
       const t = tr.item;
       const labelH = grouped ? LABEL_H : 0;
-      if (grouped) labels.push({ path: t.path, name: t.name, x: tr.x, y: tr.y, w: tr.w, level: 0, synthetic: t.synthetic });
+      if (grouped) {
+        const cs = cellStats(t.leaf ? t.cells : t.subs.flatMap((su) => su.cells));
+        labels.push({ path: t.path, name: t.name, x: tr.x, y: tr.y, w: tr.w, level: 0, synthetic: t.synthetic, ...cs });
+      }
       const innerY = tr.y + labelH;
       const innerH = Math.max(1, tr.h - labelH);
       if (t.leaf) {
@@ -471,7 +486,7 @@ export function HoldingsTreemap({
         const subRects = squarify(t.subs.map((su) => ({ item: su, area: Math.max(sumCells(su.cells), subFloor, 1) })), tr.x, innerY, tr.w, innerH);
         for (const sr of subRects) {
           const su = sr.item;
-          labels.push({ path: su.path, name: su.name, x: sr.x, y: sr.y, w: sr.w, level: 1, synthetic: su.synthetic });
+          labels.push({ path: su.path, name: su.name, x: sr.x, y: sr.y, w: sr.w, level: 1, synthetic: su.synthetic, ...cellStats(su.cells) });
           const sInnerY = sr.y + SUB_LABEL_H;
           const sInnerH = Math.max(1, sr.h - SUB_LABEL_H);
           leafBlocks.push({ path: su.path, x: sr.x, y: sInnerY, w: sr.w, h: sInnerH, tiles: tilesFor(su.cells, sr.x, sInnerY, sr.w, sInnerH) });
@@ -645,6 +660,7 @@ export function HoldingsTreemap({
                   key={`${l.path.join("-")}-${l.name}`}
                   label={l}
                   editable={editable}
+                  maskPct={colorBy === "total"}
                   onRename={renameGroup}
                   onDelete={deleteGroup}
                   onAddSub={addSubSector}
@@ -887,10 +903,11 @@ const Tile = memo(function Tile({
 
 /* ─── A sector / sub-sector label (custom views), editable in edit mode ─── */
 function CustomLabel({
-  label, editable, onRename, onDelete, onAddSub,
+  label, editable, maskPct, onRename, onDelete, onAddSub,
 }: {
   label: GroupLabel;
   editable: boolean;
+  maskPct: boolean;
   onRename: (path: number[]) => void;
   onDelete: (path: number[]) => void;
   onAddSub: (path: number[]) => void;
@@ -898,9 +915,12 @@ function CustomLabel({
   const top = label.level === 0;
   const strip = top ? LABEL_H : SUB_LABEL_H;
   const placeholder = top ? "＋ name this sector" : "＋ name";
+  // Show up/down counts only where there's room (wide top blocks, not while
+  // editing — controls take that space).
+  const showCounts = label.priced > 0 && !editable && label.w > 180;
   return (
     <div
-      className="absolute flex items-center gap-1 select-none"
+      className="absolute flex items-center gap-1.5 select-none"
       style={{ left: label.x + 6, top: label.y + (top ? 3 : 2), maxWidth: label.w - 10, height: strip - 3 }}
     >
       <span
@@ -918,6 +938,19 @@ function CustomLabel({
       >
         {label.name || (editable ? placeholder : "")}
       </span>
+      {label.priced > 0 && (
+        <span
+          className="font-mono tabular-nums shrink-0"
+          style={{ fontSize: top ? 10 : 9, color: label.aggPct >= 0 ? "var(--positive)" : "var(--negative)" }}
+        >
+          {maskPct ? <Sensitive>{signedPct(label.aggPct)}</Sensitive> : signedPct(label.aggPct)}
+        </span>
+      )}
+      {showCounts && (
+        <span className="font-mono tabular-nums shrink-0" style={{ fontSize: 9.5, color: "oklch(0.46 0.006 74)" }}>
+          {label.up}↑ {label.down}↓
+        </span>
+      )}
       {editable && (
         <>
           {top && !label.synthetic && (
