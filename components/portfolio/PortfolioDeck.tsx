@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import nextDynamic from "next/dynamic";
 import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
@@ -100,6 +100,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
   const [colorBy, setColorBy] = useState<"daily" | "total">("daily");
   const [includeCash, setIncludeCash] = useState(true);
   const [selected, setSelected] = useState<string>("");
+  const [heatmapOpen, setHeatmapOpen] = useState(false); // fullscreen expand
 
   // All accounts present, and which are currently visible (default all on).
   const accounts = useMemo(
@@ -261,6 +262,82 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
   const selFaceBond = selectedHolding ? isFaceValueBond(selectedHolding) : false;
   const selDeriv = selectedHolding ? isDerivative(selectedHolding) : false;
 
+  // The heatmap itself — reused inline and in the fullscreen expand modal.
+  const renderTreemap = () =>
+    treemapHoldings.length === 0 ? (
+      <div className="h-full flex items-center justify-center">
+        <p className="text-sm text-muted-foreground">No positions to show — adjust account filters.</p>
+      </div>
+    ) : (
+      <HoldingsTreemap
+        holdings={treemapHoldings}
+        colorBy={colorBy}
+        onSelect={setSelected}
+        selected={selected}
+        layout={activeView ? "custom" : "sector"}
+        groups={activeGroups}
+        editable={!!activeView && editing}
+        onGroupsChange={activeView ? (g) => persistGroups(activeView.id, g) : undefined}
+      />
+    );
+
+  // Shared controls bar (view pills + edit tools). `trailing` holds the
+  // context-specific button (Expand inline, Close in the modal).
+  const viewBar = (trailing: React.ReactNode) => (
+    <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <h2 className="text-xs uppercase tracking-wide text-muted-foreground mr-1">Heatmap</h2>
+        <ViewPill label="Auto" active={activeViewId === "auto"} onClick={() => selectView("auto")} />
+        {views.map((v) => (
+          <ViewPill key={v.id} label={v.name} active={activeViewId === v.id} onClick={() => selectView(v.id)} />
+        ))}
+        <button
+          onClick={createView}
+          title="New custom view from the current layout"
+          className="text-xs px-2 py-1 rounded-sm border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-[var(--primary)] transition-colors"
+        >
+          + New
+        </button>
+      </div>
+      <div className="flex items-center gap-2">
+        {activeView && (
+          <>
+            {editing && (
+              <button
+                onClick={addSector}
+                className="text-xs px-2 py-1 rounded-sm border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-[var(--primary)] transition-colors"
+                title="Add a new named sector, then drag holdings into it"
+              >
+                + Sector
+              </button>
+            )}
+            <button
+              onClick={() => setEditing((e) => !e)}
+              aria-pressed={editing}
+              className="text-xs px-2.5 py-1 rounded-sm border transition-colors"
+              style={{
+                borderColor: editing ? "var(--primary)" : "var(--border)",
+                background: editing ? "oklch(0.72 0.14 74 / 0.14)" : "transparent",
+                color: editing ? "var(--primary)" : "oklch(0.64 0.008 74)",
+              }}
+            >
+              {editing ? "Done arranging" : "Edit layout"}
+            </button>
+            <button onClick={() => renameView(activeView.id)} className="text-xs px-2 py-1 text-muted-foreground hover:text-foreground transition-colors">Rename</button>
+            <button onClick={() => deleteView(activeView.id)} className="text-xs px-2 py-1 text-muted-foreground transition-colors" style={{ color: "oklch(0.55 0.12 28)" }}>Delete</button>
+          </>
+        )}
+        {trailing}
+      </div>
+    </div>
+  );
+
+  const heatmapHint = (editing || viewsMsg) && (
+    <p className="text-xs" style={{ color: viewsMsg ? "var(--negative)" : "var(--primary)" }}>
+      {viewsMsg || "Drag tiles to move them between sectors — click a sector name to rename it. Saves automatically; sizes track position value."}
+    </p>
+  );
+
   return (
     <div className="flex-1 overflow-y-auto px-6 py-4">
       <div className="flex flex-col gap-4 max-w-[1500px]">
@@ -314,78 +391,24 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
 
         {/* ── heatmap ── */}
         <section className="rounded-md border border-border bg-card p-4 flex flex-col gap-2">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <h2 className="text-xs uppercase tracking-wide text-muted-foreground mr-1">Heatmap</h2>
-              {/* View tabs: Auto (traditional) + saved custom layouts */}
-              <ViewPill label="Auto" active={activeViewId === "auto"} onClick={() => selectView("auto")} />
-              {views.map((v) => (
-                <ViewPill key={v.id} label={v.name} active={activeViewId === v.id} onClick={() => selectView(v.id)} />
-              ))}
-              <button
-                onClick={createView}
-                title="New custom view from the current layout"
-                className="text-xs px-2 py-1 rounded-sm border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-[var(--primary)] transition-colors"
-              >
-                + New
-              </button>
-            </div>
-            <div className="flex items-center gap-2">
-              {activeView ? (
-                <>
-                  {editing && (
-                    <button
-                      onClick={addSector}
-                      className="text-xs px-2 py-1 rounded-sm border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-[var(--primary)] transition-colors"
-                      title="Add a new named sector, then drag holdings into it"
-                    >
-                      + Sector
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setEditing((e) => !e)}
-                    aria-pressed={editing}
-                    className="text-xs px-2.5 py-1 rounded-sm border transition-colors"
-                    style={{
-                      borderColor: editing ? "var(--primary)" : "var(--border)",
-                      background: editing ? "oklch(0.72 0.14 74 / 0.14)" : "transparent",
-                      color: editing ? "var(--primary)" : "oklch(0.64 0.008 74)",
-                    }}
-                  >
-                    {editing ? "Done arranging" : "Edit layout"}
-                  </button>
-                  <button onClick={() => renameView(activeView.id)} className="text-xs px-2 py-1 text-muted-foreground hover:text-foreground transition-colors">Rename</button>
-                  <button onClick={() => deleteView(activeView.id)} className="text-xs px-2 py-1 text-muted-foreground transition-colors" style={{ color: "oklch(0.55 0.12 28)" }}>Delete</button>
-                </>
-              ) : (
-                <p className="text-xs text-muted-foreground">Click a holding to chart it.</p>
-              )}
-            </div>
-          </div>
-          {(editing || viewsMsg) && (
-            <p className="text-xs" style={{ color: viewsMsg ? "var(--negative)" : "var(--primary)" }}>
-              {viewsMsg || "Drag tiles to reorder or move them between sectors — click a sector name to rename it. Saves automatically; sizes still track position value."}
-            </p>
+          {viewBar(
+            <button
+              onClick={() => setHeatmapOpen(true)}
+              title="Expand heatmap"
+              aria-label="Expand heatmap"
+              className="grid h-7 w-7 place-items-center rounded-sm border border-border text-muted-foreground transition-colors hover:text-foreground hover:border-[var(--primary)]"
+            >
+              <ExpandIcon />
+            </button>,
           )}
-          <div style={{ height: 440 }}>
-            {treemapHoldings.length === 0 ? (
-              <div className="h-full flex items-center justify-center">
-                <p className="text-sm text-muted-foreground">No positions to show — adjust account filters.</p>
-              </div>
-            ) : (
-              <HoldingsTreemap
-                holdings={treemapHoldings}
-                colorBy={colorBy}
-                onSelect={setSelected}
-                selected={selected}
-                layout={activeView ? "custom" : "sector"}
-                groups={activeGroups}
-                editable={!!activeView && editing}
-                onGroupsChange={activeView ? (g) => persistGroups(activeView.id, g) : undefined}
-              />
-            )}
-          </div>
+          {heatmapHint}
+          {!activeView && <p className="text-xs text-muted-foreground">Click a holding to chart it · expand for a bigger view.</p>}
+          <div style={{ height: 440 }}>{renderTreemap()}</div>
         </section>
+
+        <HeatmapModal open={heatmapOpen} onClose={() => setHeatmapOpen(false)} bar={viewBar} hint={heatmapHint}>
+          {renderTreemap()}
+        </HeatmapModal>
 
         {/* ── selected-holding: chart + insights ── */}
         <section className="rounded-md border border-border bg-card p-4 flex flex-col gap-3">
@@ -443,6 +466,58 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
         <ActivityFeed accounts={accounts} hidden={hidden} />
       </div>
     </div>
+  );
+}
+
+function ExpandIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+    </svg>
+  );
+}
+
+/* Fullscreen expand for the heatmap — reuses the same controls bar + treemap. */
+function HeatmapModal({
+  open, onClose, bar, hint, children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  bar: (trailing: React.ReactNode) => React.ReactNode;
+  hint: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    else if (!open && d.open) d.close();
+  }, [open]);
+  return (
+    <dialog
+      ref={ref}
+      onClose={onClose}
+      onClick={(e) => { if (e.target === ref.current) onClose(); }}
+      className="app-dialog m-auto h-[92vh] w-[96vw] max-w-[1600px] rounded-md border border-border bg-popover p-0 text-foreground"
+    >
+      <div className="flex h-full flex-col gap-2 p-4">
+        {bar(
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            title="Close"
+            className="grid h-7 w-7 place-items-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden>
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>,
+        )}
+        {hint}
+        <div className="flex-1 min-h-0">{children}</div>
+      </div>
+    </dialog>
   );
 }
 
