@@ -73,10 +73,19 @@ export async function fetchQuote(ticker: string): Promise<FinnhubQuote | null> {
   }
 }
 
+// Sanity ceiling on a single fetch. The old value (30) silently dropped every
+// ticker past the 30th — in /api/snapshots (and its cron, which aggregates
+// tickers across ALL users) that meant those holdings fell back to cost basis,
+// storing a flat value every day so the affected account never showed a daily
+// P/L. Raised well above any real portfolio; concurrency is still bounded at 8
+// and the 60s cache absorbs repeats, and callers on the serverless path set
+// maxDuration so a larger fetch can't be guillotined mid-flight.
+const MAX_QUOTES = 300;
+
 /** Fetch many quotes in parallel (bounded concurrency; 60s cache absorbs repeats). */
 export async function fetchQuotes(tickers: string[]): Promise<Record<string, FinnhubQuote>> {
   const quotes: Record<string, FinnhubQuote> = {};
-  const results = await mapLimit(tickers.slice(0, 30), 8, (t) => fetchQuote(t));
+  const results = await mapLimit(tickers.slice(0, MAX_QUOTES), 8, (t) => fetchQuote(t));
   for (const q of results) if (q) quotes[q.ticker] = q;
   return quotes;
 }

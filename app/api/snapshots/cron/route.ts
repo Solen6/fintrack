@@ -7,6 +7,11 @@ import { generateMonthlyReports } from "@/lib/monthly-reports";
 import { computeBondMarks, type BondRow } from "@/lib/bond-marks";
 import { computeDerivativeMarks, type DerivativeRow } from "@/lib/derivative-marks";
 
+// Prices every holding across ALL users + applies corporate actions + monthly
+// reports — comfortably past the default serverless cap. (Vercel clamps to the
+// plan max if lower; this just lifts the ceiling where allowed.)
+export const maxDuration = 300;
+
 /**
  * Scheduled trigger: captures a daily portfolio_snapshots row for every user
  * that owns holdings, regardless of whether anyone is logged in. Mirrors the

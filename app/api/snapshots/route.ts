@@ -5,6 +5,11 @@ import { isMarketDay } from "@/lib/market-calendar";
 import { computeBondMarks, type BondRow } from "@/lib/bond-marks";
 import { computeDerivativeMarks, type DerivativeRow } from "@/lib/derivative-marks";
 
+// Pricing every holding (live quotes + bond/derivative marks) can exceed the
+// default serverless cap; without this the POST that captures today's snapshot
+// could be killed before writing, leaving today with no P/L.
+export const maxDuration = 60;
+
 /* ─── GET: the user's snapshot history, oldest first ───
    Returns one row per (date, account). Legacy rows captured before per-account
    tracking have account === null and represent the combined total for that day;
