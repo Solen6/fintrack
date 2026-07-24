@@ -43,6 +43,7 @@ export function CalendarClient() {
   const [view, setView] = useState<ViewMode>("month");
   const [cursor, setCursor] = useState(today);
   const [selectedDay, setSelectedDay] = useState<string | null>(today);
+  const [query, setQuery] = useState("");
 
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [fetchedTo, setFetchedTo] = useState("");
@@ -128,10 +129,13 @@ export function CalendarClient() {
     return { start: today, end, periodStart: today, periodEnd: end };
   }, [view, cursor, today]);
 
+  const hasQuery = query.trim().length > 0;
+
   /* Events: forward-only, fetched out to at least +90d, further when the user
-     pages ahead. The year view paints from snapshots, not events — skip it. */
+     pages ahead. The year view paints from snapshots, not events — skip it,
+     unless the user is searching (search spans events across every view). */
   useEffect(() => {
-    if (view === "year") return;
+    if (view === "year" && !hasQuery) return;
     const base = addDays(today, 90);
     const needed = range.end > base ? range.end : base;
     if (fetchedTo && needed <= fetchedTo) return;
@@ -153,7 +157,7 @@ export function CalendarClient() {
     return () => {
       alive = false;
     };
-  }, [view, range.end, fetchedTo, today]);
+  }, [view, range.end, fetchedTo, today, hasQuery]);
 
   /* Day P/L: capture today's snapshot first (same as the dashboard does), then
      read the full history and collapse it into per-day moves. */
@@ -251,6 +255,22 @@ export function CalendarClient() {
     }
     return map;
   }, [filtered]);
+
+  /* Search: matches title / detail / category across the loaded events (respects
+     the category chips + hidden state via `filtered`). Non-empty query swaps the
+     normal views for a results list so matches are visible in any view. */
+  const searchResults = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return filtered
+      .filter(
+        (e) =>
+          e.title.toLowerCase().includes(q) ||
+          (e.detail ?? "").toLowerCase().includes(q) ||
+          e.category.toLowerCase().includes(q),
+      )
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [filtered, query]);
 
   /* Month/week summary: est. dividend income, earnings count, next big macro. */
   const summary = useMemo(() => {
@@ -386,8 +406,33 @@ export function CalendarClient() {
           </div>
         </div>
 
-        {/* Category chips (events don't render in the year view) */}
-        {view !== "year" && (
+        {/* Search — spans all views; a non-empty query shows a results list */}
+        <div className="relative w-full max-w-xs">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground">
+            <SearchIcon />
+          </span>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search events…"
+            aria-label="Search calendar events"
+            className="w-full bg-transparent border border-border rounded-sm pl-8 pr-7 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-colors"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center rounded-sm text-muted-foreground hover:text-foreground transition-colors text-xs"
+              aria-label="Clear search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
+        {/* Category chips (events don't render in the year view; while searching
+            they still narrow the results) */}
+        {(view !== "year" || hasQuery) && (
           <div className="flex items-center gap-2 flex-wrap">
             {CATEGORIES.map((c) => {
               const on = active.has(c);
@@ -427,7 +472,7 @@ export function CalendarClient() {
         )}
 
         {/* Period summary */}
-        {summary && (
+        {summary && !hasQuery && (
           <div className="flex items-center gap-x-4 gap-y-1 text-xs text-muted-foreground flex-wrap">
             {summary.hasDiv && (
               <span>
@@ -449,8 +494,30 @@ export function CalendarClient() {
           </div>
         )}
 
+        {/* Search results — replace the normal views while a query is active */}
+        {hasQuery && (
+          <div className="flex flex-col gap-3">
+            <p className="text-xs text-muted-foreground">
+              {searchResults.length} result{searchResults.length === 1 ? "" : "s"} for “{query.trim()}”
+              {loading && view === "year" ? " · loading events…" : ""}
+            </p>
+            {searchResults.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No events match “{query.trim()}”.
+              </p>
+            ) : (
+              <AgendaList
+                events={searchResults}
+                hidden={hidden}
+                onToggleHide={toggleHide}
+                onDeleteCustom={deleteCustom}
+              />
+            )}
+          </div>
+        )}
+
         {/* Views */}
-        {view === "month" && (
+        {!hasQuery && view === "month" && (
           <>
             <MonthGrid
               cursor={monthStart(cursor)}
@@ -476,7 +543,7 @@ export function CalendarClient() {
           </>
         )}
 
-        {view === "week" && (
+        {!hasQuery && view === "week" && (
           <WeekStrip
             start={weekStart(cursor)}
             today={today}
@@ -488,7 +555,7 @@ export function CalendarClient() {
           />
         )}
 
-        {view === "year" && (
+        {!hasQuery && view === "year" && (
           <YearHeatmap
             year={Number(cursor.slice(0, 4))}
             today={today}
@@ -498,7 +565,7 @@ export function CalendarClient() {
           />
         )}
 
-        {view === "agenda" &&
+        {!hasQuery && view === "agenda" &&
           (loading ? (
             <div className="flex flex-col gap-4">
               {Array.from({ length: 5 }).map((_, i) => (
@@ -515,6 +582,16 @@ export function CalendarClient() {
           ))}
       </div>
     </div>
+  );
+}
+
+/* Magnifier icon for the search box (SVG, not emoji). */
+function SearchIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
   );
 }
 

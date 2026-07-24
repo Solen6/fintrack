@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { NewsArticle } from "@/app/api/news/route";
 import type { ArticleState } from "@/app/api/news/interactions/route";
 import { formatRelativeTime } from "@/lib/format";
@@ -38,16 +38,31 @@ export function NewsFeed({
   prefs,
   onEditPreferences,
 }: Props) {
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+
   const filtered = useMemo(() => {
     let list = articles.filter((a) => !interactions[a.url]?.deleted);
     list = list.filter((a) => articleVisible(a, prefs));
     if (selectedTicker) list = list.filter((a) => a.ticker === selectedTicker);
     if (filter === "saved") list = list.filter((a) => interactions[a.url]?.saved);
+    if (q) {
+      list = list.filter(
+        (a) =>
+          a.headline.toLowerCase().includes(q) ||
+          a.summary.toLowerCase().includes(q) ||
+          a.source.toLowerCase().includes(q) ||
+          (a.ticker ?? "").toLowerCase().includes(q),
+      );
+    }
     return list;
-  }, [articles, selectedTicker, interactions, filter, prefs]);
+  }, [articles, selectedTicker, interactions, filter, prefs, q]);
 
-  // Distinguish "no data" from "your preferences filtered everything out".
+  // Distinguish "no data" from "your preferences filtered everything out" from
+  // "your search matched nothing".
+  const noSearchMatch = q.length > 0 && filtered.length === 0;
   const hidByPrefs =
+    !noSearchMatch &&
     filtered.length === 0 &&
     filter === "all" &&
     !selectedTicker &&
@@ -87,21 +102,48 @@ export function NewsFeed({
       {/* Feed area */}
       <div className="flex-1 overflow-y-auto flex flex-col min-w-0">
         {/* Filter tabs */}
-        <div className="flex items-center gap-0.5 px-4 py-2 border-b border-border shrink-0">
-          {(["all", "saved"] as Filter[]).map((f) => (
-            <button
-              key={f}
-              onClick={() => onFilterChange(f)}
-              className="px-3 py-1 rounded-sm text-xs font-medium transition-colors capitalize"
-              style={{
-                color: filter === f ? "oklch(0.72 0.14 74)" : undefined,
-              }}
-              aria-pressed={filter === f}
-            >
-              {f === "all" ? "All" : "Saved"}
-            </button>
-          ))}
-          <div className="ml-auto flex items-center gap-1">
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0">
+          <div className="flex items-center gap-0.5 shrink-0">
+            {(["all", "saved"] as Filter[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => onFilterChange(f)}
+                className="px-3 py-1 rounded-sm text-xs font-medium transition-colors capitalize"
+                style={{
+                  color: filter === f ? "oklch(0.72 0.14 74)" : undefined,
+                }}
+                aria-pressed={filter === f}
+              >
+                {f === "all" ? "All" : "Saved"}
+              </button>
+            ))}
+          </div>
+
+          {/* Search */}
+          <div className="relative min-w-0 w-36 sm:w-52">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground">
+              <SearchIcon />
+            </span>
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search news…"
+              aria-label="Search news"
+              className="w-full bg-transparent border border-border rounded-sm pl-7 pr-6 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-colors"
+            />
+            {query && (
+              <button
+                onClick={() => setQuery("")}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center rounded-sm text-muted-foreground hover:text-foreground transition-colors text-xs"
+                aria-label="Clear search"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          <div className="ml-auto flex items-center gap-1 shrink-0">
             <button
               onClick={onEditPreferences}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-xs font-medium text-foreground border border-border hover:border-primary transition-colors"
@@ -122,7 +164,20 @@ export function NewsFeed({
           <FeedSkeleton />
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center flex-1 gap-2 px-6 text-center">
-            {hidByPrefs ? (
+            {noSearchMatch ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  No articles match “{query.trim()}”.
+                </p>
+                <button
+                  onClick={() => setQuery("")}
+                  className="text-xs font-medium transition-colors"
+                  style={{ color: "oklch(0.72 0.14 74)" }}
+                >
+                  Clear search
+                </button>
+              </>
+            ) : hidByPrefs ? (
               <>
                 <p className="text-sm text-muted-foreground">
                   No articles match your preferences.
@@ -170,6 +225,16 @@ function tickerBtn(active: boolean) {
     "w-full text-left px-4 py-2 text-sm font-mono transition-colors duration-150",
     active ? "text-foreground font-semibold" : "text-muted-foreground hover:text-foreground",
   ].join(" ");
+}
+
+/* Magnifier icon for the search box (SVG, not emoji). */
+function SearchIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 /* Sliders icon for the Preferences button (SVG, not emoji). */
