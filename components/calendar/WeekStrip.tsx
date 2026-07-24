@@ -25,6 +25,7 @@ export function WeekStrip({
   pnl,
   hidden,
   onToggleHide,
+  onDeleteCustom,
 }: {
   start: string;
   today: string;
@@ -32,6 +33,7 @@ export function WeekStrip({
   pnl: Map<string, DayPnl> | null;
   hidden: Set<string>;
   onToggleHide: (e: CalendarEvent) => void;
+  onDeleteCustom?: (id: string) => void;
 }) {
   const { hidden: priv } = usePrivacy();
   const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
@@ -100,10 +102,11 @@ export function WeekStrip({
                 {dayEvents.length > 0 ? (
                   dayEvents.map((e, i) => (
                     <EventCard
-                      key={`${e.title}-${i}`}
+                      key={e.id ?? `${e.title}-${i}`}
                       event={e}
                       isHidden={hidden.has(eventKey(e))}
                       onToggleHide={onToggleHide}
+                      onDeleteCustom={onDeleteCustom}
                       compact
                     />
                   ))

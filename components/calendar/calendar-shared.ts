@@ -1,6 +1,6 @@
 /* Shared types + helpers for the calendar views (Month / Week / Year / Agenda). */
 
-export type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split";
+export type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split" | "Custom";
 
 export interface CalendarEvent {
   date: string; // YYYY-MM-DD
@@ -10,15 +10,17 @@ export interface CalendarEvent {
   ticker?: string;
   impact?: "high" | "med" | "low";
   amount?: number; // estimated total $ for dividends — sensitive, mask in Private mode
+  id?: string;     // present on user-added "Custom" events — the DB row id (for delete)
 }
 
-export const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Dividend", "Split"];
+export const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Dividend", "Split", "Custom"];
 
 export const CATEGORY_COLORS: Record<EventCategory, string> = {
   Macro:    "oklch(0.64 0.07 240)",
   Earnings: "oklch(0.72 0.14 74)",
   Dividend: "oklch(0.72 0.15 152)",
   Split:    "oklch(0.70 0.13 300)",
+  Custom:   "oklch(0.72 0.10 195)",
 };
 
 /* Day-P/L tint colors — green gain / red loss, matching the Positions donut

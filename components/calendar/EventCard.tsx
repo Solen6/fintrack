@@ -9,13 +9,19 @@ export function EventCard({
   event: e,
   isHidden,
   onToggleHide,
+  onDeleteCustom,
   compact = false,
 }: {
   event: CalendarEvent;
   isHidden: boolean;
   onToggleHide: (e: CalendarEvent) => void;
+  /** When set and the event is user-added (Custom), the row action deletes it
+      outright instead of hiding it. */
+  onDeleteCustom?: (id: string) => void;
   compact?: boolean;
 }) {
+  const isCustom = e.category === "Custom" && !!e.id;
+  const canDelete = isCustom && !!onDeleteCustom;
   return (
     <div
       className={`rounded-md border bg-card flex items-start gap-3 group ${compact ? "px-3 py-2" : "px-4 py-3"}`}
@@ -62,14 +68,25 @@ export function EventCard({
       {!compact && (
         <span className="text-xs text-muted-foreground shrink-0 mr-1">{e.category}</span>
       )}
-      <button
-        onClick={() => onToggleHide(e)}
-        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground shrink-0 text-sm leading-none"
-        aria-label={isHidden ? `Unhide ${e.title}` : `Hide ${e.title}`}
-        title={isHidden ? "Unhide" : "Hide"}
-      >
-        {isHidden ? "↩" : "×"}
-      </button>
+      {canDelete ? (
+        <button
+          onClick={() => onDeleteCustom!(e.id!)}
+          className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground shrink-0 text-sm leading-none"
+          aria-label={`Delete ${e.title}`}
+          title="Delete event"
+        >
+          🗑
+        </button>
+      ) : (
+        <button
+          onClick={() => onToggleHide(e)}
+          className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground shrink-0 text-sm leading-none"
+          aria-label={isHidden ? `Unhide ${e.title}` : `Hide ${e.title}`}
+          title={isHidden ? "Unhide" : "Hide"}
+        >
+          {isHidden ? "↩" : "×"}
+        </button>
+      )}
     </div>
   );
 }

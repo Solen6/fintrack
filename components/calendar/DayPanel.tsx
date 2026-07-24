@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { usePrivacy, MONEY_MASK } from "@/lib/privacy";
 import { marketHolidayName } from "@/lib/market-calendar";
 import { EventCard } from "./EventCard";
@@ -22,6 +23,8 @@ export function DayPanel({
   events,
   hidden,
   onToggleHide,
+  onAddCustom,
+  onDeleteCustom,
   pnl,
 }: {
   date: string;
@@ -29,9 +32,29 @@ export function DayPanel({
   events: CalendarEvent[];
   hidden: Set<string>;
   onToggleHide: (e: CalendarEvent) => void;
+  onAddCustom: (date: string, title: string, detail: string) => Promise<void>;
+  onDeleteCustom: (id: string) => void;
   pnl: DayPnl | undefined;
 }) {
   const { hidden: priv } = usePrivacy();
+  const [adding, setAdding] = useState(false);
+  const [title, setTitle] = useState("");
+  const [detail, setDetail] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    const t = title.trim();
+    if (!t || saving) return;
+    setSaving(true);
+    try {
+      await onAddCustom(date, t, detail.trim());
+      setTitle("");
+      setDetail("");
+      setAdding(false);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const label = new Date(parseDs(date)).toLocaleDateString("en-US", {
     weekday: "long",
@@ -79,15 +102,69 @@ export function DayPanel({
         <div className="flex flex-col gap-2">
           {events.map((e, i) => (
             <EventCard
-              key={`${e.title}-${i}`}
+              key={e.id ?? `${e.title}-${i}`}
               event={e}
               isHidden={hidden.has(eventKey(e))}
               onToggleHide={onToggleHide}
+              onDeleteCustom={onDeleteCustom}
             />
           ))}
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">No events.</p>
+      )}
+
+      {/* Add a custom one-off event on this day. Syncs to the iCal feed under
+          the 'Custom' category (its own feed toggle). */}
+      {adding ? (
+        <div className="flex flex-col gap-2 rounded-md border border-border bg-background/40 px-3 py-2.5">
+          <input
+            autoFocus
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit();
+              if (e.key === "Escape") setAdding(false);
+            }}
+            placeholder="Event title (e.g. Fed Chair speaks)"
+            maxLength={120}
+            className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none border-b border-border pb-1.5 focus:border-[var(--primary)] transition-colors"
+          />
+          <input
+            value={detail}
+            onChange={(e) => setDetail(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit();
+              if (e.key === "Escape") setAdding(false);
+            }}
+            placeholder="Note (optional)"
+            maxLength={300}
+            className="w-full bg-transparent text-xs text-muted-foreground placeholder:text-muted-foreground outline-none"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={submit}
+              disabled={!title.trim() || saving}
+              className="px-2.5 py-1 text-xs rounded-sm border transition-colors disabled:opacity-50"
+              style={{ borderColor: "var(--primary)", color: "var(--primary)" }}
+            >
+              {saving ? "Saving…" : "Add event"}
+            </button>
+            <button
+              onClick={() => setAdding(false)}
+              className="px-2.5 py-1 text-xs rounded-sm border border-border text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setAdding(true)}
+          className="self-start text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          ＋ Add event
+        </button>
       )}
     </div>
   );

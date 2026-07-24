@@ -8,7 +8,11 @@ import { mapLimit } from "@/lib/async";
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
 
-export type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split";
+export type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split" | "Custom";
+
+/** Canonical category order — mirrors components/calendar/calendar-shared.ts.
+    The feed prefs table stores a subset of these. */
+export const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Dividend", "Split", "Custom"];
 
 export interface CalendarEvent {
   date: string; // YYYY-MM-DD
@@ -20,6 +24,9 @@ export interface CalendarEvent {
   /** Estimated total $ for dividend events (shares × last per-share payment).
       Sensitive — masked client-side in Private mode, omitted from the iCal feed. */
   amount?: number;
+  /** Present on user-added "Custom" events — the DB row id. Lets the feed give
+      them a stable UID (custom-<id>) so edits/removals sync cleanly to Apple. */
+  id?: string;
 }
 
 export interface HoldingRef {

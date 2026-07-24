@@ -9,10 +9,12 @@ export function AgendaList({
   events,
   hidden,
   onToggleHide,
+  onDeleteCustom,
 }: {
   events: CalendarEvent[]; // already category- and hidden-filtered
   hidden: Set<string>;
   onToggleHide: (e: CalendarEvent) => void;
+  onDeleteCustom?: (id: string) => void;
 }) {
   const grouped = useMemo(() => {
     const map = new Map<string, { label: string; events: CalendarEvent[] }>();
@@ -37,10 +39,11 @@ export function AgendaList({
           <div className="flex-1 flex flex-col gap-2">
             {dayEvents.map((e, i) => (
               <EventCard
-                key={`${e.title}-${i}`}
+                key={e.id ?? `${e.title}-${i}`}
                 event={e}
                 isHidden={hidden.has(eventKey(e))}
                 onToggleHide={onToggleHide}
+                onDeleteCustom={onDeleteCustom}
               />
             ))}
           </div>

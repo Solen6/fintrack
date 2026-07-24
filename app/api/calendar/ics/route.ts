@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { buildCalendarEvents, type CalendarEvent } from "@/lib/calendar-events";
+import { buildCalendarEvents, CATEGORIES, type CalendarEvent, type EventCategory } from "@/lib/calendar-events";
 import { icsToken } from "@/lib/ics-feed";
 
 /* iCal subscribe feed — GET /api/calendar/ics?u=<userId>&t=<token>
@@ -33,9 +33,18 @@ function fold(line: string): string {
   return parts.join("\r\n");
 }
 
-/** Stable per-event UID: date + djb2 hash of the identity key. */
+/** Stable identity key for an event — the SAME string used by the in-app
+    calendar (calendar-shared.ts `eventKey`) and the hidden-events table, so the
+    feed can match what the user hid in-app. */
+function feedKey(e: CalendarEvent): string {
+  return `${e.date}|${e.category}|${e.title}`;
+}
+
+/** Stable per-event UID. Custom events use their DB id so an edit/removal syncs
+    cleanly; derived events hash the identity key (date + djb2). */
 function eventUid(e: CalendarEvent): string {
-  const key = `${e.date}|${e.category}|${e.title}`;
+  if (e.category === "Custom" && e.id) return `custom-${e.id}@fintrack`;
+  const key = feedKey(e);
   let h = 5381;
   for (let i = 0; i < key.length; i++) h = ((h << 5) + h + key.charCodeAt(i)) >>> 0;
   return `${e.date.replace(/-/g, "")}-${h.toString(16)}@fintrack`;
@@ -90,15 +99,30 @@ export async function GET(req: NextRequest) {
   }
 
   const admin = createAdminClient();
-  const { data: holdings } = await admin
-    .from("holdings")
-    .select("ticker, name, shares")
-    .eq("user_id", u);
-
   const today = new Date().toISOString().split("T")[0];
   const to = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
 
-  const events = await buildCalendarEvents(
+  // Feed customization (all three from supabase/calendar-feed.sql). Absent rows
+  // degrade gracefully to the pre-feature behavior: all categories, nothing
+  // hidden, no custom events.
+  const [{ data: holdings }, { data: prefRow }, { data: hiddenRows }, { data: customRows }] =
+    await Promise.all([
+      admin.from("holdings").select("ticker, name, shares").eq("user_id", u),
+      admin.from("calendar_feed_prefs").select("categories").eq("user_id", u).maybeSingle(),
+      admin.from("calendar_hidden_events").select("event_key").eq("user_id", u),
+      admin
+        .from("calendar_custom_events")
+        .select("id, event_date, title, detail")
+        .eq("user_id", u)
+        .gte("event_date", today),
+    ]);
+
+  const allowed = new Set<EventCategory>(
+    (prefRow?.categories as EventCategory[] | undefined) ?? CATEGORIES,
+  );
+  const hidden = new Set<string>((hiddenRows ?? []).map((r) => r.event_key as string));
+
+  const derived = await buildCalendarEvents(
     u,
     (holdings ?? []).map((h) => ({
       ticker: h.ticker as string,
@@ -109,9 +133,21 @@ export async function GET(req: NextRequest) {
     to,
   );
 
-  // Strip $ estimates before serializing (defense in depth — toIcs doesn't
-  // emit them either, but the feed should never even hold them).
-  const publicEvents = events.map(({ amount: _amount, ...rest }) => rest);
+  // User-added events sync under the 'Custom' category — its own feed toggle.
+  const custom: CalendarEvent[] = (customRows ?? []).map((r) => ({
+    date: r.event_date as string,
+    category: "Custom" as const,
+    title: r.title as string,
+    detail: (r.detail as string) ?? "",
+    id: r.id as string,
+  }));
+
+  // Apply the feed's category filter and the user's hidden events, then strip $
+  // estimates before serializing (defense in depth — toIcs doesn't emit them
+  // either, but the feed should never even hold them).
+  const publicEvents = [...derived, ...custom]
+    .filter((e) => allowed.has(e.category) && !hidden.has(feedKey(e)))
+    .map(({ amount: _amount, ...rest }) => rest);
 
   return new NextResponse(toIcs(publicEvents), {
     headers: {

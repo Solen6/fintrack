@@ -55,6 +55,44 @@ export function CalendarClient() {
   const [hidden, setHidden] = useState<Set<string>>(loadHidden);
   const [showHidden, setShowHidden] = useState(false);
 
+  /* User-added "Custom" events (server-backed). Merged into the derived events
+     everywhere below so they render in-app; they also sync to the iCal feed. */
+  const [custom, setCustom] = useState<CalendarEvent[]>([]);
+
+  /* Load server-side hide state + custom events once. Hide state starts from
+     localStorage (instant) then the server is authoritative — this is what lets
+     hiding an event in-app drop it from a subscribed Apple Calendar. */
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/calendar/hidden")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!alive || !d?.keys) return;
+        const set = new Set<string>(d.keys);
+        setHidden(set);
+        saveHidden(set); // mirror to localStorage for offline/optimistic reads
+      })
+      .catch(() => {});
+    fetch("/api/calendar/custom")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!alive || !Array.isArray(d?.events)) return;
+        setCustom(
+          d.events.map((e: { id: string; date: string; title: string; detail: string }) => ({
+            date: e.date,
+            category: "Custom" as const,
+            title: e.title,
+            detail: e.detail,
+            id: e.id,
+          })),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   /* Restore the last-used view (write happens in the change handler, not an
      effect, so this restore can't be clobbered on mount). */
   useEffect(() => {
@@ -150,24 +188,59 @@ export function CalendarClient() {
   };
 
   const toggleHide = (e: CalendarEvent) => {
+    const key = eventKey(e);
+    let nowHidden = false;
     setHidden((prev) => {
       const next = new Set(prev);
-      const key = eventKey(e);
       if (next.has(key)) next.delete(key);
-      else next.add(key);
+      else {
+        next.add(key);
+        nowHidden = true;
+      }
       saveHidden(next);
       return next;
     });
+    // Persist so the change reaches the iCal feed (Apple picks it up on its next
+    // refresh). Optimistic — a failure leaves the local/localStorage state as-is.
+    fetch("/api/calendar/hidden", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, hidden: nowHidden }),
+    }).catch(() => {});
   };
 
+  const addCustom = async (date: string, title: string, detail: string) => {
+    const res = await fetch("/api/calendar/custom", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date, title, detail }),
+    });
+    if (!res.ok) return;
+    const { event } = await res.json();
+    if (!event) return;
+    setCustom((prev) => [
+      ...prev,
+      { date: event.date, category: "Custom", title: event.title, detail: event.detail, id: event.id },
+    ]);
+  };
+
+  const deleteCustom = (id: string) => {
+    setCustom((prev) => prev.filter((e) => e.id !== id)); // optimistic
+    fetch(`/api/calendar/custom?id=${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
+  };
+
+  /* Derived (holdings) events + user-added custom events, deduped by identity so
+     nothing double-renders. */
+  const merged = useMemo(() => [...events, ...custom], [events, custom]);
+
   const hiddenCount = useMemo(
-    () => events.filter((e) => active.has(e.category) && hidden.has(eventKey(e))).length,
-    [events, active, hidden],
+    () => merged.filter((e) => active.has(e.category) && hidden.has(eventKey(e))).length,
+    [merged, active, hidden],
   );
 
   const filtered = useMemo(
-    () => events.filter((e) => active.has(e.category) && (showHidden || !hidden.has(eventKey(e)))),
-    [events, active, hidden, showHidden],
+    () => merged.filter((e) => active.has(e.category) && (showHidden || !hidden.has(eventKey(e)))),
+    [merged, active, hidden, showHidden],
   );
 
   const eventsByDate = useMemo(() => {
@@ -395,6 +468,8 @@ export function CalendarClient() {
                 events={eventsByDate.get(selectedDay) ?? []}
                 hidden={hidden}
                 onToggleHide={toggleHide}
+                onAddCustom={addCustom}
+                onDeleteCustom={deleteCustom}
                 pnl={pnl?.get(selectedDay)}
               />
             )}
@@ -409,6 +484,7 @@ export function CalendarClient() {
             pnl={pnl}
             hidden={hidden}
             onToggleHide={toggleHide}
+            onDeleteCustom={deleteCustom}
           />
         )}
 
@@ -435,7 +511,7 @@ export function CalendarClient() {
           ) : error ? (
             <p className="text-sm text-muted-foreground">{error}</p>
           ) : (
-            <AgendaList events={filtered} hidden={hidden} onToggleHide={toggleHide} />
+            <AgendaList events={filtered} hidden={hidden} onToggleHide={toggleHide} onDeleteCustom={deleteCustom} />
           ))}
       </div>
     </div>
@@ -451,6 +527,12 @@ function SubscribeButton() {
   const [copied, setCopied] = useState(false);
   const fetching = useRef(false);
 
+  /* Feed category prefs — which categories a subscribed calendar receives.
+     null until loaded. Saved server-side so the feed URL stays stable; Apple
+     picks up changes on its next refresh. */
+  const [feedCats, setFeedCats] = useState<Set<EventCategory> | null>(null);
+  const [prefsErr, setPrefsErr] = useState<string | null>(null);
+
   const openPopover = () => {
     setOpen((p) => !p);
     if (urls || fetching.current) return;
@@ -465,6 +547,30 @@ function SubscribeButton() {
       .finally(() => {
         fetching.current = false;
       });
+    fetch("/api/calendar/prefs")
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error ?? "Prefs unavailable");
+        setFeedCats(new Set(d.categories as EventCategory[]));
+      })
+      .catch((e) => setPrefsErr(e.message));
+  };
+
+  const toggleCat = (c: EventCategory) => {
+    setFeedCats((prev) => {
+      const base = prev ?? new Set(CATEGORIES);
+      const next = new Set(base);
+      if (next.has(c)) next.delete(c);
+      else next.add(c);
+      // Persist in canonical order; the feed applies it on next refresh.
+      const ordered = CATEGORIES.filter((x) => next.has(x));
+      fetch("/api/calendar/prefs", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categories: ordered }),
+      }).catch(() => {});
+      return next;
+    });
   };
 
   const copy = async () => {
@@ -493,12 +599,44 @@ function SubscribeButton() {
             aria-label="Close"
             tabIndex={-1}
           />
-          <div className="absolute right-0 top-full mt-2 z-20 w-72 rounded-md border border-border bg-card p-3 flex flex-col gap-2 shadow-lg">
+          <div className="absolute right-0 top-full mt-2 z-20 w-72 rounded-md border border-border bg-card p-3 flex flex-col gap-2.5 shadow-lg">
+            <div>
+              <p className="text-xs text-foreground mb-1.5">Sync to this feed</p>
+              <div className="flex flex-wrap gap-1.5">
+                {CATEGORIES.map((c) => {
+                  const on = feedCats ? feedCats.has(c) : true;
+                  return (
+                    <button
+                      key={c}
+                      onClick={() => toggleCat(c)}
+                      disabled={!feedCats && !prefsErr}
+                      className="flex items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[11px] transition-colors disabled:opacity-40"
+                      style={{
+                        borderColor: on ? CATEGORY_COLORS[c] : "oklch(0.20 0 0)",
+                        color: on ? "oklch(0.94 0.005 74)" : "oklch(0.52 0.008 74)",
+                        background: on ? "oklch(0.14 0 0)" : "transparent",
+                      }}
+                      aria-pressed={on}
+                    >
+                      <span className="h-1.5 w-1.5 rounded-sm" style={{ background: CATEGORY_COLORS[c] }} aria-hidden />
+                      {c}
+                    </button>
+                  );
+                })}
+              </div>
+              {prefsErr && (
+                <p className="text-[11px] mt-1" style={{ color: "var(--negative)" }}>{prefsErr}</p>
+              )}
+            </div>
+
+            <div className="h-px bg-border" />
+
             <p className="text-xs text-foreground">Subscribe in Apple Calendar</p>
             <p className="text-[11px] text-muted-foreground leading-relaxed">
               Copy the feed link, then: iPhone/iPad — Settings ▸ Apps ▸ Calendar ▸ Calendar
               Accounts ▸ Add Subscribed Calendar. Mac — Calendar ▸ File ▸ New Calendar
-              Subscription. Events refresh on Apple&apos;s schedule (~hourly).
+              Subscription. Changes here (and events you hide) sync on Apple&apos;s
+              schedule (~hourly) — no need to re-subscribe.
             </p>
             {err ? (
               <p className="text-[11px]" style={{ color: "var(--negative)" }}>{err}</p>
