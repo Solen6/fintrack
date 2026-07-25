@@ -768,13 +768,20 @@ export function DashboardClient() {
     const portfolioReturn = (range: BenchRange): number | null => {
       if (range === "1D") return agg.todayPct;
       const target = startDate(range);
-      let base: { date: string; value: number } | null = null;
+      // Anchor = the latest snapshot at/before the window start that carries a
+      // unit-method return, then chain-link to today: (1+cumEnd)/(1+cumBase)−1.
+      // A raw (value_now − value_start)/value_start would count any mid-window
+      // deposit as a gain (and a withdrawal as a loss); the unit method issues/
+      // redeems units at the prior price, so external flows are return-neutral —
+      // the same figure the hero and the performance-graph header report.
+      let baseCum: number | null = null;
       for (const s of series) {
-        if (new Date(`${s.date}T00:00:00`) <= target) base = s;
-        else break;
+        if (new Date(`${s.date}T00:00:00`) > target) break;
+        const cum = navReturns.cumByDate.get(s.date);
+        if (cum !== undefined) baseCum = cum;
       }
-      if (!base || base.value <= 0) return null;
-      return ((agg.totalValue - base.value) / base.value) * 100;
+      if (baseCum === null || 1 + baseCum / 100 <= 0) return null;
+      return ((1 + navReturns.totalReturnPct / 100) / (1 + baseCum / 100) - 1) * 100;
     };
 
     return BENCH_RANGES.map((range) => ({
@@ -782,7 +789,7 @@ export function DashboardClient() {
       portfolio: portfolioReturn(range),
       market: benchmark?.[range] ?? null,
     }));
-  }, [agg.todayPct, agg.totalValue, series, benchmark]);
+  }, [agg.todayPct, series, benchmark, navReturns]);
 
   /* ─── States ─── */
   if (view === "loading") {
