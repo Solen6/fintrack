@@ -153,31 +153,52 @@ function Row({ label, value, color, muted, mono }: {
 /* ─── Asset allocation donut ─── */
 export function AllocationDonut({ data }: { data: AllocationPoint[] }) {
   const { hidden } = usePrivacy();
+  const total = data.reduce((s, d) => s + d.value, 0);
+  const pctOf = (v: number) => (total > 0 ? (v / total) * 100 : 0);
+
+  // Accessible summary — the slice palette is a monochrome ramp, so hue can't
+  // carry meaning for screen-reader (or colorblind) users; name the top slices.
+  const summary =
+    data.length === 0
+      ? "Asset allocation — no data"
+      : `Asset allocation by sector: ${data
+          .slice(0, 3)
+          .map((d) => `${d.label} ${pctOf(d.value).toFixed(0)}%`)
+          .join(", ")}${data.length > 3 ? `, and ${data.length - 3} more` : ""}`;
+
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <PieChart>
-        <Pie
-          data={data}
-          dataKey="value"
-          nameKey="label"
-          cx="50%"
-          cy="50%"
-          innerRadius="62%"
-          outerRadius="92%"
-          paddingAngle={2}
-          stroke="none"
-          isAnimationActive={false}
-        >
-          {data.map((slice) => (
-            <Cell key={slice.label} fill={slice.color} />
-          ))}
-        </Pie>
-        <Tooltip
-          contentStyle={tooltipStyle}
-          formatter={(v, n) => [hidden ? MONEY_MASK : formatCurrencyCompact(v as number), n as string]}
-        />
-      </PieChart>
-    </ResponsiveContainer>
+    <div role="img" aria-label={summary} className="h-full w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey="value"
+            nameKey="label"
+            cx="50%"
+            cy="50%"
+            innerRadius="62%"
+            outerRadius="92%"
+            paddingAngle={2}
+            stroke="none"
+            isAnimationActive={false}
+          >
+            {data.map((slice) => (
+              <Cell key={slice.label} fill={slice.color} />
+            ))}
+          </Pie>
+          <Tooltip
+            contentStyle={tooltipStyle}
+            // % of portfolio is the useful (and non-sensitive) allocation readout;
+            // append the $ amount only when Private mode isn't hiding balances.
+            formatter={(v, n) => {
+              const val = v as number;
+              const pct = `${pctOf(val).toFixed(1)}%`;
+              return [hidden ? pct : `${pct} · ${formatCurrencyCompact(val)}`, n as string];
+            }}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

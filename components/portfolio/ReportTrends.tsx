@@ -95,7 +95,7 @@ export function ReportTrends({ account, period }: { account: string; period: str
 
 const W = 720;
 const H = 200;
-const PAD = { l: 10, r: 10, t: 14, b: 22 };
+const PAD = { l: 36, r: 10, t: 14, b: 22 };
 const plotW = W - PAD.l - PAD.r;
 const plotH = H - PAD.t - PAD.b;
 
@@ -139,6 +139,23 @@ function TrendChart({ series, mode, selected }: { series: ReportTrendPoint[]; mo
     return <p className="text-xs" style={{ color: DIM }}>No data for this metric yet.</p>;
   }
 
+  // Y-axis scale so every bar/point is readable, not just relative. Ticks at the
+  // real data extremes (beta = plain number, everything else = a percentage).
+  const fmtAxis = (v: number) => (mode === "beta" ? v.toFixed(2) : `${v.toFixed(1)}%`);
+  const dataVals = vals.slice(mode === "beta" ? 2 : 1); // drop the synthetic 0 (and β=1) refs
+  const realMax = Math.max(...dataVals);
+  const realMin = Math.min(...dataVals);
+  const gridLines = [realMax, realMin].filter(
+    (v, i, a) => Math.abs(v) > 1e-9 && a.indexOf(v) === i, // skip 0 (zero baseline covers it) and dupes
+  );
+
+  const modeLabel = MODES.find((m) => m.key === mode)?.label ?? mode;
+  const selPoint = selected ? series.find((p) => p.period === selected) : null;
+  const selVal = selPoint ? primary(selPoint) : null;
+  const ariaLabel =
+    `${modeLabel} by month across ${n} months.` +
+    (selected && selVal != null ? ` Selected ${shortMonth(selected)}: ${fmtAxis(selVal)}.` : "");
+
   const isBars = mode !== "beta";
   const twoSeries = mode === "return";
   const nBars = twoSeries ? 2 : 1;
@@ -146,9 +163,24 @@ function TrendChart({ series, mode, selected }: { series: ReportTrendPoint[]; mo
 
   return (
     <div className="overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: n > 8 ? 640 : undefined, height: "auto" }} role="img">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: n > 8 ? 640 : undefined, height: "auto" }} role="img" aria-label={ariaLabel}>
+        {/* y-axis scale: faint gridline + left-edge value at each data extreme */}
+        {gridLines.map((v) => {
+          const y = yToPx(v);
+          return (
+            <g key={`grid-${v}`}>
+              <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} stroke={DIM} strokeWidth={1} strokeOpacity={0.22} />
+              <text x={PAD.l - 5} y={y + 3} textAnchor="end" fontSize={8} fill={DIM} style={{ fontVariantNumeric: "tabular-nums" }}>
+                {fmtAxis(v)}
+              </text>
+            </g>
+          );
+        })}
         {/* zero / baseline */}
         <line x1={PAD.l} y1={y0} x2={W - PAD.r} y2={y0} stroke="var(--border)" strokeWidth={1} />
+        <text x={PAD.l - 5} y={y0 + 3} textAnchor="end" fontSize={8} fill={DIM} style={{ fontVariantNumeric: "tabular-nums" }}>
+          {mode === "beta" ? "0.00" : "0%"}
+        </text>
 
         {/* β = 1 reference */}
         {mode === "beta" && yMin <= 1 && yMax >= 1 && (

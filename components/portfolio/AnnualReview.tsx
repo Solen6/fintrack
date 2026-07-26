@@ -193,8 +193,12 @@ export function AnnualReview({ account }: { account: string }) {
 /* ── Mini monthly-returns bar chart ────────────────────────────────────────── */
 
 const W = 720;
-const H = 150;
-const PAD = { l: 10, r: 10, t: 12, b: 20 };
+const H = 168;
+const PAD = { l: 10, r: 10, t: 18, b: 30 };
+
+// Compact signed label, e.g. "+4.2%" / "-3.1%". The sign carries direction so
+// the value isn't conveyed by bar color alone.
+const barLabel = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
 
 function MonthlyBars({ data }: { data: { period: string; pct: number }[] }) {
   const plotW = W - PAD.l - PAD.r;
@@ -203,7 +207,7 @@ function MonthlyBars({ data }: { data: { period: string; pct: number }[] }) {
   let yMax = Math.max(...vals);
   let yMin = Math.min(...vals);
   if (yMax === yMin) { yMax += 1; yMin -= 1; }
-  const head = (yMax - yMin) * 0.12;
+  const head = (yMax - yMin) * 0.16;
   yMax += head;
   yMin -= head;
   const yToPx = (v: number) => PAD.t + ((yMax - v) / (yMax - yMin)) * plotH;
@@ -211,14 +215,24 @@ function MonthlyBars({ data }: { data: { period: string; pct: number }[] }) {
   const groupW = plotW / data.length;
   const barW = Math.min(30, groupW * 0.6);
 
+  const best = data.reduce((a, b) => (b.pct > a.pct ? b : a));
+  const worst = data.reduce((a, b) => (b.pct < a.pct ? b : a));
+  const ariaLabel =
+    `Monthly returns across ${data.length} months. ` +
+    `Best ${shortMonth(best.period)} ${barLabel(best.pct)}, worst ${shortMonth(worst.period)} ${barLabel(worst.pct)}.`;
+
   return (
     <div className="overflow-x-auto">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: "auto", minWidth: data.length > 8 ? 620 : undefined }} role="img">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: "auto", minWidth: data.length > 8 ? 620 : undefined }} role="img" aria-label={ariaLabel}>
         <line x1={PAD.l} y1={y0} x2={W - PAD.r} y2={y0} stroke="var(--border)" strokeWidth={1} />
         {data.map((d, i) => {
           const cx = PAD.l + groupW * i + groupW / 2;
-          const top = Math.min(y0, yToPx(d.pct));
-          const h = Math.abs(yToPx(d.pct) - y0);
+          const barTop = yToPx(d.pct);
+          const top = Math.min(y0, barTop);
+          const h = Math.abs(barTop - y0);
+          // Value label sits just outside the bar's free end (above positive
+          // bars, below negative ones) so each month is readable without hover.
+          const labelY = d.pct >= 0 ? top - 4 : barTop + 10;
           return (
             <g key={d.period}>
               <rect
@@ -230,7 +244,10 @@ function MonthlyBars({ data }: { data: { period: string; pct: number }[] }) {
                 fill={gainColor(d.pct) ?? DIM}
                 opacity={0.85}
               />
-              <text x={cx} y={H - 6} textAnchor="middle" fontSize={9} fill={DIM}>
+              <text x={cx} y={labelY} textAnchor="middle" fontSize={8} fill={DIM} style={{ fontVariantNumeric: "tabular-nums" }}>
+                {barLabel(d.pct)}
+              </text>
+              <text x={cx} y={H - 8} textAnchor="middle" fontSize={9} fill={DIM}>
                 {shortMonth(d.period)}
               </text>
             </g>
