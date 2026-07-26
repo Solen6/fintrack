@@ -118,6 +118,22 @@ export async function getTreasuryCurve(): Promise<TreasuryCurve | null> {
   return curve;
 }
 
+/** Short-tenor par yield (%) for a past month, used as the risk-free rate in
+ *  monthly risk metrics. Pulls that month's Treasury XML directly (the feed is
+ *  addressable by month) and interpolates at `years` (default 3-month bill).
+ *  Bypasses the current-curve cache and has no live fallback — returns null if
+ *  the month's feed is unreachable, so callers report Sharpe/alpha as N/A rather
+ *  than with a wrong rate. `period` is "YYYY-MM". */
+export async function getTreasuryYieldForMonth(
+  period: string,
+  years = 0.25,
+): Promise<number | null> {
+  const yyyymm = period.replace("-", ""); // "2026-06" → "202606"
+  const curve = await fetchTreasuryXml(yyyymm);
+  if (!curve) return null;
+  return interpolateYield(curve, years);
+}
+
 /** Linear-interpolate the par yield (%) at a maturity, clamped to the curve ends. */
 export function interpolateYield(curve: TreasuryCurve, years: number): number {
   const pts = curve.points;

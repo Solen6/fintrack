@@ -3,11 +3,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCurrency, formatPercent, formatShares } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
+import { ReportTrends } from "@/components/portfolio/ReportTrends";
+import { AnnualReview } from "@/components/portfolio/AnnualReview";
+import { DIM, MUTED, gainColor, Section, Stat, StatGrid } from "@/components/portfolio/report-ui";
+import { buildReportCsv } from "@/lib/report-csv";
 import type {
   CashFlowReport,
   PortfolioReport,
   TaxReport,
   ReportEvent,
+  RiskMetrics,
 } from "@/lib/monthly-reports";
 
 /* Monthly report archive (Accounts → Reports). Reports are generated
@@ -31,9 +36,6 @@ interface ReportsResponse {
   reports: ReportRow[];
   needsMigration?: boolean;
 }
-
-const MUTED = "oklch(0.64 0.008 74)";
-const DIM = "oklch(0.52 0.008 74)";
 
 // Activity-feed type colors (matches the PortfolioDeck badge conventions).
 const TYPE_BADGE: Record<string, { bg: string; fg: string }> = {
@@ -59,10 +61,33 @@ function dateLabel(d: string): string {
   });
 }
 
-function gainColor(n: number): string | undefined {
-  if (n > 0) return "var(--positive)";
-  if (n < 0) return "var(--negative)";
-  return undefined;
+function DownloadIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M8 2v8m0 0L5 7m3 3l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.5 11v2A1.5 1.5 0 004 14.5h8a1.5 1.5 0 001.5-1.5v-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ModeToggle({ mode, onChange }: { mode: "month" | "year"; onChange: (m: "month" | "year") => void }) {
+  return (
+    <div className="flex items-center rounded-sm border border-border p-0.5 gap-0.5" role="tablist" aria-label="Report period">
+      {(["month", "year"] as const).map((m) => (
+        <button
+          key={m}
+          onClick={() => onChange(m)}
+          role="tab"
+          aria-selected={mode === m}
+          className={`px-2.5 py-1 text-xs rounded-[3px] transition-colors ${
+            mode === m ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {m === "month" ? "Monthly" : "Yearly"}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export function MonthlyReports({ account }: { account: string }) {
@@ -70,6 +95,7 @@ export function MonthlyReports({ account }: { account: string }) {
   const [period, setPeriod] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"month" | "year">("month");
 
   // Monotonic request id — a slow older response must not overwrite the month
   // the user selected last.
@@ -121,6 +147,40 @@ export function MonthlyReports({ account }: { account: string }) {
     null,
   );
 
+  const scopeLabel = scope === ALL_ACCOUNTS ? "All accounts" : scope;
+
+  const exportCsv = useCallback(() => {
+    if (!period || scoped.length === 0) return;
+    const csv = buildReportCsv({ period, scopeLabel, portfolio, cashFlow, tax });
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `fintrack-${scope === ALL_ACCOUNTS ? "all" : scope.replace(/[^a-z0-9]+/gi, "-")}-${period}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, [period, scoped.length, scopeLabel, portfolio, cashFlow, tax, scope]);
+
+  // Year mode reads its own on-demand endpoint — independent of the monthly
+  // report data and its loading/migration gates.
+  if (viewMode === "year") {
+    return (
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-6 py-4 flex flex-col gap-4 max-w-[1200px]">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="text-sm font-semibold text-foreground tracking-wide">
+              Year in Review — {scopeLabel}
+            </h2>
+            <ModeToggle mode={viewMode} onChange={setViewMode} />
+          </div>
+          <AnnualReview account={scope} />
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -168,6 +228,7 @@ export function MonthlyReports({ account }: { account: string }) {
           <h2 className="text-sm font-semibold text-foreground tracking-wide">
             Monthly Report — {scope === ALL_ACCOUNTS ? "All accounts" : scope}
           </h2>
+          <ModeToggle mode={viewMode} onChange={setViewMode} />
           <select
             value={period ?? ""}
             onChange={(e) => load(e.target.value)}
@@ -178,13 +239,25 @@ export function MonthlyReports({ account }: { account: string }) {
               <option key={p} value={p}>{monthLabel(p)}</option>
             ))}
           </select>
-          {generatedAt && (
-            <span className="ml-auto text-xs text-muted-foreground">
-              Generated {new Date(generatedAt).toLocaleDateString("en-US", {
-                month: "short", day: "numeric", year: "numeric",
-              })}
-            </span>
-          )}
+          <div className="ml-auto flex items-center gap-3">
+            {generatedAt && (
+              <span className="text-xs text-muted-foreground">
+                Generated {new Date(generatedAt).toLocaleDateString("en-US", {
+                  month: "short", day: "numeric", year: "numeric",
+                })}
+              </span>
+            )}
+            {scoped.length > 0 && (
+              <button
+                onClick={exportCsv}
+                className="flex items-center gap-1.5 text-xs rounded border border-border px-2 py-1 text-muted-foreground hover:text-foreground hover:border-primary transition-colors"
+                title="Download this report as CSV"
+              >
+                <DownloadIcon />
+                Export CSV
+              </button>
+            )}
+          </div>
         </div>
 
         {scoped.length === 0 ? (
@@ -198,48 +271,14 @@ export function MonthlyReports({ account }: { account: string }) {
           </div>
         ) : (
           <>
+            <ReportTrends account={scope} period={period} />
             {portfolio && <PortfolioSection r={portfolio} />}
+            {portfolio && <RiskSection risk={portfolio.risk} />}
             {cashFlow && <CashFlowSection r={cashFlow} />}
             {tax && <TaxSection r={tax} />}
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-// ── Shared bits ──────────────────────────────────────────────────────────────
-
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <section className="rounded-md border border-border bg-card p-4 flex flex-col gap-3">
-      <div className="flex items-baseline justify-between">
-        <h3 className="text-xs uppercase tracking-wide text-muted-foreground">{title}</h3>
-        {hint && <span className="text-xs" style={{ color: DIM }}>{hint}</span>}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function Stat({ label, value, color }: { label: string; value: React.ReactNode; color?: string }) {
-  return (
-    <div className="bg-card px-3 py-2.5 flex flex-col gap-0.5">
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
-      <span className="text-sm font-mono tabular-nums" style={color ? { color } : undefined}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function StatGrid({ children, cols = 4 }: { children: React.ReactNode; cols?: number }) {
-  return (
-    <div
-      className={`grid gap-px rounded-sm overflow-hidden ${cols === 6 ? "grid-cols-3 lg:grid-cols-6" : "grid-cols-2 lg:grid-cols-4"}`}
-      style={{ background: "var(--border)" }}
-    >
-      {children}
     </div>
   );
 }
@@ -367,6 +406,57 @@ function Allocation({ title, rows }: { title: string; rows: { label: string; val
         </div>
       ))}
     </div>
+  );
+}
+
+// ── Risk & benchmark section ─────────────────────────────────────────────────
+
+function num(v: number | null, dp = 2, suffix = ""): string {
+  return v == null ? "—" : `${v.toFixed(dp)}${suffix}`;
+}
+
+function RiskSection({ risk }: { risk: RiskMetrics | null }) {
+  if (!risk) {
+    return (
+      <Section title="Risk & Benchmark">
+        <p className="text-xs" style={{ color: DIM }}>
+          Risk metrics aren&apos;t available for this month. They&apos;ll appear once the report
+          regenerates with enough daily snapshot history.
+        </p>
+      </Section>
+    );
+  }
+  const bench = risk.benchmarkSymbol;
+  return (
+    <Section
+      title="Risk & Benchmark"
+      hint={`vs ${bench} · ${risk.observations} trading day${risk.observations === 1 ? "" : "s"}`}
+    >
+      {/* Sharpe deliberately lives on the yearly report, not here — a Sharpe
+          annualized from ~21 trading days is too noisy to be meaningful. */}
+      <StatGrid cols={4}>
+        <Stat
+          label="Beta"
+          value={num(risk.beta)}
+          color={risk.beta != null && risk.beta > 1 ? "var(--negative)" : undefined}
+        />
+        <Stat
+          label="Alpha (monthly)"
+          value={risk.alpha != null ? formatPercent(risk.alpha) : "—"}
+          color={risk.alpha != null ? gainColor(risk.alpha) : undefined}
+        />
+        <Stat label="Volatility (ann.)" value={num(risk.volatility, 2, "%")} />
+        <Stat
+          label={`${bench} return`}
+          value={risk.benchmarkReturn != null ? formatPercent(risk.benchmarkReturn) : "—"}
+          color={risk.benchmarkReturn != null ? gainColor(risk.benchmarkReturn) : undefined}
+        />
+      </StatGrid>
+      <p className="text-xs" style={{ color: DIM }}>
+        Beta and alpha are computed from daily unit-method returns over the month; alpha is
+        realized Jensen&apos;s alpha vs {bench}. Volatility is annualized.
+      </p>
+    </Section>
   );
 }
 

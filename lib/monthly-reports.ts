@@ -9,6 +9,17 @@ import {
   chainedPeriodReturns,
   type ReturnSnapshot,
 } from "@/lib/portfolio-return";
+import { yahooDailyHistory } from "@/lib/yahoo";
+import { getTreasuryYieldForMonth } from "@/lib/treasury-curve";
+import {
+  computeRiskMetrics,
+  dailyReturnsFromCloses,
+  dailyReturnsFromCum,
+  type DailyReturn,
+  type RiskMetrics,
+} from "@/lib/risk-metrics";
+
+export type { RiskMetrics } from "@/lib/risk-metrics";
 
 /* Monthly per-account report generator (supabase/monthly-reports.sql).
    Runs from the daily snapshot cron (service-role client, all users) right
@@ -46,8 +57,11 @@ export type ReportType = (typeof REPORT_TYPES)[number];
  *  single-snapshot months report null return instead of 0%.
  *  v3: monthReturnPct switched from point-to-point securities change to the
  *  dashboard's flow-adjusted unit-method return (shared lib/portfolio-return
- *  math), so reports and the dashboard monthly bars always agree. */
-export const PAYLOAD_VERSION = 3;
+ *  math), so reports and the dashboard monthly bars always agree.
+ *  v4: added risk metrics (beta, Jensen's alpha vs SPY, annualized Sharpe using
+ *  the month's short-tenor Treasury yield, annualized volatility) to the
+ *  portfolio payload. */
+export const PAYLOAD_VERSION = 4;
 
 /** Days into the new month during which cash_flow/tax reports keep refreshing. */
 const REFRESH_THROUGH_DAY = 7;
@@ -171,6 +185,11 @@ export interface PortfolioReport {
      *  carries no return-bearing snapshot. */
     monthReturnPct: number | null;
   };
+  /** Beta / alpha / Sharpe / volatility for the month vs SPY, from daily
+   *  unit-method returns. Null when there aren't enough daily observations
+   *  (e.g. a brand-new account) or the benchmark/risk-free feed was
+   *  unreachable at generation time. */
+  risk: RiskMetrics | null;
 }
 
 export interface RealizedLot {
@@ -513,6 +532,7 @@ function buildPortfolio(
   series: SnapPoint[],
   typeOf: (account: string) => AccountType,
   monthReturnPct: number | null,
+  risk: RiskMetrics | null,
 ): PortfolioReport {
   // Aggregate per ticker (rollup can hold the same ticker in several accounts).
   const byTicker = new Map<string, { name: string; shares: number; cost: number; priced: boolean; value: number }>();
@@ -630,6 +650,7 @@ function buildPortfolio(
       prevMonthEnd: prev.length > 0 ? r2(prev[prev.length - 1].securities) : null,
       monthReturnPct,
     },
+    risk,
   };
 }
 
@@ -846,6 +867,34 @@ async function upsertReportRows(
 
 // ── Main entry — called from the snapshot cron ───────────────────────────────
 
+/** SPY daily returns within `period` plus the month's total return, for the
+ *  risk metrics. Fetches a lookback buffer before the month start so the first
+ *  in-month trading day has a prior close to measure against. Period-scoped, so
+ *  the generator fetches it once for the whole batch. */
+async function fetchBenchmarkForPeriod(
+  period: string,
+): Promise<{ symbol: string; daily: DailyReturn[]; monthReturnPct: number | null }> {
+  const symbol = "SPY";
+  const { start, nextStart } = periodBounds(period);
+  const fromUnix = Math.floor(Date.parse(`${start}T00:00:00Z`) / 1000) - 12 * 86_400;
+  const toUnix = Math.floor(Date.parse(`${nextStart}T00:00:00Z`) / 1000) + 2 * 86_400;
+  const closes = (await yahooDailyHistory(symbol, fromUnix, toUnix)).sort((a, b) =>
+    a.date.localeCompare(b.date),
+  );
+  const daily = dailyReturnsFromCloses(closes).filter((d) => d.date >= start && d.date < nextStart);
+  const before = closes.filter((c) => c.date < start);
+  const inMonth = closes.filter((c) => c.date >= start && c.date < nextStart);
+  let monthReturnPct: number | null = null;
+  if (inMonth.length > 0) {
+    // Measure from the prior month's last close so the first day counts; fall
+    // back to the first in-month close only if no earlier close was returned.
+    const baseClose = before.length > 0 ? before[before.length - 1].close : inMonth[0].close;
+    const endClose = inMonth[inMonth.length - 1].close;
+    if (baseClose > 0) monthReturnPct = (endClose / baseClose - 1) * 100;
+  }
+  return { symbol, daily, monthReturnPct };
+}
+
 export async function generateMonthlyReports(
   db: SupabaseClient,
   today: string, // YYYY-MM-DD Eastern
@@ -1013,6 +1062,13 @@ export async function generateMonthlyReports(
   const generatedOn = today;
   const nowISO = new Date().toISOString();
 
+  // Benchmark (SPY) daily returns + the month's short-tenor Treasury yield are
+  // period-scoped — fetch once and reuse across every user and account scope.
+  // Either can be null (feed unreachable); computeRiskMetrics degrades to the
+  // metrics it can still compute honestly.
+  const benchmark = await fetchBenchmarkForPeriod(period);
+  const riskFreeAnnual = await getTreasuryYieldForMonth(period, 0.25);
+
   for (const user_id of users) {
     try {
       const uHoldings = holdingsByUser.get(user_id) ?? [];
@@ -1083,7 +1139,11 @@ export async function generateMonthlyReports(
         return liveCostBasis + liveCash;
       };
       const seedAccounts = new Set([...accounts, ...seedByAccount.keys()]);
-      const monthReturnFor = (scope: string): number | null => {
+      // Monthly return + the in-month daily return series (for the risk metrics),
+      // both off the same flow-adjusted unit-method cumulative curve.
+      const returnStatsFor = (
+        scope: string,
+      ): { monthPct: number | null; daily: DailyReturn[] } => {
         const nav = seriesFor(scope).map((p) => ({ date: p.date, nav: p.securities + p.cash }));
         const flowByDate = new Map<string, number>();
         for (const f of uFlows) {
@@ -1100,7 +1160,13 @@ export async function generateMonthlyReports(
           : seedFor(scope);
         const { cumByDate } = unitCumReturns(nav, flowByDate, seed, inceptionDateFor(nav));
         const m = chainedPeriodReturns(cumByDate, (d) => d.slice(0, 7)).find((p) => p.key === period);
-        return m ? r2(m.pct) : null;
+        // Day-over-day within the month. A "daily" return can span >1 calendar
+        // day when a snapshot is missing (weekend/holiday/outage); aligned by
+        // date against the benchmark, those days simply don't pair up.
+        const daily = dailyReturnsFromCum(cumByDate).filter(
+          (d) => d.date >= start && d.date < nextStart,
+        );
+        return { monthPct: m ? r2(m.pct) : null, daily };
       };
 
       // Phase 1 — cash_flow + tax need no market data. Commit them BEFORE the
@@ -1166,12 +1232,21 @@ export async function generateMonthlyReports(
           if (unpriced && !force) continue;
           const cashTotal = (isAll ? uCash : uCash.filter((c) => norm(c.account) === scope))
             .reduce((s, c) => s + (Number(c.balance) || 0), 0);
+          const stats = returnStatsFor(scope);
+          const risk = computeRiskMetrics({
+            portfolioDaily: stats.daily,
+            benchmarkDaily: benchmark.daily,
+            monthReturnPct: stats.monthPct,
+            benchmarkReturnPct: benchmark.monthReturnPct,
+            riskFreeAnnualPct: riskFreeAnnual,
+            benchmarkSymbol: benchmark.symbol,
+          });
           portfolioRows.push({
             user_id, account: scope, period, report_type: "portfolio",
             payload: buildPortfolio(
               period, scope, accountType, generatedOn,
               scopedHoldings, cashTotal, quotes, sectors, seriesFor(scope), typeOf,
-              monthReturnFor(scope),
+              stats.monthPct, risk,
             ),
             generated_at: nowISO,
           });
