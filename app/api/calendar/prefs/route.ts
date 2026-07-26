@@ -29,8 +29,9 @@ export async function GET() {
     );
   }
 
-  // No row → default to all categories syncing.
-  const categories = data?.categories ?? [...CATEGORIES];
+  // No row → default to all categories syncing. Filter out any obsolete categories (e.g. Custom).
+  const rawCats = data?.categories ?? [...CATEGORIES];
+  const categories = CATEGORIES.filter((c) => rawCats.includes(c));
   return NextResponse.json({ categories });
 }
 

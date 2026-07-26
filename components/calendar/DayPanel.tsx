@@ -22,7 +22,9 @@ export function DayPanel({
   today,
   events,
   hidden,
+  subscribed,
   onToggleHide,
+  onToggleSubscribe,
   onAddCustom,
   onDeleteCustom,
   pnl,
@@ -31,7 +33,9 @@ export function DayPanel({
   today: string;
   events: CalendarEvent[];
   hidden: Set<string>;
+  subscribed?: Set<string>;
   onToggleHide: (e: CalendarEvent) => void;
+  onToggleSubscribe?: (e: CalendarEvent) => void;
   onAddCustom: (date: string, title: string, detail: string) => Promise<void>;
   onDeleteCustom: (id: string) => void;
   pnl: DayPnl | undefined;
@@ -105,7 +109,9 @@ export function DayPanel({
               key={e.id ?? `${e.title}-${i}`}
               event={e}
               isHidden={hidden.has(eventKey(e))}
+              isSubscribed={subscribed?.has(eventKey(e))}
               onToggleHide={onToggleHide}
+              onToggleSubscribe={onToggleSubscribe}
               onDeleteCustom={onDeleteCustom}
             />
           ))}

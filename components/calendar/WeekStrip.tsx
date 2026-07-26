@@ -24,7 +24,9 @@ export function WeekStrip({
   eventsByDate,
   pnl,
   hidden,
+  subscribed,
   onToggleHide,
+  onToggleSubscribe,
   onDeleteCustom,
 }: {
   start: string;
@@ -32,7 +34,9 @@ export function WeekStrip({
   eventsByDate: Map<string, CalendarEvent[]>;
   pnl: Map<string, DayPnl> | null;
   hidden: Set<string>;
+  subscribed?: Set<string>;
   onToggleHide: (e: CalendarEvent) => void;
+  onToggleSubscribe?: (e: CalendarEvent) => void;
   onDeleteCustom?: (id: string) => void;
 }) {
   const { hidden: priv } = usePrivacy();
@@ -105,7 +109,9 @@ export function WeekStrip({
                       key={e.id ?? `${e.title}-${i}`}
                       event={e}
                       isHidden={hidden.has(eventKey(e))}
+                      isSubscribed={subscribed?.has(eventKey(e))}
                       onToggleHide={onToggleHide}
+                      onToggleSubscribe={onToggleSubscribe}
                       onDeleteCustom={onDeleteCustom}
                       compact
                     />

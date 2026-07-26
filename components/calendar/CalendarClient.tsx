@@ -55,14 +55,12 @@ export function CalendarClient() {
   const [active, setActive] = useState<Set<EventCategory>>(new Set(CATEGORIES));
   const [hidden, setHidden] = useState<Set<string>>(loadHidden);
   const [showHidden, setShowHidden] = useState(false);
+  const [subscribed, setSubscribed] = useState<Set<string>>(new Set());
 
-  /* User-added "Custom" events (server-backed). Merged into the derived events
-     everywhere below so they render in-app; they also sync to the iCal feed. */
+  /* User-added one-off events (server-backed). Merged into derived events. */
   const [custom, setCustom] = useState<CalendarEvent[]>([]);
 
-  /* Load server-side hide state + custom events once. Hide state starts from
-     localStorage (instant) then the server is authoritative — this is what lets
-     hiding an event in-app drop it from a subscribed Apple Calendar. */
+  /* Load server-side hide state, subscribed event keys, + custom events once. */
   useEffect(() => {
     let alive = true;
     fetch("/api/calendar/hidden")
@@ -74,6 +72,13 @@ export function CalendarClient() {
         saveHidden(set); // mirror to localStorage for offline/optimistic reads
       })
       .catch(() => {});
+    fetch("/api/calendar/subscribed")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!alive || !d?.keys) return;
+        setSubscribed(new Set<string>(d.keys));
+      })
+      .catch(() => {});
     fetch("/api/calendar/custom")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
@@ -81,7 +86,7 @@ export function CalendarClient() {
         setCustom(
           d.events.map((e: { id: string; date: string; title: string; detail: string }) => ({
             date: e.date,
-            category: "Custom" as const,
+            category: "Macro" as const,
             title: e.title,
             detail: e.detail,
             id: e.id,
@@ -213,6 +218,25 @@ export function CalendarClient() {
     }).catch(() => {});
   };
 
+  const toggleSubscribe = (e: CalendarEvent) => {
+    const key = eventKey(e);
+    let nowSubscribed = false;
+    setSubscribed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else {
+        next.add(key);
+        nowSubscribed = true;
+      }
+      return next;
+    });
+    fetch("/api/calendar/subscribed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, subscribed: nowSubscribed }),
+    }).catch(() => {});
+  };
+
   const addCustom = async (date: string, title: string, detail: string) => {
     const res = await fetch("/api/calendar/custom", {
       method: "POST",
@@ -224,7 +248,7 @@ export function CalendarClient() {
     if (!event) return;
     setCustom((prev) => [
       ...prev,
-      { date: event.date, category: "Custom", title: event.title, detail: event.detail, id: event.id },
+      { date: event.date, category: "Macro", title: event.title, detail: event.detail, id: event.id },
     ]);
   };
 
@@ -402,7 +426,7 @@ export function CalendarClient() {
                 </button>
               ))}
             </div>
-            <SubscribeButton />
+            <SubscribeButton subscribedCount={subscribed.size} />
           </div>
         </div>
 
@@ -509,7 +533,9 @@ export function CalendarClient() {
               <AgendaList
                 events={searchResults}
                 hidden={hidden}
+                subscribed={subscribed}
                 onToggleHide={toggleHide}
+                onToggleSubscribe={toggleSubscribe}
                 onDeleteCustom={deleteCustom}
               />
             )}
@@ -534,7 +560,9 @@ export function CalendarClient() {
                 today={today}
                 events={eventsByDate.get(selectedDay) ?? []}
                 hidden={hidden}
+                subscribed={subscribed}
                 onToggleHide={toggleHide}
+                onToggleSubscribe={toggleSubscribe}
                 onAddCustom={addCustom}
                 onDeleteCustom={deleteCustom}
                 pnl={pnl?.get(selectedDay)}
@@ -550,7 +578,9 @@ export function CalendarClient() {
             eventsByDate={eventsByDate}
             pnl={pnl}
             hidden={hidden}
+            subscribed={subscribed}
             onToggleHide={toggleHide}
+            onToggleSubscribe={toggleSubscribe}
             onDeleteCustom={deleteCustom}
           />
         )}
@@ -578,7 +608,14 @@ export function CalendarClient() {
           ) : error ? (
             <p className="text-sm text-muted-foreground">{error}</p>
           ) : (
-            <AgendaList events={filtered} hidden={hidden} onToggleHide={toggleHide} onDeleteCustom={deleteCustom} />
+            <AgendaList
+              events={filtered}
+              hidden={hidden}
+              subscribed={subscribed}
+              onToggleHide={toggleHide}
+              onToggleSubscribe={toggleSubscribe}
+              onDeleteCustom={deleteCustom}
+            />
           ))}
       </div>
     </div>
@@ -597,7 +634,7 @@ function SearchIcon() {
 
 /* ── iCal subscribe ──────────────────────────────────────────────────────── */
 
-function SubscribeButton() {
+function SubscribeButton({ subscribedCount = 0 }: { subscribedCount?: number }) {
   const [open, setOpen] = useState(false);
   const [urls, setUrls] = useState<{ webcal: string; https: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -678,7 +715,7 @@ function SubscribeButton() {
           />
           <div className="absolute right-0 top-full mt-2 z-20 w-72 rounded-md border border-border bg-card p-3 flex flex-col gap-2.5 shadow-lg">
             <div>
-              <p className="text-xs text-foreground mb-1.5">Sync to this feed</p>
+              <p className="text-xs text-foreground mb-1.5">Sync categories to feed</p>
               <div className="flex flex-wrap gap-1.5">
                 {CATEGORIES.map((c) => {
                   const on = feedCats ? feedCats.has(c) : true;
@@ -701,6 +738,11 @@ function SubscribeButton() {
                   );
                 })}
               </div>
+              {subscribedCount > 0 && (
+                <p className="text-[11px] mt-2 text-foreground font-mono">
+                  📡 +{subscribedCount} singular event{subscribedCount === 1 ? "" : "s"} subscribed to feed
+                </p>
+              )}
               {prefsErr && (
                 <p className="text-[11px] mt-1" style={{ color: "var(--negative)" }}>{prefsErr}</p>
               )}

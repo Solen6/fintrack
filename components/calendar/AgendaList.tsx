@@ -8,12 +8,16 @@ import { eventKey, formatDateLabel, type CalendarEvent } from "./calendar-shared
 export function AgendaList({
   events,
   hidden,
+  subscribed,
   onToggleHide,
+  onToggleSubscribe,
   onDeleteCustom,
 }: {
   events: CalendarEvent[]; // already category- and hidden-filtered
   hidden: Set<string>;
+  subscribed?: Set<string>;
   onToggleHide: (e: CalendarEvent) => void;
+  onToggleSubscribe?: (e: CalendarEvent) => void;
   onDeleteCustom?: (id: string) => void;
 }) {
   const grouped = useMemo(() => {
@@ -42,7 +46,9 @@ export function AgendaList({
                 key={e.id ?? `${e.title}-${i}`}
                 event={e}
                 isHidden={hidden.has(eventKey(e))}
+                isSubscribed={subscribed?.has(eventKey(e))}
                 onToggleHide={onToggleHide}
+                onToggleSubscribe={onToggleSubscribe}
                 onDeleteCustom={onDeleteCustom}
               />
             ))}

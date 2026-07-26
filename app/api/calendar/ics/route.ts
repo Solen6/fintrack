@@ -43,7 +43,7 @@ function feedKey(e: CalendarEvent): string {
 /** Stable per-event UID. Custom events use their DB id so an edit/removal syncs
     cleanly; derived events hash the identity key (date + djb2). */
 function eventUid(e: CalendarEvent): string {
-  if (e.category === "Custom" && e.id) return `custom-${e.id}@fintrack`;
+  if (e.id) return `event-${e.id}@fintrack`;
   const key = feedKey(e);
   let h = 5381;
   for (let i = 0; i < key.length; i++) h = ((h << 5) + h + key.charCodeAt(i)) >>> 0;
@@ -102,14 +102,13 @@ export async function GET(req: NextRequest) {
   const today = new Date().toISOString().split("T")[0];
   const to = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
 
-  // Feed customization (all three from supabase/calendar-feed.sql). Absent rows
-  // degrade gracefully to the pre-feature behavior: all categories, nothing
-  // hidden, no custom events.
-  const [{ data: holdings }, { data: prefRow }, { data: hiddenRows }, { data: customRows }] =
+  // Feed customization: category prefs, hidden events, singular subscribed events, and custom events.
+  const [{ data: holdings }, { data: prefRow }, { data: hiddenRows }, { data: subscribedRows }, { data: customRows }] =
     await Promise.all([
       admin.from("holdings").select("ticker, name, shares").eq("user_id", u),
       admin.from("calendar_feed_prefs").select("categories").eq("user_id", u).maybeSingle(),
       admin.from("calendar_hidden_events").select("event_key").eq("user_id", u),
+      admin.from("calendar_subscribed_events").select("event_key").eq("user_id", u),
       admin
         .from("calendar_custom_events")
         .select("id, event_date, title, detail")
@@ -121,6 +120,7 @@ export async function GET(req: NextRequest) {
     (prefRow?.categories as EventCategory[] | undefined) ?? CATEGORIES,
   );
   const hidden = new Set<string>((hiddenRows ?? []).map((r) => r.event_key as string));
+  const subscribed = new Set<string>((subscribedRows ?? []).map((r) => r.event_key as string));
 
   const derived = await buildCalendarEvents(
     u,
@@ -133,20 +133,23 @@ export async function GET(req: NextRequest) {
     to,
   );
 
-  // User-added events sync under the 'Custom' category — its own feed toggle.
+  // User-added one-off events sync as 'Macro' by default (or standard category)
   const custom: CalendarEvent[] = (customRows ?? []).map((r) => ({
     date: r.event_date as string,
-    category: "Custom" as const,
+    category: "Macro" as const,
     title: r.title as string,
     detail: (r.detail as string) ?? "",
     id: r.id as string,
   }));
 
-  // Apply the feed's category filter and the user's hidden events, then strip $
-  // estimates before serializing (defense in depth — toIcs doesn't emit them
-  // either, but the feed should never even hold them).
+  // Apply the feed's category filter OR singular event subscription override,
+  // respecting hidden events. Strip $ estimates before serializing.
   const publicEvents = [...derived, ...custom]
-    .filter((e) => allowed.has(e.category) && !hidden.has(feedKey(e)))
+    .filter((e) => {
+      const key = feedKey(e);
+      if (hidden.has(key)) return false;
+      return allowed.has(e.category) || subscribed.has(key);
+    })
     .map(({ amount: _amount, ...rest }) => rest);
 
   return new NextResponse(toIcs(publicEvents), {

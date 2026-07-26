@@ -8,11 +8,11 @@ import { mapLimit } from "@/lib/async";
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
 
-export type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split" | "Custom";
+export type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split";
 
 /** Canonical category order — mirrors components/calendar/calendar-shared.ts.
     The feed prefs table stores a subset of these. */
-export const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Dividend", "Split", "Custom"];
+export const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Dividend", "Split"];
 
 export interface CalendarEvent {
   date: string; // YYYY-MM-DD
