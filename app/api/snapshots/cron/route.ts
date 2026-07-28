@@ -6,6 +6,7 @@ import { applyCorporateActionsWindow } from "@/lib/corporate-actions";
 import { generateMonthlyReports } from "@/lib/monthly-reports";
 import { computeBondMarks, type BondRow } from "@/lib/bond-marks";
 import { computeDerivativeMarks, type DerivativeRow } from "@/lib/derivative-marks";
+import { captureDueFrontierSnapshots, type SnapshotHolding } from "@/lib/frontier-snapshots";
 
 // Prices every holding across ALL users + applies corporate actions + monthly
 // reports — comfortably past the default serverless cap. (Vercel clamps to the
@@ -182,6 +183,23 @@ async function run() {
     captured += rowsToWrite.length;
   }
 
+  // Yearly composition snapshot for the frontier chart's "past years" points.
+  // Rides this cron rather than taking its own vercel.json slot (Hobby caps the
+  // number of cron jobs), and reuses the holdings + quotes already fetched above
+  // so it costs no extra round-trips. Only users 365+ days since their last one
+  // are written. Never abort the snapshot run if it fails.
+  let frontierSnapshots = null;
+  try {
+    frontierSnapshots = await captureDueFrontierSnapshots(
+      db,
+      today,
+      rows as unknown as SnapshotHolding[],
+      quotes,
+    );
+  } catch {
+    frontierSnapshots = { error: "frontier snapshots failed" };
+  }
+
   // Generate the just-closed month's per-account reports AFTER snapshots, so
   // they read the freshest rows. "Missing" is checked in the DB (the 1st is
   // often a weekend/holiday this cron skips); rides this cron to stay under
@@ -193,7 +211,7 @@ async function run() {
     monthlyReports = { error: "monthly reports failed" };
   }
 
-  return { users, captured, date: today, corporateActions, monthlyReports };
+  return { users, captured, date: today, corporateActions, frontierSnapshots, monthlyReports };
 }
 
 export async function GET(request: NextRequest) {

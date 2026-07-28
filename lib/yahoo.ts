@@ -62,12 +62,19 @@ export async function yahooDailyHistory(
   symbol: string,
   fromUnixSec: number,
   toUnixSec: number,
+  opts: { adjusted?: boolean } = {},
 ): Promise<DailyClose[]> {
   const key = symbol.trim().toUpperCase();
   try {
+    // `adjusted` returns dividend- and split-adjusted closes, i.e. TOTAL return.
+    // Required for return/risk analytics — on income instruments (BND, BIL, any
+    // high-yield name) raw price return omits nearly the whole return. Default
+    // stays raw: split/DRIP detection in lib/corporate-actions.ts needs the
+    // unadjusted print, since adjusted history has the split already applied.
     const url =
       `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(key)}` +
-      `?interval=1d&period1=${Math.floor(fromUnixSec)}&period2=${Math.floor(toUnixSec)}`;
+      `?interval=1d&period1=${Math.floor(fromUnixSec)}&period2=${Math.floor(toUnixSec)}` +
+      (opts.adjusted ? `&events=div%2Csplit` : "");
     const res = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; fintrack/1.0)" },
       next: { revalidate: 3600 },
@@ -76,9 +83,10 @@ export async function yahooDailyHistory(
     const json = await res.json();
     const result = json?.chart?.result?.[0];
     const timestamps: number[] | undefined = result?.timestamp;
-    const closes: (number | null)[] | undefined =
-      result?.indicators?.quote?.[0]?.close ??
-      result?.indicators?.adjclose?.[0]?.adjclose;
+    const raw: (number | null)[] | undefined = result?.indicators?.quote?.[0]?.close;
+    const adj: (number | null)[] | undefined = result?.indicators?.adjclose?.[0]?.adjclose;
+    // Fall back to raw when adjusted was asked for but isn't offered.
+    const closes: (number | null)[] | undefined = opts.adjusted ? adj ?? raw : raw ?? adj;
     if (!timestamps || !closes) return [];
     const out: DailyClose[] = [];
     for (let i = 0; i < timestamps.length; i++) {
