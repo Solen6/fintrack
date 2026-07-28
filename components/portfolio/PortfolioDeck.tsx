@@ -10,6 +10,8 @@ import { recognizeStrategy } from "@/lib/option-strategies";
 import { netCost, OPTION_MULTIPLIER } from "@/lib/options-math";
 import { toLeg, PayoffPanel } from "./DerivativesView";
 
+const PORTFOLIO_VIEW_KEY = "fintrack:portfolioHeatmapView"; // persisted per-device active heatmap sleeve ("auto" | view id)
+
 /** Merge the legs of each multi-leg strategy into ONE synthetic holding so the
  *  heatmap shows an iron condor as a single tile, not four. The synthetic row
  *  keeps the comboId, so the insights panel still finds the REAL legs for the
@@ -154,7 +156,15 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
       .then((r) => r.json())
       .then((d) => {
         if (d.needsMigration) setViewsMsg("Run supabase/heatmap-views.sql to save custom layouts.");
-        setViews(d.views ?? []);
+        const fetched: HeatmapView[] = d.views ?? [];
+        setViews(fetched);
+        // Restore the last-viewed sleeve, but only once we can confirm it still
+        // exists — otherwise the "view was deleted" effect below would just
+        // bounce it straight back to Auto before the fetch lands.
+        try {
+          const saved = localStorage.getItem(PORTFOLIO_VIEW_KEY);
+          if (saved && fetched.some((v) => v.id === saved)) setActiveViewId(saved);
+        } catch { /* localStorage unavailable */ }
       })
       .catch(() => {});
   }, []);
@@ -164,6 +174,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
     if (activeViewId !== "auto" && !views.some((v) => v.id === activeViewId)) {
       setActiveViewId("auto");
       setEditing(false);
+      try { localStorage.setItem(PORTFOLIO_VIEW_KEY, "auto"); } catch { /* ignore */ }
     }
   }, [views, activeViewId]);
 
@@ -196,7 +207,11 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
     return [{ name: "", ids: activeView.ordering ?? [] }];
   }, [activeView]);
 
-  const selectView = (id: string) => { setActiveViewId(id); setEditing(false); };
+  const selectView = (id: string) => {
+    setActiveViewId(id);
+    setEditing(false);
+    try { localStorage.setItem(PORTFOLIO_VIEW_KEY, id); } catch { /* ignore */ }
+  };
 
   const createView = async () => {
     setViewsMsg("");
@@ -212,6 +227,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
     setViews((v) => [...v, d.view]);
     setActiveViewId(d.view.id);
     setEditing(true);
+    try { localStorage.setItem(PORTFOLIO_VIEW_KEY, d.view.id); } catch { /* ignore */ }
   };
 
   const persistGroups = (id: string, groups: HeatmapGroup[]) => {
@@ -246,7 +262,11 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
   const deleteView = (id: string) => {
     if (!window.confirm("Delete this heatmap view?")) return;
     setViews((v) => v.filter((x) => x.id !== id));
-    if (activeViewId === id) { setActiveViewId("auto"); setEditing(false); }
+    if (activeViewId === id) {
+      setActiveViewId("auto");
+      setEditing(false);
+      try { localStorage.setItem(PORTFOLIO_VIEW_KEY, "auto"); } catch { /* ignore */ }
+    }
     fetch("/api/heatmap-views", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },

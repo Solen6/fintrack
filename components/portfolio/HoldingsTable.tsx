@@ -13,15 +13,22 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
+interface CashBalance {
+  account: string;
+  label: string;
+  balance: number;
+}
+
 interface Props {
   holdings: HoldingWithMetrics[];
+  cash?: CashBalance[];
   account: string;
   onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null; drip?: boolean }) => Promise<void>;
   onClose?: (holding: HoldingWithMetrics) => void;
   onDelete?: (holding: HoldingWithMetrics) => Promise<void>;
 }
 
-export function HoldingsTable({ holdings, account, onEdit, onClose, onDelete }: Props) {
+export function HoldingsTable({ holdings, cash = [], account, onEdit, onClose, onDelete }: Props) {
   const [sort, setSort] = useState<{ field: SortField; dir: SortDir }>({
     field: "value",
     dir: "desc",
@@ -48,9 +55,20 @@ export function HoldingsTable({ holdings, account, onEdit, onClose, onDelete }: 
     });
   }, [holdings, account, sort]);
 
+  const cashTotal = useMemo(
+    () =>
+      (account === "all" ? cash : cash.filter((c) => c.account === account)).reduce(
+        (sum, c) => sum + c.balance,
+        0
+      ),
+    [cash, account]
+  );
+
+  // Denominator is the FULL account value (positions + cash), not just invested
+  // capital — otherwise cash-heavy accounts show inflated per-holding weights.
   const totalValue = useMemo(
-    () => filtered.reduce((sum, h) => sum + h.value, 0),
-    [filtered]
+    () => filtered.reduce((sum, h) => sum + h.value, 0) + cashTotal,
+    [filtered, cashTotal]
   );
 
   const toggleSort = (field: SortField) => {
@@ -104,6 +122,36 @@ export function HoldingsTable({ holdings, account, onEdit, onClose, onDelete }: 
                 onDelete={onDelete}
               />
             ))}
+            {cashTotal > 0 && (
+              <tr className="border-b border-border/50">
+                <td className="px-4 py-3" colSpan={2}>
+                  <span className="font-mono text-sm font-semibold text-foreground">Cash</span>
+                </td>
+                <td className="px-4 py-3">
+                  <span className="text-xs text-muted-foreground">—</span>
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-muted-foreground text-sm">—</td>
+                <td className="px-4 py-3 text-right font-mono text-muted-foreground text-sm">—</td>
+                <td className="px-4 py-3 text-right font-mono text-sm text-muted-foreground">—</td>
+                <td className="px-4 py-3 text-right font-mono text-sm text-foreground">
+                  <Sensitive>{formatCurrency(cashTotal)}</Sensitive>
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-sm text-muted-foreground">
+                  {(totalValue > 0 ? (cashTotal / totalValue) * 100 : 0).toFixed(1)}%
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-sm text-muted-foreground">—</td>
+                <td className="px-4 py-3 text-right font-mono text-sm text-muted-foreground">—</td>
+                <td className="px-4 py-3 text-center">
+                  <span
+                    className="inline-block text-xs px-2 py-0.5 rounded-sm"
+                    style={{ background: "oklch(0.16 0 0)", color: "oklch(0.52 0.008 74)" }}
+                  >
+                    {account === "all" ? "All" : (account === "brokerage" ? "Broker" : account === "roth" ? "Roth" : account)}
+                  </span>
+                </td>
+                {(onEdit || onClose || onDelete) && <td className="px-4 py-3" />}
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

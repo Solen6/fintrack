@@ -546,6 +546,7 @@ export function PortfolioClient() {
         {subView === "table" && (
           <HoldingsTable
             holdings={holdings.filter((h) => !isDerivative(h))}
+            cash={cash}
             account={selectedAccount}
             onEdit={async (holding, updates) => {
               const res = await fetch("/api/holdings", {
