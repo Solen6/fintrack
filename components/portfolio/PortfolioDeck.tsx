@@ -81,6 +81,10 @@ const ResponsiveContainer = nextDynamic(() => import("recharts").then((m) => m.R
 interface CashBalance { account: string; label: string; balance: number }
 const EMERALD = "0.72 0.15 152";
 const RUBY = "0.66 0.19 25";
+/* Stable id for the combined cash tile — custom sleeves store holding ids, so
+   this must not vary with the selected account or the tile would fall out of a
+   saved sector every time the scope changed. */
+const CASH_TILE_ID = "cash-total";
 
 function fmtPx(n: number): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: n >= 50 ? 2 : 4 });
@@ -98,26 +102,28 @@ function fmtVol(v: number): string {
   return v.toLocaleString("en-US");
 }
 
-export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMetrics[]; cash?: CashBalance[] }) {
+export function PortfolioDeck({
+  holdings,
+  cash = [],
+  account = "all",
+}: {
+  /* Already scoped to the selected account by PortfolioClient. The sidebar is
+     the ONE account filter on this page — this deck used to carry its own
+     per-account toggle chips, which let the heatmap show a different set of
+     accounts than the hero right above it. */
+  holdings: HoldingWithMetrics[];
+  cash?: CashBalance[];
+  account?: string;
+}) {
   const [colorBy, setColorBy] = useState<"daily" | "total">("daily");
   const [includeCash, setIncludeCash] = useState(true);
   const [selected, setSelected] = useState<string>("");
   const [heatmapOpen, setHeatmapOpen] = useState(false); // fullscreen expand
 
-  // All accounts present, and which are currently visible (default all on).
-  const accounts = useMemo(
-    () => [...new Set([...holdings.map((h) => h.account), ...cash.map((c) => c.account)])].sort(),
-    [holdings, cash],
-  );
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
-  const visible = (a: string) => !hidden.has(a);
-  const toggleAccount = (a: string) =>
-    setHidden((prev) => { const n = new Set(prev); n.has(a) ? n.delete(a) : n.add(a); return n; });
-
-  // Holdings shown in the heatmap: visible accounts + optional synthetic cash
-  // tiles, with multi-leg strategies merged into one tile each.
+  // Holdings shown in the heatmap: everything in scope + one optional synthetic
+  // cash tile, with multi-leg strategies merged into one tile each.
   const treemapHoldings = useMemo(() => {
-    const list = mergeComboLegs(holdings.filter((h) => visible(h.account)));
+    const list = mergeComboLegs(holdings);
     if (!includeCash) {
       return list.filter((h) => {
         const t = h.ticker.toUpperCase(); const s = h.sector.toLowerCase(); const a = h.account.toLowerCase();
@@ -125,15 +131,23 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
         return !isCash;
       });
     }
-    const cashLeaves: HoldingWithMetrics[] = cash
-      .filter((c) => visible(c.account) && c.balance > 0)
-      .map((c) => ({
-        id: `cash-${c.account}`, ticker: "CASH", name: c.label || `${c.account} Cash`, sector: "Cash",
-        shares: c.balance, costBasis: 1, currentPrice: 1, account: c.account,
-        value: c.balance, costTotal: c.balance, gainDollar: 0, gainPercent: 0, todayChangePct: 0,
-      }));
-    return [...list, ...cashLeaves];
-  }, [holdings, cash, hidden, includeCash]);
+    /* ONE cash tile for the whole scope: in "All Accounts" every account's cash
+       is a single combined position, not a tile per account. Netted (a margin
+       debit in one account offsets cash in another) and only drawn when the net
+       is positive — a treemap can't size a negative tile. `CASH_TILE_ID` is
+       fixed so a custom sleeve can file "Cash" once and keep it in every scope. */
+    const cashTotal = cash.reduce((s, c) => s + c.balance, 0);
+    if (cashTotal <= 0) return list;
+    const only = cash.length === 1 ? cash[0] : null;
+    const cashLeaf: HoldingWithMetrics = {
+      id: CASH_TILE_ID, ticker: "CASH",
+      name: only ? only.label || `${only.account} Cash` : "Cash · all accounts",
+      sector: "Cash",
+      shares: cashTotal, costBasis: 1, currentPrice: 1, account: only ? only.account : "All",
+      value: cashTotal, costTotal: cashTotal, gainDollar: 0, gainPercent: 0, todayChangePct: 0,
+    };
+    return [...list, cashLeaf];
+  }, [holdings, cash, includeCash]);
 
   // Default selection = largest visible non-cash holding; keep valid as filters change.
   const selectableTickers = useMemo(
@@ -286,7 +300,9 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
   const renderTreemap = () =>
     treemapHoldings.length === 0 ? (
       <div className="h-full flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">No positions to show — adjust account filters.</p>
+        <p className="text-sm text-muted-foreground">
+          {account === "all" ? "No positions to show." : `No positions in ${account}.`}
+        </p>
       </div>
     ) : (
       <HoldingsTreemap
@@ -363,31 +379,12 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
       <div className="flex flex-col gap-4 max-w-[1500px]">
         {/* ── controls ── */}
         <div className="flex items-center gap-x-5 gap-y-2 flex-wrap">
-          {accounts.length > 1 && (
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-xs text-muted-foreground">Accounts:</span>
-              {accounts.map((a) => {
-                const on = visible(a);
-                return (
-                  <button
-                    key={a}
-                    onClick={() => toggleAccount(a)}
-                    aria-pressed={on}
-                    title={on ? `${a} — shown (click to hide)` : `${a} — hidden (click to show)`}
-                    className="text-xs px-2 py-1 rounded-sm border transition-colors"
-                    style={{
-                      borderColor: "var(--border)",
-                      background: on ? "oklch(0.18 0 0)" : "transparent",
-                      color: on ? "oklch(0.92 0.005 74)" : "oklch(0.45 0.008 74)",
-                      textDecoration: on ? "none" : "line-through",
-                    }}
-                  >
-                    {a}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <span className="text-xs text-muted-foreground">
+            Showing{" "}
+            <span style={{ color: "var(--primary)" }}>
+              {account === "all" ? "all accounts" : account}
+            </span>
+          </span>
           <Segmented
             label="Color by"
             options={[["daily", "Daily"], ["total", "Total"]]}
@@ -483,7 +480,7 @@ export function PortfolioDeck({ holdings, cash = [] }: { holdings: HoldingWithMe
         </section>
 
         {/* ── 30-day activity ── */}
-        <ActivityFeed accounts={accounts} hidden={hidden} />
+        <ActivityFeed account={account} />
       </div>
     </div>
   );
@@ -880,7 +877,7 @@ const TYPE_BADGE: Partial<Record<ActivityType, { bg: string; fg: string }>> = {
   DEPOSIT: { bg: "oklch(0.22 0.04 150)", fg: "oklch(0.74 0.10 150)" }, // green — cash in
 };
 
-function ActivityFeed({ accounts, hidden }: { accounts: string[]; hidden: Set<string> }) {
+function ActivityFeed({ account }: { account: string }) {
   const [items, setItems] = useState<ActivityItem[] | null>(null);
   const [hasLedger, setHasLedger] = useState(true);
   const [filter, setFilter] = useState("all");
@@ -895,8 +892,10 @@ function ActivityFeed({ accounts, hidden }: { accounts: string[]; hidden: Set<st
   }, []);
 
   const active = TYPE_FILTERS.find((f) => f.key === filter) ?? TYPE_FILTERS[0];
+  // Account-less items (nothing to attribute) show in "All Accounts" only —
+  // they can't be claimed by any single account's view.
   const shown = (items ?? []).filter(
-    (it) => active.match(it.type) && (it.account == null || !hidden.has(it.account)),
+    (it) => active.match(it.type) && (account === "all" || it.account === account),
   );
 
   return (

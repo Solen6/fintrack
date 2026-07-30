@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { formatCurrency, formatShares, formatPercent } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 
@@ -33,8 +33,11 @@ interface EditDraft {
   date: string;  // YYYY-MM-DD
 }
 
-export function ClosedPositions() {
-  const [positions, setPositions] = useState<ClosedPosition[]>([]);
+/* `account` is the sidebar's selected scope ("all" or an account name). Closed
+   positions come from their own endpoint, so unlike the live-holdings panels
+   this one has to do the scoping itself. */
+export function ClosedPositions({ account = "all" }: { account?: string }) {
+  const [allPositions, setAllPositions] = useState<ClosedPosition[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditDraft>({ cost: "", sale: "", date: "" });
@@ -44,9 +47,14 @@ export function ClosedPositions() {
   useEffect(() => {
     fetch("/api/holdings/closed")
       .then((r) => r.json())
-      .then((d) => setPositions(d.closed ?? []))
+      .then((d) => setAllPositions(d.closed ?? []))
       .finally(() => setLoading(false));
   }, []);
+
+  const positions = useMemo(
+    () => (account === "all" ? allPositions : allPositions.filter((p) => p.account === account)),
+    [allPositions, account],
+  );
 
   const startEdit = (p: ClosedPosition) => {
     const faceBond = p.instrument_type === "bond";
@@ -92,7 +100,7 @@ export function ClosedPositions() {
       return;
     }
     if (d.position) {
-      setPositions((prev) => prev.map((row) => (row.id === p.id ? { ...row, ...d.position } : row)));
+      setAllPositions((prev) => prev.map((row) => (row.id === p.id ? { ...row, ...d.position } : row)));
     }
     setEditingId(null);
   };
@@ -108,7 +116,9 @@ export function ClosedPositions() {
   if (positions.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">No closed positions yet.</p>
+        <p className="text-sm text-muted-foreground">
+          {account === "all" ? "No closed positions yet." : `No closed positions in ${account}.`}
+        </p>
       </div>
     );
   }

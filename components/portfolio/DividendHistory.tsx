@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { Fragment, useState, useEffect, useCallback, useMemo } from "react";
 import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { AddDividendModal } from "./AddDividendModal";
@@ -66,8 +66,10 @@ function couponEvents(bond: HoldingWithMetrics, start: Date, end: Date): { date:
   return out;
 }
 
-export function DividendHistory({ bonds = [] }: { bonds?: HoldingWithMetrics[] }) {
-  const [dividends, setDividends] = useState<DividendRecord[]>([]);
+/* `bonds` arrives already scoped to the selected account; `account` scopes the
+   dividend records, which this component fetches itself. */
+export function DividendHistory({ bonds = [], account = "all" }: { bonds?: HoldingWithMetrics[]; account?: string }) {
+  const [allDividends, setAllDividends] = useState<DividendRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<RowAction>(null);
   const [working, setWorking] = useState<string | null>(null); // id being processed
@@ -78,11 +80,18 @@ export function DividendHistory({ bonds = [] }: { bonds?: HoldingWithMetrics[] }
     setLoading(true);
     fetch("/api/holdings/dividends")
       .then((r) => r.json())
-      .then((d) => setDividends(d.dividends ?? []))
+      .then((d) => setAllDividends(d.dividends ?? []))
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Records with no account can't be attributed to one, so they only appear in
+  // the combined "All Accounts" view.
+  const dividends = useMemo(
+    () => (account === "all" ? allDividends : allDividends.filter((d) => d.account === account)),
+    [allDividends, account],
+  );
 
   async function handleCorrect(id: string) {
     setWorking(id);
@@ -203,7 +212,9 @@ export function DividendHistory({ bonds = [] }: { bonds?: HoldingWithMetrics[] }
 
         {rows.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-1 py-16">
-            <p className="text-sm text-muted-foreground">No income recorded yet.</p>
+            <p className="text-sm text-muted-foreground">
+              {account === "all" ? "No income recorded yet." : `No income recorded in ${account}.`}
+            </p>
             <p className="text-xs" style={{ color: "oklch(0.52 0.008 74)" }}>
               Dividends are logged when a holding goes ex-dividend; bond coupons appear from each bond’s schedule.
             </p>
@@ -227,9 +238,12 @@ export function DividendHistory({ bonds = [] }: { bonds?: HoldingWithMetrics[] }
                 const isWorking = d ? working === d.id : false;
                 const err = d && rowError?.id === d.id ? rowError.msg : null;
 
+                /* The key belongs on the mapped element — the Fragment — not on
+                   the <tr> inside it, or React reconciles these rows by index.
+                   That now matters: switching account scope re-filters `rows`. */
                 return (
-                  <>
-                    <tr key={row.key} className="border-b border-border/50 group">
+                  <Fragment key={row.key}>
+                    <tr className="border-b border-border/50 group">
                       <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
                         {new Date(`${row.date}T00:00:00`).toLocaleDateString("en-US", {
                           month: "short", day: "numeric", year: "numeric",
@@ -322,13 +336,13 @@ export function DividendHistory({ bonds = [] }: { bonds?: HoldingWithMetrics[] }
                       </td>
                     </tr>
                     {err && (
-                      <tr key={`${row.key}-err`} className="border-b border-border/50">
+                      <tr className="border-b border-border/50">
                         <td colSpan={6} className="px-4 py-1.5 text-xs" style={{ color: "var(--negative)" }}>
                           {err}
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 );
               })}
             </tbody>

@@ -9,6 +9,10 @@ interface CashBalance {
 }
 
 interface Props {
+  /* Already scoped to the selected account by PortfolioClient — every panel on
+     the page reads the same filtered lists, so this strip must NOT filter again
+     (that's what let the hero and the heatmap disagree). `account` is here only
+     to label the scope. */
   holdings: HoldingWithMetrics[];
   cash?: CashBalance[];
   account: string;
@@ -19,12 +23,9 @@ interface Props {
 }
 
 export function SummaryStrip({ holdings, cash = [], account, cumReturn = null }: Props) {
-  const filtered = account === "all"
-    ? holdings
-    : holdings.filter((h) => h.account === account);
+  const filtered = holdings;
 
-  const cashTotal = (account === "all" ? cash : cash.filter((c) => c.account === account))
-    .reduce((s, c) => s + c.balance, 0);
+  const cashTotal = cash.reduce((s, c) => s + c.balance, 0);
 
   const positionsValue = filtered.reduce((s, h) => s + h.value, 0);
   const totalValue = positionsValue + cashTotal;
@@ -47,7 +48,11 @@ export function SummaryStrip({ holdings, cash = [], account, cumReturn = null }:
 
   return (
     <div className="flex items-center gap-8 px-6 py-4 border-b border-border text-sm shrink-0 overflow-x-auto">
-      <Metric label="Portfolio Value" value={<Sensitive>{formatCurrency(totalValue)}</Sensitive>} large />
+      <Metric
+        label={account === "all" ? "All Accounts" : account}
+        value={<Sensitive>{formatCurrency(totalValue)}</Sensitive>}
+        large
+      />
       <div className="w-px h-8 bg-border shrink-0" aria-hidden />
       <Metric label="Today" value={<Sensitive>{formatCurrency(todayChange)}</Sensitive>} change={todayPct} showSign />
       <Metric
@@ -57,7 +62,9 @@ export function SummaryStrip({ holdings, cash = [], account, cumReturn = null }:
         showSign
       />
       {cashTotal > 0 && <Metric label="Cash" value={<Sensitive>{formatCurrency(cashTotal)}</Sensitive>} muted />}
-      {account === "all" && filtered.length > 0 && (
+      {/* Shown for a single account too — it's the same question ("what did this
+          cost me, and how many positions is it?") whatever the scope. */}
+      {filtered.length > 0 && (
         <>
           <div className="w-px h-8 bg-border shrink-0" aria-hidden />
           <Metric label="Cost Basis" value={<Sensitive>{formatCurrency(totalCost)}</Sensitive>} muted />

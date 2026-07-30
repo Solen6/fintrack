@@ -20,6 +20,8 @@ interface CashBalance {
 }
 
 interface Props {
+  /* Already scoped to the selected account by PortfolioClient — don't filter
+     again here. `account` is only used to label the Cash row's scope. */
   holdings: HoldingWithMetrics[];
   cash?: CashBalance[];
   account: string;
@@ -36,11 +38,7 @@ export function HoldingsTable({ holdings, cash = [], account, onEdit, onClose, o
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
-    const base = holdings.filter((h) =>
-      account === "all" ? true : h.account === account
-    );
-
-    return [...base].sort((a, b) => {
+    return [...holdings].sort((a, b) => {
       const mul = sort.dir === "asc" ? 1 : -1;
       switch (sort.field) {
         case "ticker":      return mul * a.ticker.localeCompare(b.ticker);
@@ -53,16 +51,11 @@ export function HoldingsTable({ holdings, cash = [], account, onEdit, onClose, o
         default:            return 0;
       }
     });
-  }, [holdings, account, sort]);
+  }, [holdings, sort]);
 
-  const cashTotal = useMemo(
-    () =>
-      (account === "all" ? cash : cash.filter((c) => c.account === account)).reduce(
-        (sum, c) => sum + c.balance,
-        0
-      ),
-    [cash, account]
-  );
+  // One Cash line for the whole scope — in "All Accounts" every account's cash
+  // rolls into this single row rather than one row per account.
+  const cashTotal = useMemo(() => cash.reduce((sum, c) => sum + c.balance, 0), [cash]);
 
   // Denominator is the FULL account value (positions + cash), not just invested
   // capital — otherwise cash-heavy accounts show inflated per-holding weights.
@@ -79,10 +72,14 @@ export function HoldingsTable({ holdings, cash = [], account, onEdit, onClose, o
     );
   };
 
-  if (filtered.length === 0) {
+  // A cash-only account still has something to show (the Cash row) — only bail
+  // when the scope is genuinely empty.
+  if (filtered.length === 0 && cashTotal <= 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">No holdings found in this account.</p>
+        <p className="text-sm text-muted-foreground">
+          {account === "all" ? "No holdings yet." : `No holdings in ${account}.`}
+        </p>
       </div>
     );
   }

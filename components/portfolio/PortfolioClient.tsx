@@ -90,14 +90,36 @@ export function PortfolioClient() {
     [holdings, cash, declaredAccounts]
   );
 
-  const hasBonds = useMemo(() => holdings.some((h) => h.instrumentType === "bond"), [holdings]);
-  const hasDerivatives = useMemo(() => holdings.some(isDerivative), [holdings]);
-
   const cashByAccount = useMemo(() => {
     const m: Record<string, { label: string; balance: number }> = {};
     for (const c of cash) m[c.account] = { label: c.label, balance: c.balance };
     return m;
   }, [cash]);
+
+  /* ── The selected scope ──
+     "All Accounts" = every account combined; an individual account = ONLY that
+     account's assets. Filtering happens exactly ONCE here and every panel below
+     the sidebar renders off these lists, so the hero, heatmap, table, bonds,
+     derivatives, income and closed views can never disagree about what's in
+     view. The sidebar itself still gets the FULL lists — it has to show every
+     account and its total regardless of what's selected. */
+  const scopedHoldings = useMemo(
+    () => (selectedAccount === "all" ? holdings : holdings.filter((h) => h.account === selectedAccount)),
+    [holdings, selectedAccount],
+  );
+  const scopedCash = useMemo(
+    () => (selectedAccount === "all" ? cash : cash.filter((c) => c.account === selectedAccount)),
+    [cash, selectedAccount],
+  );
+
+  /* Which asset-class tabs exist is a property of the SELECTED account, not of
+     the whole portfolio — an account holding no bonds shouldn't offer a Bonds
+     tab. `activeSubView` keeps the panel and the tab strip in agreement when a
+     tab disappears out from under the current selection. */
+  const hasBonds = useMemo(() => scopedHoldings.some((h) => h.instrumentType === "bond"), [scopedHoldings]);
+  const hasDerivatives = useMemo(() => scopedHoldings.some(isDerivative), [scopedHoldings]);
+  const activeSubView =
+    (subView === "bonds" && !hasBonds) || (subView === "derivatives" && !hasDerivatives) ? "heatmap" : subView;
 
   /* Cumulative time-weighted return for the selected account (or all), computed
      the same way as the dashboard hero so the two agree. null until snapshots
@@ -105,9 +127,9 @@ export function PortfolioClient() {
   const cumReturn = useMemo(() => {
     const allOn = selectedAccount === "all";
     const enabled = allOn ? new Set(existingAccounts) : new Set([selectedAccount]);
-    const acctHoldings = allOn ? holdings : holdings.filter((h) => h.account === selectedAccount);
+    const acctHoldings = scopedHoldings;
     const liveValue = acctHoldings.reduce((s, h) => s + h.value, 0);
-    const acctCash = allOn ? cash : cash.filter((c) => c.account === selectedAccount);
+    const acctCash = scopedCash;
     const liveCash = acctCash.reduce((s, c) => s + c.balance, 0);
     // Seed cost basis for the selected account(s): stored anchor (portfolio_seed),
     // falling back — for any account not seeded yet — to cost basis + cash as of
@@ -131,7 +153,7 @@ export function PortfolioClient() {
     if (seedCostBasis <= 0) return null; // no cost basis → fall back to cost-basis unrealized
     const r = unitMethodReturn(snapshots, flows, enabled, allOn, { value: liveValue, cash: liveCash }, seedCostBasis);
     return { pct: r.totalPct, gain: r.totalGain };
-  }, [snapshots, flows, seeds, selectedAccount, existingAccounts, holdings, cash]);
+  }, [snapshots, flows, seeds, selectedAccount, existingAccounts, scopedHoldings, scopedCash]);
 
   const loadData = useCallback(async () => {
     setView("loading");
@@ -407,7 +429,7 @@ export function PortfolioClient() {
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        <SummaryStrip holdings={holdings} cash={cash} account={selectedAccount} cumReturn={cumReturn} />
+        <SummaryStrip holdings={scopedHoldings} cash={scopedCash} account={selectedAccount} cumReturn={cumReturn} />
 
         {/* Toolbar */}
         <div className="flex items-center justify-between px-6 py-2 border-b border-border shrink-0">
@@ -436,8 +458,8 @@ export function PortfolioClient() {
                 onClick={() => setSubView("heatmap")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
                 style={{
-                  background: subView === "heatmap" ? "oklch(0.16 0 0)" : "transparent",
-                  color: subView === "heatmap" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                  background: activeSubView === "heatmap" ? "oklch(0.16 0 0)" : "transparent",
+                  color: activeSubView === "heatmap" ? "var(--primary)" : "oklch(0.64 0.008 74)",
                 }}
               >
                 Heatmap
@@ -446,8 +468,8 @@ export function PortfolioClient() {
                 onClick={() => setSubView("table")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
                 style={{
-                  background: subView === "table" ? "oklch(0.16 0 0)" : "transparent",
-                  color: subView === "table" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                  background: activeSubView === "table" ? "oklch(0.16 0 0)" : "transparent",
+                  color: activeSubView === "table" ? "var(--primary)" : "oklch(0.64 0.008 74)",
                 }}
               >
                 Table
@@ -457,8 +479,8 @@ export function PortfolioClient() {
                   onClick={() => setSubView("bonds")}
                   className="text-xs px-2.5 py-1 transition-colors duration-150"
                   style={{
-                    background: subView === "bonds" ? "oklch(0.16 0 0)" : "transparent",
-                    color: subView === "bonds" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                    background: activeSubView === "bonds" ? "oklch(0.16 0 0)" : "transparent",
+                    color: activeSubView === "bonds" ? "var(--primary)" : "oklch(0.64 0.008 74)",
                   }}
                 >
                   Bonds
@@ -469,8 +491,8 @@ export function PortfolioClient() {
                   onClick={() => setSubView("derivatives")}
                   className="text-xs px-2.5 py-1 transition-colors duration-150"
                   style={{
-                    background: subView === "derivatives" ? "oklch(0.16 0 0)" : "transparent",
-                    color: subView === "derivatives" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                    background: activeSubView === "derivatives" ? "oklch(0.16 0 0)" : "transparent",
+                    color: activeSubView === "derivatives" ? "var(--primary)" : "oklch(0.64 0.008 74)",
                   }}
                 >
                   Options/Futures
@@ -480,8 +502,8 @@ export function PortfolioClient() {
                 onClick={() => setSubView("closed")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
                 style={{
-                  background: subView === "closed" ? "oklch(0.16 0 0)" : "transparent",
-                  color: subView === "closed" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                  background: activeSubView === "closed" ? "oklch(0.16 0 0)" : "transparent",
+                  color: activeSubView === "closed" ? "var(--primary)" : "oklch(0.64 0.008 74)",
                 }}
               >
                 Closed
@@ -490,8 +512,8 @@ export function PortfolioClient() {
                 onClick={() => setSubView("income")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
                 style={{
-                  background: subView === "income" ? "oklch(0.16 0 0)" : "transparent",
-                  color: subView === "income" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                  background: activeSubView === "income" ? "oklch(0.16 0 0)" : "transparent",
+                  color: activeSubView === "income" ? "var(--primary)" : "oklch(0.64 0.008 74)",
                 }}
               >
                 Income
@@ -500,8 +522,8 @@ export function PortfolioClient() {
                 onClick={() => setSubView("reports")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
                 style={{
-                  background: subView === "reports" ? "oklch(0.16 0 0)" : "transparent",
-                  color: subView === "reports" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                  background: activeSubView === "reports" ? "oklch(0.16 0 0)" : "transparent",
+                  color: activeSubView === "reports" ? "var(--primary)" : "oklch(0.64 0.008 74)",
                 }}
               >
                 Reports
@@ -510,8 +532,8 @@ export function PortfolioClient() {
                 onClick={() => setSubView("watchlist")}
                 className="text-xs px-2.5 py-1 transition-colors duration-150"
                 style={{
-                  background: subView === "watchlist" ? "oklch(0.16 0 0)" : "transparent",
-                  color: subView === "watchlist" ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                  background: activeSubView === "watchlist" ? "oklch(0.16 0 0)" : "transparent",
+                  color: activeSubView === "watchlist" ? "var(--primary)" : "oklch(0.64 0.008 74)",
                 }}
               >
                 Watchlist
@@ -562,10 +584,10 @@ export function PortfolioClient() {
           </div>
         </div>
 
-        {subView === "table" && (
+        {activeSubView === "table" && (
           <HoldingsTable
-            holdings={holdings.filter((h) => !isDerivative(h))}
-            cash={cash}
+            holdings={scopedHoldings.filter((h) => !isDerivative(h))}
+            cash={scopedCash}
             account={selectedAccount}
             onEdit={async (holding, updates) => {
               const res = await fetch("/api/holdings", {
@@ -588,25 +610,29 @@ export function PortfolioClient() {
             }}
           />
         )}
-        {subView === "heatmap" && (
+        {activeSubView === "heatmap" && (
           // Options join the heatmap (sized by |value|, like bonds get tiles);
           // futures stay out — their market value is notional exposure and
           // would dwarf every equity tile.
           <PortfolioDeck
-            holdings={holdings.filter((h) => !isDerivative(h) || h.instrumentType === "option")}
-            cash={cash}
+            holdings={scopedHoldings.filter((h) => !isDerivative(h) || h.instrumentType === "option")}
+            cash={scopedCash}
+            account={selectedAccount}
           />
         )}
-        {subView === "bonds" && <FixedIncomeView holdings={holdings} />}
-        {subView === "derivatives" && (
-          <DerivativesView holdings={holdings} onClose={(holding) => setClosingHolding(holding)} />
+        {activeSubView === "bonds" && <FixedIncomeView holdings={scopedHoldings} />}
+        {activeSubView === "derivatives" && (
+          <DerivativesView holdings={scopedHoldings} onClose={(holding) => setClosingHolding(holding)} />
         )}
-        {subView === "closed" && <ClosedPositions />}
-        {subView === "income" && (
-          <DividendHistory bonds={holdings.filter((h) => h.instrumentType === "bond" && h.bondType !== "etf")} />
+        {activeSubView === "closed" && <ClosedPositions account={selectedAccount} />}
+        {activeSubView === "income" && (
+          <DividendHistory
+            bonds={scopedHoldings.filter((h) => h.instrumentType === "bond" && h.bondType !== "etf")}
+            account={selectedAccount}
+          />
         )}
-        {subView === "reports" && <MonthlyReports account={selectedAccount} />}
-        {subView === "watchlist" && <WatchlistDeck />}
+        {activeSubView === "reports" && <MonthlyReports account={selectedAccount} />}
+        {activeSubView === "watchlist" && <WatchlistDeck />}
       </main>
 
       {closingHolding && (
