@@ -53,6 +53,7 @@ export function LineChart({
   baseline,
   gridLines = 4,
   showEndDot = true,
+  yDomain,
 }: {
   series: Series[];
   height?: number;
@@ -60,6 +61,10 @@ export function LineChart({
   baseline?: number;
   gridLines?: number;
   showEndDot?: boolean;
+  /** Pin the y-axis instead of fitting it to the data — needed for bounded
+      quantities like probabilities, where the usual 6% padding would render an
+      axis running from −6% to 106%. */
+  yDomain?: [number, number];
 }) {
   const [ref, w] = useMeasure<HTMLDivElement>();
   const padL = 48;
@@ -83,6 +88,10 @@ export function LineChart({
   const pad = (max - min) * 0.06;
   min -= pad;
   max += pad;
+  if (yDomain) {
+    min = yDomain[0];
+    max = yDomain[1];
+  }
 
   const n = Math.max(...series.map((s) => s.values.length), 1);
   const x = (i: number) => padL + (n <= 1 ? 0 : (i / (n - 1)) * innerW);
@@ -433,6 +442,86 @@ export function ScatterPlot({
           rows={hp.meta ?? []}
           footer={hp.hint ?? (canClick ? "Click to pin" : undefined)}
         />
+      )}
+    </div>
+  );
+}
+
+/** Histogram of a sorted numeric sample, with optional labelled reference
+    lines (a goal, the median). Bars are counts; the y-axis is deliberately
+    unlabelled because the shape is the point, not the frequency. */
+export function Histogram({
+  sorted,
+  bins = 44,
+  height = 200,
+  color = CHART.amber,
+  xFormat = (n) => n.toFixed(0),
+  markers = [],
+  /** Clip the long right tail so the bulk of the distribution stays readable. */
+  clipAt = 0.99,
+}: {
+  sorted: ArrayLike<number>;
+  bins?: number;
+  height?: number;
+  color?: string;
+  xFormat?: (n: number) => string;
+  markers?: { value: number; color: string; label: string }[];
+  clipAt?: number;
+}) {
+  const [ref, w] = useMeasure<HTMLDivElement>();
+  const n = sorted.length;
+  const padL = 8;
+  const padR = 8;
+  const padB = 26;
+  const innerW = Math.max(0, w - padL - padR);
+  const innerH = height - padB - 6;
+
+  if (n === 0) return <div ref={ref} className="w-full" style={{ height }} />;
+  const lo = sorted[0];
+  const hi = sorted[Math.min(n - 1, Math.floor((n - 1) * clipAt))];
+  const span = hi - lo || 1;
+  const counts = new Array(bins).fill(0);
+  let clipped = 0;
+  for (let i = 0; i < n; i++) {
+    const v = sorted[i];
+    if (v > hi) {
+      clipped++;
+      continue;
+    }
+    const b = Math.min(bins - 1, Math.max(0, Math.floor(((v - lo) / span) * bins)));
+    counts[b]++;
+  }
+  const maxCount = Math.max(1, ...counts);
+  const X = (v: number) => padL + ((v - lo) / span) * innerW;
+  const barW = innerW / bins;
+
+  return (
+    <div ref={ref} className="w-full">
+      {w > 0 && (
+        <svg width={w} height={height} role="img">
+          {counts.map((c, i) => {
+            const h = (c / maxCount) * innerH;
+            return <rect key={i} x={padL + i * barW} y={6 + innerH - h} width={Math.max(1, barW - 1)} height={h} fill={color} opacity={0.55} rx={1} />;
+          })}
+          {markers
+            .filter((m) => m.value >= lo && m.value <= hi)
+            .map((m, i) => (
+              <g key={i}>
+                <line x1={X(m.value)} y1={2} x2={X(m.value)} y2={6 + innerH} stroke={m.color} strokeWidth="1.5" strokeDasharray="4 3" />
+                <text x={X(m.value)} y={height - 14} textAnchor="middle" fontSize="9.5" fontFamily="ui-monospace, monospace" fill={m.color}>
+                  {m.label}
+                </text>
+              </g>
+            ))}
+          <line x1={padL} y1={6 + innerH} x2={w - padR} y2={6 + innerH} stroke={CHART.border} strokeWidth="1" />
+          <text x={padL} y={height - 2} fontSize="9.5" fontFamily="ui-monospace, monospace" fill={CHART.muted}>
+            {xFormat(lo)}
+          </text>
+          <text x={w - padR} y={height - 2} textAnchor="end" fontSize="9.5" fontFamily="ui-monospace, monospace" fill={CHART.muted}>
+            {xFormat(hi)}
+            {clipped > 0 ? " +" : ""}
+          </text>
+        </svg>
       )}
     </div>
   );

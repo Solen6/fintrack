@@ -30,6 +30,8 @@ Some hit live Yahoo Finance and need network; they use no credentials.
 | `frontier-bench.ts` | long-only frontier cost + invariants at 5–60 assets |
 | `frontier-converge.ts` | the n-scaled iteration budget vs a 40k-iteration reference |
 | `mc-weighting-test.ts` | weight-load planner; that weights really move the Monte Carlo |
+| `mc-engine-test.ts` | the advanced Monte-Carlo engine: block bootstrap, Student-t, rebalancing, drift override, flows, ruin, solver (86 checks) |
+| `mc-bench.ts` | Monte-Carlo cost across engines/paths/horizons/basket sizes — the numbers behind `estimateRuntimeMs` |
 | `sector-bench-test.ts` | sector benchmark mapping |
 | `spy-point-test.ts` | the S&P 500 frontier point, live, incl. total-vs-price return |
 | `spy-sharpe-windows.ts` | SPY return/vol/Sharpe across 1/2/3/5-year windows |
