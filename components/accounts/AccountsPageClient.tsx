@@ -62,8 +62,8 @@ export function AccountsPageClient() {
       });
   }, [searchParams]);
 
-  /* Load the user's real accounts (from holdings + cash) and their current type
-     tags from account_meta. */
+  /* Load the user's real accounts (from holdings + cash, plus any declared in
+     account_meta with nothing in them yet) and their current type tags. */
   useEffect(() => {
     Promise.all([
       fetch("/api/holdings").then((r) => r.json()).catch(() => ({})),
@@ -75,6 +75,7 @@ export function AccountsPageClient() {
         const names = new Set<string>();
         for (const x of h?.holdings ?? []) if (x?.account) names.add(x.account as string);
         for (const x of c?.balances ?? []) if (x?.account) names.add(x.account as string);
+        for (const name of (m?.accounts ?? []) as string[]) if (name) names.add(name);
         const list = Array.from(names)
           .sort((a, b) => a.localeCompare(b))
           .map((name) => ({ name, type: resolveAccountType(name, types) }));

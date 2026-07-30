@@ -18,7 +18,7 @@ interface Props {
   onCancel?: () => void;
 }
 
-export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Props) {
+export function AddAccountPanel({ existingAccounts = [], onSaved, onCancel }: Props) {
   const [accountName, setAccountName] = useState("");
   const [accountType, setAccountType] = useState<AccountType>(DEFAULT_ACCOUNT_TYPE);
   const [typeTouched, setTypeTouched] = useState(false);
@@ -72,27 +72,38 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
   );
 
   const handleSave = async () => {
-    if (!parsed || parsed.length === 0 || !accountName.trim()) return;
+    const account = accountName.trim();
+    if (!account) return;
+    const withHoldings = !!parsed && parsed.length > 0;
     setSaving(true);
     setSaveError(null);
     try {
-      const res = await fetch("/api/holdings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountName: accountName.trim(), holdings: parsed }),
-      });
-      if (!res.ok) {
-        const j = await res.json();
-        setSaveError(j.error ?? "Failed to save.");
-      } else {
-        // Persist the account's type (best-effort — don't block on it).
-        await fetch("/api/accounts/meta", {
+      if (withHoldings) {
+        const res = await fetch("/api/holdings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ account: accountName.trim(), type: accountType }),
-        }).catch(() => null);
-        onSaved();
+          body: JSON.stringify({ accountName: account, holdings: parsed }),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          setSaveError(j.error ?? "Failed to save.");
+          return;
+        }
       }
+      /* Declare the account + its type. With a CSV this is best-effort (the
+         holdings are already saved, and the type falls back to a name guess);
+         without one it IS the account, so a failure has to surface. */
+      const metaRes = await fetch("/api/accounts/meta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account, type: accountType }),
+      }).catch(() => null);
+      if (!withHoldings && !metaRes?.ok) {
+        const j = await metaRes?.json().catch(() => ({}));
+        setSaveError(j?.error ?? "Could not create the account. Please try again.");
+        return;
+      }
+      onSaved();
     } catch {
       setSaveError("Network error. Please try again.");
     } finally {
@@ -107,8 +118,10 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
     if (inputRef.current) inputRef.current.value = "";
   };
 
-  const isReplacing = accountName.trim() && existingAccounts.includes(accountName.trim());
-  const canSave = parsed && parsed.length > 0 && accountName.trim().length > 0;
+  const hasHoldings = !!parsed && parsed.length > 0;
+  const isExisting = !!accountName.trim() && existingAccounts.includes(accountName.trim());
+  // An account only needs a name — a CSV is an optional head start on holdings.
+  const canSave = accountName.trim().length > 0;
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8">
@@ -117,10 +130,12 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <h2 className="text-base font-semibold text-foreground">Upload Account</h2>
+            <h2 className="text-base font-semibold text-foreground">Add Account</h2>
             <p className="text-sm text-muted-foreground mt-1">
-              Export positions from your broker (Fidelity: Accounts → Positions → Download)
-              and upload here. Each account is stored separately.
+              Name the account and pick its type — that's all it takes. Optionally
+              import a broker positions export (Fidelity: Accounts → Positions →
+              Download) to fill it in now; otherwise add holdings later with Add →
+              Position. Each account is stored separately.
             </p>
           </div>
           {onCancel && (
@@ -171,9 +186,11 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
               ))}
             </div>
           )}
-          {isReplacing && (
+          {isExisting && (
             <p className="text-xs" style={{ color: "oklch(0.72 0.14 74)" }}>
-              Existing holdings in "{accountName.trim()}" will be replaced.
+              {hasHoldings
+                ? `Existing holdings in "${accountName.trim()}" will be replaced.`
+                : `"${accountName.trim()}" already exists — its type will be updated.`}
             </p>
           )}
         </div>
@@ -210,14 +227,18 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
           </p>
         </div>
 
-        {/* Drop zone */}
+        {/* Drop zone — optional; an account can be created with no holdings */}
         {!parsed && (
+          <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-muted-foreground">
+            Import holdings <span style={{ color: "oklch(0.44 0.008 74)" }}>(optional)</span>
+          </label>
           <div
             onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
             onClick={() => inputRef.current?.click()}
-            className="border-2 border-dashed rounded-md px-8 py-14 flex flex-col items-center gap-3 cursor-pointer transition-colors duration-150"
+            className="border-2 border-dashed rounded-md px-8 py-12 flex flex-col items-center gap-3 cursor-pointer transition-colors duration-150"
             style={{
               borderColor: dragging ? "oklch(0.72 0.14 74)" : "oklch(0.22 0 0)",
               background: dragging ? "oklch(0.12 0.01 74)" : "oklch(0.10 0 0)",
@@ -250,6 +271,7 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
             />
           </div>
+          </div>
         )}
 
         {/* Parse errors */}
@@ -268,8 +290,7 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
         )}
 
         {/* Preview */}
-        {parsed && parsed.length > 0 && (
-          <>
+        {hasHoldings && parsed && (
             <div>
               <div className="flex items-center justify-between mb-2">
                 <p className="text-xs text-muted-foreground">
@@ -333,38 +354,40 @@ export function CSVUploadPanel({ existingAccounts = [], onSaved, onCancel }: Pro
                 </div>
               </div>
             </div>
-
-            {saveError && (
-              <p className="text-xs" style={{ color: "var(--negative)" }}>
-                {saveError}
-              </p>
-            )}
-
-            <div className="flex gap-3">
-              <button
-                onClick={handleSave}
-                disabled={saving || !canSave}
-                className="px-5 py-2 rounded-sm text-sm font-medium transition-opacity disabled:opacity-40"
-                style={{ background: "oklch(0.72 0.14 74)", color: "oklch(0.08 0 0)" }}
-              >
-                {saving
-                  ? "Saving…"
-                  : canSave
-                  ? `Save ${parsed.length} holdings to "${accountName.trim()}"`
-                  : "Enter an account name above"}
-              </button>
-              {onCancel && (
-                <button
-                  onClick={onCancel}
-                  className="px-5 py-2 rounded-sm text-sm text-muted-foreground hover:text-foreground transition-colors"
-                  style={{ background: "oklch(0.12 0 0)" }}
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-          </>
         )}
+
+        {saveError && (
+          <p className="text-xs" style={{ color: "var(--negative)" }}>
+            {saveError}
+          </p>
+        )}
+
+        {/* Actions — available with or without a CSV */}
+        <div className="flex gap-3">
+          <button
+            onClick={handleSave}
+            disabled={saving || !canSave}
+            className="px-5 py-2 rounded-sm text-sm font-medium transition-opacity disabled:opacity-40"
+            style={{ background: "oklch(0.72 0.14 74)", color: "oklch(0.08 0 0)" }}
+          >
+            {saving
+              ? "Saving…"
+              : !canSave
+              ? "Enter an account name above"
+              : hasHoldings && parsed
+              ? `Save ${parsed.length} holdings to "${accountName.trim()}"`
+              : `Create "${accountName.trim()}"`}
+          </button>
+          {onCancel && (
+            <button
+              onClick={onCancel}
+              className="px-5 py-2 rounded-sm text-sm text-muted-foreground hover:text-foreground transition-colors"
+              style={{ background: "oklch(0.12 0 0)" }}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

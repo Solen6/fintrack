@@ -20,12 +20,14 @@ interface CashBalance {
 interface Props {
   holdings: HoldingWithMetrics[];
   cash?: CashBalance[];
+  /** Accounts that exist but hold nothing yet — listed at $0 so they're usable. */
+  extraAccounts?: string[];
   selected: string;
   onSelect: (id: string) => void;
   onRemoveAccount: (name: string) => void;
 }
 
-export function AccountSidebar({ holdings, cash = [], selected, onSelect, onRemoveAccount }: Props) {
+export function AccountSidebar({ holdings, cash = [], extraAccounts = [], selected, onSelect, onRemoveAccount }: Props) {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [accountTypes, setAccountTypes] = useState<Record<string, AccountType>>({});
   const [metaLoaded, setMetaLoaded] = useState(false);
@@ -59,10 +61,13 @@ export function AccountSidebar({ holdings, cash = [], selected, onSelect, onRemo
     for (const c of cash) {
       map.set(c.account, (map.get(c.account) ?? 0) + c.balance);
     }
+    for (const name of extraAccounts) {
+      if (!map.has(name)) map.set(name, 0);
+    }
     return Array.from(map.entries())
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [holdings, cash]);
+  }, [holdings, cash, extraAccounts]);
 
   /* Bucket accounts under their type tag, preserving ACCOUNT_TYPES order and the
      value sort within each group. Only non-empty groups are kept. */

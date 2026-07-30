@@ -6,7 +6,7 @@ import { SummaryStrip } from "./SummaryStrip";
 import { unitMethodReturn, earliestStoredCapital, type ReturnSnapshot, type ReturnFlow } from "@/lib/portfolio-return";
 import { HoldingsTable } from "./HoldingsTable";
 import { PortfolioDeck } from "./PortfolioDeck";
-import { CSVUploadPanel } from "./CSVUploadPanel";
+import { AddAccountPanel } from "./AddAccountPanel";
 import { AddPositionForm } from "./AddPositionForm";
 import { AddBondForm } from "./AddBondForm";
 import { AddOptionFlow } from "./AddOptionFlow";
@@ -58,7 +58,7 @@ interface DBHolding {
 type BondMark = BondMetrics & { currentPrice: number };
 type DerivativeMark = { currentPrice: number; iv?: number; spot?: number };
 
-type ViewState = "loading" | "empty" | "uploading" | "addPosition" | "addBond" | "addOption" | "addFuture" | "addCash" | "deposit" | "ready";
+type ViewState = "loading" | "empty" | "addAccount" | "addPosition" | "addBond" | "addOption" | "addFuture" | "addCash" | "deposit" | "ready";
 
 interface CashBalance {
   account: string;
@@ -80,10 +80,14 @@ export function PortfolioClient() {
   const [snapshots, setSnapshots] = useState<ReturnSnapshot[]>([]);
   const [flows, setFlows] = useState<ReturnFlow[]>([]);
   const [seeds, setSeeds] = useState<{ account: string; seedCostBasis: number; basePrice: number }[]>([]);
+  /* Accounts the user has declared (a row in account_meta). Includes accounts
+     created without a CSV, which have no holdings and no cash yet — they'd be
+     invisible if accounts were only ever derived from holdings/cash. */
+  const [declaredAccounts, setDeclaredAccounts] = useState<string[]>([]);
 
   const existingAccounts = useMemo(
-    () => [...new Set([...holdings.map((h) => h.account), ...cash.map((c) => c.account)])].sort(),
-    [holdings, cash]
+    () => [...new Set([...holdings.map((h) => h.account), ...cash.map((c) => c.account), ...declaredAccounts])].sort(),
+    [holdings, cash, declaredAccounts]
   );
 
   const hasBonds = useMemo(() => holdings.some((h) => h.instrumentType === "bond"), [holdings]);
@@ -132,10 +136,11 @@ export function PortfolioClient() {
   const loadData = useCallback(async () => {
     setView("loading");
     try {
-      const [res, cashRes, snapRes] = await Promise.all([
+      const [res, cashRes, snapRes, metaRes] = await Promise.all([
         fetch("/api/holdings"),
         fetch("/api/cash").catch(() => null),
         fetch("/api/snapshots").catch(() => null),
+        fetch("/api/accounts/meta").catch(() => null),
       ]);
       if (!res.ok) throw new Error();
       const { holdings: dbHoldings }: { holdings: DBHolding[] } = await res.json();
@@ -145,6 +150,11 @@ export function PortfolioClient() {
         : [];
       setCash(cashBalances);
 
+      const declared: string[] = metaRes?.ok
+        ? (await metaRes.json()).accounts ?? []
+        : [];
+      setDeclaredAccounts(declared);
+
       if (snapRes?.ok) {
         const snap = await snapRes.json();
         setSnapshots(snap.snapshots ?? []);
@@ -152,12 +162,14 @@ export function PortfolioClient() {
         setSeeds(snap.seeds ?? []);
       }
 
-      if ((!dbHoldings || dbHoldings.length === 0) && cashBalances.length === 0) {
+      // Truly empty only when there's nothing at all — a declared account with
+      // no holdings/cash still gets the dashboard, so it can be filled in.
+      if ((!dbHoldings || dbHoldings.length === 0) && cashBalances.length === 0 && declared.length === 0) {
         setView("empty");
         return;
       }
       if (!dbHoldings || dbHoldings.length === 0) {
-        // Cash-only: nothing to price, but show the cash UI.
+        // No priceable holdings (cash-only, or a freshly created empty account).
         setHoldings([]);
         setLastRefreshed(new Date());
         setView("ready");
@@ -285,6 +297,12 @@ export function PortfolioClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account: accountName }),
       }).catch(() => null),
+      // Also drop the declaration, or the account would come back at $0.
+      fetch("/api/accounts/meta", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account: accountName }),
+      }).catch(() => null),
     ]);
     loadData();
   };
@@ -299,15 +317,15 @@ export function PortfolioClient() {
 
   if (view === "empty") {
     return (
-      <CSVUploadPanel
+      <AddAccountPanel
         onSaved={() => loadData()}
       />
     );
   }
 
-  if (view === "uploading") {
+  if (view === "addAccount") {
     return (
-      <CSVUploadPanel
+      <AddAccountPanel
         existingAccounts={existingAccounts}
         onSaved={() => loadData()}
         onCancel={() => setView("ready")}
@@ -382,6 +400,7 @@ export function PortfolioClient() {
       <AccountSidebar
         holdings={holdings}
         cash={cash}
+        extraAccounts={declaredAccounts}
         selected={selectedAccount}
         onSelect={setSelectedAccount}
         onRemoveAccount={handleRemoveAccount}
@@ -534,11 +553,11 @@ export function PortfolioClient() {
               Deposit / Withdraw
             </button>
             <button
-              onClick={() => setView("uploading")}
+              onClick={() => setView("addAccount")}
               className="text-xs px-3 py-1 rounded-sm"
               style={{ background: "oklch(0.72 0.14 74)", color: "oklch(0.08 0 0)" }}
             >
-              Upload CSV
+              Add Account
             </button>
           </div>
         </div>
