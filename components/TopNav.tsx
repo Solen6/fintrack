@@ -4,8 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { formatRelativeTime } from "@/lib/format";
-import { LAST_SYNC } from "@/lib/mock-data";
 import { createClient } from "@/lib/supabase/client";
 import { useProfile } from "@/lib/use-profile";
 import { usePrivacy } from "@/lib/privacy";
@@ -56,19 +54,9 @@ export function TopNav() {
         })}
       </nav>
 
-      {/* Right: privacy toggle + sync status + user */}
+      {/* Right: privacy toggle + user */}
       <div className="flex items-center gap-4 shrink-0">
         <PrivacyToggle />
-
-        <button
-          className="text-xs text-muted-foreground hover:text-foreground transition-colors duration-150 flex items-center gap-1.5"
-          title="Sync portfolio from OneDrive"
-          aria-label="Sync portfolio from OneDrive"
-        >
-          <SyncIcon />
-          <span>{formatRelativeTime(LAST_SYNC)}</span>
-        </button>
-
         <ProfileMenu />
       </div>
     </header>
@@ -205,28 +193,3 @@ function EyeOffIcon() {
   );
 }
 
-function SyncIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M13.5 8A5.5 5.5 0 1 1 8 2.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8 2.5 10.5 5 8 7.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}

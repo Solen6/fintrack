@@ -2,13 +2,16 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { normalizeAccountType, type AccountType } from "@/lib/account-types";
 
-/* ─── GET: per-account type map for the current user ───
+/* ─── GET: per-account type + display-name map for the current user ───
    → { types: { [account]: "brokerage" | "retirement" | "cash" },
+       displayNames: { [account]: string },
        accounts: string[] }
 
    `accounts` is every account the user has *declared* (a row here), which
    includes accounts created with no holdings and no cash yet — the dashboard
-   needs them to render an empty account in the sidebar. */
+   needs them to render an empty account in the sidebar. `displayNames` only
+   contains accounts with a user-chosen label; everything else should fall
+   back to showing the raw account name. */
 export async function GET() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -16,26 +19,33 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("account_meta")
-    .select("account,type")
+    .select("account,type,display_name")
     .eq("user_id", user.id);
 
   if (error) {
     if (error.code === "42P01") {
       // Table not created yet — degrade gracefully so the dashboard still loads
       // and falls back to name-based type guessing.
-      return NextResponse.json({ types: {}, accounts: [], needsMigration: true });
+      return NextResponse.json({ types: {}, displayNames: {}, accounts: [], needsMigration: true });
     }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
   const types: Record<string, AccountType> = {};
+  const displayNames: Record<string, string> = {};
   for (const row of data ?? []) {
-    types[row.account as string] = normalizeAccountType(row.type as string);
+    const account = row.account as string;
+    types[account] = normalizeAccountType(row.type as string);
+    const label = (row.display_name as string | null)?.trim();
+    if (label) displayNames[account] = label;
   }
-  return NextResponse.json({ types, accounts: Object.keys(types).sort() });
+  return NextResponse.json({ types, displayNames, accounts: Object.keys(types).sort() });
 }
 
-/* ─── POST: set one account's type → upsert (user_id, account) ─── */
+/* ─── POST: set one account's type and/or display name → upsert (user_id, account) ───
+   Body: { account, type?, displayName? }. Only the fields present are written —
+   e.g. a rename-only request (no `type`) never touches the stored type, and
+   vice versa. `displayName: ""` explicitly clears back to the raw account name. */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -43,15 +53,23 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => ({}));
   const account: string = (body.account ?? "").trim();
-  const type = normalizeAccountType(body.type);
   if (!account) return NextResponse.json({ error: "Account is required" }, { status: 400 });
+
+  const row: Record<string, unknown> = { user_id: user.id, account, updated_at: new Date().toISOString() };
+  let type: AccountType | undefined;
+  if (body.type !== undefined) {
+    type = normalizeAccountType(body.type);
+    row.type = type;
+  }
+  let displayName: string | undefined;
+  if (body.displayName !== undefined) {
+    displayName = String(body.displayName).trim();
+    row.display_name = displayName || null;
+  }
 
   const { error } = await supabase
     .from("account_meta")
-    .upsert(
-      { user_id: user.id, account, type, updated_at: new Date().toISOString() },
-      { onConflict: "user_id,account" },
-    );
+    .upsert(row, { onConflict: "user_id,account" });
 
   if (error) {
     if (error.code === "42P01") {
@@ -62,7 +80,7 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  return NextResponse.json({ ok: true, account, type });
+  return NextResponse.json({ ok: true, account, type, displayName: displayName || null });
 }
 
 /* ─── DELETE: forget an account's declaration + type ───

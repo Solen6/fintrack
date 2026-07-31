@@ -5,13 +5,12 @@ import type { NextConfig } from "next";
 // injection (base-uri), plugin/embed abuse (object-src), and form-action
 // hijacking. script-src/style-src are left to default (unrestricted) because a
 // strict policy needs per-request nonces; that's a future hardening, tracked
-// separately. form-action allows the Microsoft OAuth redirect used by the
-// OneDrive integration.
+// separately.
 const CSP = [
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "object-src 'none'",
-  "form-action 'self' https://login.microsoftonline.com",
+  "form-action 'self'",
 ].join("; ");
 
 const securityHeaders = [

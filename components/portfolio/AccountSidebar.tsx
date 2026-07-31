@@ -30,16 +30,22 @@ interface Props {
 export function AccountSidebar({ holdings, cash = [], extraAccounts = [], selected, onSelect, onRemoveAccount }: Props) {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [accountTypes, setAccountTypes] = useState<Record<string, AccountType>>({});
+  const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
   const [metaLoaded, setMetaLoaded] = useState(false);
 
-  /* Load type tags, and re-load when the tab regains focus so a change made in
-     Settings (a separate component) is reflected without a hard reload. */
+  /* Load type tags + display names, and re-load when the tab regains focus so
+     a change made in Settings (a separate component) is reflected without a
+     hard reload. */
   useEffect(() => {
     let active = true;
     const loadMeta = () =>
       fetch("/api/accounts/meta")
         .then((r) => r.json())
-        .then((d) => { if (active) setAccountTypes(d.types ?? {}); })
+        .then((d) => {
+          if (!active) return;
+          setAccountTypes(d.types ?? {});
+          setDisplayNames(d.displayNames ?? {});
+        })
         .catch(() => {})
         .finally(() => { if (active) setMetaLoaded(true); });
     loadMeta();
@@ -124,7 +130,7 @@ export function AccountSidebar({ holdings, cash = [], extraAccounts = [], select
             {group.items.map(({ name, value }) => (
               <div key={name} className="group relative">
                 <AccountItem
-                  label={name}
+                  label={displayNames[name] ?? name}
                   value={<Sensitive>{formatCurrencyCompact(value)}</Sensitive>}
                   active={selected === name}
                   onClick={() => { onSelect(name); setConfirmRemove(null); }}

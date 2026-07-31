@@ -1,11 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/client";
 import { useProfile } from "@/lib/use-profile";
-import { OneDriveFilePicker } from "./OneDriveFilePicker";
 import {
   ACCOUNT_TYPES,
   resolveAccountType,
@@ -27,43 +25,15 @@ export function AccountsPageClient() {
   const [accounts, setAccounts] = useState<AccountTypeRow[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [savingTypes, setSavingTypes] = useState<Set<string>>(new Set());
-  const [portfolioFile, setPortfolioFile] = useState("");
+  const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteInput, setDeleteInput] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [portfolioSheet, setPortfolioSheet] = useState("");
-  const [budgetFile, setBudgetFile] = useState("");
-  const [budgetSheet, setBudgetSheet] = useState("");
-  const [showPicker, setShowPicker] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<"connected" | "disconnected" | "loading">("loading");
-  const [syncedAt, setSyncedAt] = useState<string | null>(null);
-  const searchParams = useSearchParams();
-
-  useEffect(() => {
-    const supabase = createClient();
-    supabase.from("microsoft_connections")
-      .select("expires_at, portfolio_file_path, portfolio_sheet_name, budget_file_path, budget_sheet_name, updated_at")
-      .maybeSingle()
-      .then(({ data }) => {
-        if (data) {
-          setSyncStatus("connected");
-          if (data.portfolio_file_path) setPortfolioFile(data.portfolio_file_path);
-          if (data.portfolio_sheet_name) setPortfolioSheet(data.portfolio_sheet_name);
-          if (data.budget_file_path) setBudgetFile(data.budget_file_path);
-          if (data.budget_sheet_name) setBudgetSheet(data.budget_sheet_name);
-          if (data.updated_at) {
-            const d = new Date(data.updated_at);
-            setSyncedAt(d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
-          }
-        } else {
-          setSyncStatus("disconnected");
-        }
-      });
-  }, [searchParams]);
 
   /* Load the user's real accounts (from holdings + cash, plus any declared in
-     account_meta with nothing in them yet) and their current type tags. */
+     account_meta with nothing in them yet) and their current type tags +
+     display names. */
   useEffect(() => {
     Promise.all([
       fetch("/api/holdings").then((r) => r.json()).catch(() => ({})),
@@ -80,27 +50,27 @@ export function AccountsPageClient() {
           .sort((a, b) => a.localeCompare(b))
           .map((name) => ({ name, type: resolveAccountType(name, types) }));
         setAccounts(list);
+        setDisplayNames(m?.displayNames ?? {});
       })
       .finally(() => setAccountsLoading(false));
   }, []);
 
-  const handlePickerSave = async (
-    portfolio: { filePath: string; fileName: string; sheetName: string },
-    budget:    { filePath: string; fileName: string; sheetName: string }
-  ) => {
-    setPortfolioFile(portfolio.filePath);
-    setPortfolioSheet(portfolio.sheetName);
-    setBudgetFile(budget.filePath);
-    setBudgetSheet(budget.sheetName);
-    setShowPicker(false);
-    const supabase = createClient();
-    await supabase.from("microsoft_connections").update({
-      portfolio_file_path:  portfolio.filePath,
-      portfolio_sheet_name: portfolio.sheetName,
-      budget_file_path:     budget.filePath,
-      budget_sheet_name:    budget.sheetName,
-      updated_at:           new Date().toISOString(),
-    }).not("user_id", "is", null);
+  /* Rename an account's display label. The raw `account.name` stays the key
+     used for holdings/cash filtering everywhere else — only the label shown
+     to the user changes. Optimistic; reverts on error. */
+  const renameAccount = async (rawName: string, newLabel: string) => {
+    const prev = displayNames[rawName];
+    setDisplayNames((d) => ({ ...d, [rawName]: newLabel }));
+    const res = await fetch("/api/accounts/meta", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account: rawName, displayName: newLabel }),
+    }).catch(() => null);
+    if (!res?.ok) {
+      setDisplayNames((d) => ({ ...d, [rawName]: prev ?? "" }));
+      return false;
+    }
+    return true;
   };
 
   const handleDeleteAccount = async () => {
@@ -121,13 +91,6 @@ export function AccountsPageClient() {
       setDeleteError("An unexpected error occurred.");
       setDeleting(false);
     }
-  };
-
-  const disconnectMicrosoft = async () => {
-    const supabase = createClient();
-    await supabase.from("microsoft_connections").delete().not("user_id", "is", null);
-    setSyncStatus("disconnected");
-    setSyncedAt(null);
   };
 
   /* Persist an account's type tag to account_meta. Optimistic; reverts on error.
@@ -161,97 +124,6 @@ export function AccountsPageClient() {
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-2xl mx-auto px-6 py-8 flex flex-col gap-10">
 
-        {/* ── OneDrive Connection ── */}
-        <section>
-          <h2 className="text-sm font-semibold text-foreground mb-4">OneDrive Connection</h2>
-          <div
-            className="rounded-sm border border-border overflow-hidden"
-            style={{ background: "oklch(0.10 0 0)" }}
-          >
-            {/* Status row */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-              <div className="flex items-center gap-3">
-                <span
-                  className="w-2 h-2 rounded-full"
-                  style={{
-                    background:
-                      syncStatus === "connected"
-                        ? "oklch(0.72 0.14 74)"
-                        : syncStatus === "loading"
-                        ? "oklch(0.40 0 0)"
-                        : "oklch(0.64 0.16 28)",
-                  }}
-                  aria-hidden
-                />
-                <span className="text-sm text-foreground">
-                  {syncStatus === "loading"
-                    ? "Checking…"
-                    : syncStatus === "connected"
-                    ? "Connected"
-                    : "Not connected"}
-                </span>
-                {syncStatus === "connected" && syncedAt && (
-                  <span className="text-xs text-muted-foreground">· synced at {syncedAt}</span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {syncStatus === "connected" ? (
-                  <>
-                    <SettingsButton onClick={() => setShowPicker(true)}>Change files</SettingsButton>
-                    <SettingsButton onClick={disconnectMicrosoft} variant="ghost">
-                      Disconnect
-                    </SettingsButton>
-                  </>
-                ) : syncStatus === "disconnected" ? (
-                  <SettingsButton onClick={() => { window.location.href = "/api/auth/microsoft"; }}>
-                    Connect OneDrive
-                  </SettingsButton>
-                ) : null}
-              </div>
-            </div>
-
-            {/* File selection summary */}
-            {syncStatus === "connected" && (portfolioFile || budgetFile) ? (
-              <>
-                <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border">
-                  <span className="text-xs text-muted-foreground w-28 shrink-0">Portfolio</span>
-                  <div>
-                    <p className="text-sm text-foreground">{portfolioFile.split("/").pop() ?? portfolioFile}</p>
-                    {portfolioSheet && <p className="text-xs text-muted-foreground">Sheet: {portfolioSheet}</p>}
-                  </div>
-                </div>
-                <div className="flex items-center gap-4 px-5 py-3.5">
-                  <span className="text-xs text-muted-foreground w-28 shrink-0">Budget</span>
-                  <div>
-                    <p className="text-sm text-foreground">{budgetFile.split("/").pop() ?? budgetFile}</p>
-                    {budgetSheet && <p className="text-xs text-muted-foreground">Sheet: {budgetSheet}</p>}
-                  </div>
-                </div>
-              </>
-            ) : syncStatus === "connected" ? (
-              <div className="px-5 py-4">
-                <p className="text-sm text-muted-foreground mb-3">No files selected yet.</p>
-                <SettingsButton onClick={() => setShowPicker(true)}>Select Excel files</SettingsButton>
-              </div>
-            ) : null}
-          </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            Select which Excel files and sheets to use for your portfolio and budget data.
-          </p>
-
-          {/* File picker — shown inline below the connection box */}
-          {showPicker && syncStatus === "connected" && (
-            <div className="mt-3">
-              <OneDriveFilePicker
-                onSave={handlePickerSave}
-                onCancel={() => setShowPicker(false)}
-                initialPortfolio={portfolioFile ? { filePath: portfolioFile, sheetName: portfolioSheet } : undefined}
-                initialBudget={budgetFile ? { filePath: budgetFile, sheetName: budgetSheet } : undefined}
-              />
-            </div>
-          )}
-        </section>
-
         {/* ── Account types ── */}
         <section>
           <div className="flex items-center justify-between mb-4">
@@ -276,9 +148,11 @@ export function AccountsPageClient() {
                     key={account.name}
                     className={`px-5 py-3.5 flex items-center gap-4 ${!isLast ? "border-b border-border" : ""}`}
                   >
-                    <span className="text-sm font-medium text-foreground flex-1 min-w-0 truncate">
-                      {account.name}
-                    </span>
+                    <EditableAccountName
+                      rawName={account.name}
+                      displayName={displayNames[account.name]}
+                      onSave={(label) => renameAccount(account.name, label)}
+                    />
                     {savingTypes.has(account.name) && (
                       <span className="text-xs text-muted-foreground">Saving…</span>
                     )}
@@ -408,49 +282,6 @@ export function AccountsPageClient() {
 
 /* ─── Sub-components ─── */
 
-function SettingsButton({
-  children,
-  onClick,
-  variant = "default",
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  variant?: "default" | "ghost";
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className="text-xs px-3 py-1.5 rounded-sm border transition-colors duration-150"
-      style={
-        variant === "ghost"
-          ? {
-              borderColor: "transparent",
-              color: "oklch(0.52 0.008 74)",
-            }
-          : {
-              borderColor: "oklch(0.28 0 0)",
-              color: "oklch(0.88 0.005 74)",
-              background: "oklch(0.16 0 0)",
-            }
-      }
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor =
-          variant === "ghost" ? "oklch(0.28 0 0)" : "oklch(0.72 0.14 74)";
-        (e.currentTarget as HTMLButtonElement).style.color =
-          "oklch(0.94 0.005 74)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor =
-          variant === "ghost" ? "transparent" : "oklch(0.28 0 0)";
-        (e.currentTarget as HTMLButtonElement).style.color =
-          variant === "ghost" ? "oklch(0.52 0.008 74)" : "oklch(0.88 0.005 74)";
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
 function ProfileRow({
   label,
   value,
@@ -553,6 +384,97 @@ function EditableNameRow({ name, loading }: { name: string; loading: boolean }) 
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/* Editable account label in the Account types list. `rawName` is the account's
+   real identity (what holdings/cash rows actually store) — it never changes;
+   only the displayed label does. Saving an empty value clears the alias and
+   the row reverts to showing `rawName`. */
+function EditableAccountName({
+  rawName,
+  displayName,
+  onSave,
+}: {
+  rawName: string;
+  displayName: string | undefined;
+  onSave: (label: string) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(displayName ?? rawName);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editing) setValue(displayName ?? rawName);
+  }, [displayName, rawName, editing]);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    // Saving the raw name back is the same as clearing the alias.
+    const trimmed = value.trim();
+    const ok = await onSave(trimmed === rawName ? "" : trimmed);
+    setSaving(false);
+    if (!ok) { setError("Failed to save"); return; }
+    setEditing(false);
+  };
+
+  const cancel = () => {
+    setEditing(false);
+    setError(null);
+    setValue(displayName ?? rawName);
+  };
+
+  if (editing) {
+    return (
+      <div className="flex flex-1 min-w-0 flex-wrap items-center gap-2">
+        <Input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          autoFocus
+          disabled={saving}
+          maxLength={60}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+            else if (e.key === "Escape") cancel();
+          }}
+          className="h-7 max-w-[200px] text-sm"
+          aria-label={`Rename ${rawName}`}
+        />
+        <button
+          onClick={save}
+          disabled={saving}
+          className="rounded-sm px-2.5 py-1 text-xs font-medium transition-opacity duration-150 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          onClick={cancel}
+          disabled={saving}
+          className="rounded-sm border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors duration-150 hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        >
+          Cancel
+        </button>
+        {error && <span className="text-xs" style={{ color: "var(--negative)" }}>{error}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-1 min-w-0 items-center gap-2">
+      <span className="text-sm font-medium text-foreground min-w-0 truncate">
+        {displayName ?? rawName}
+      </span>
+      <button
+        onClick={() => setEditing(true)}
+        className="rounded-sm text-xs text-muted-foreground transition-colors duration-150 hover:text-foreground shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        aria-label={`Rename ${rawName}`}
+      >
+        Edit
+      </button>
     </div>
   );
 }

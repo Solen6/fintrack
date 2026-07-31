@@ -146,6 +146,7 @@ export function DashboardClient() {
   const [flows, setFlows] = useState<FlowRow[]>([]);
   const [seeds, setSeeds] = useState<{ account: string; seedCostBasis: number; basePrice: number }[]>([]);
   const [accountTypes, setAccountTypes] = useState<Record<string, AccountType>>({});
+  const [accountDisplayNames, setAccountDisplayNames] = useState<Record<string, string>>({});
   const [cashBalances, setCashBalances] = useState<Record<string, number>>({});
   const [benchmark, setBenchmark] = useState<Record<BenchRange, number | null> | null>(null);
   const [quotesError, setQuotesError] = useState(false);
@@ -225,8 +226,9 @@ export function DashboardClient() {
         setBenchmark(returns ?? null);
       }
       if (tRes?.ok) {
-        const { types } = await tRes.json();
+        const { types, displayNames } = await tRes.json();
         setAccountTypes(types ?? {});
+        setAccountDisplayNames(displayNames ?? {});
       }
 
       // Saved heatmap views (for the allocation-pie grouping selector). Optional
@@ -980,6 +982,7 @@ export function DashboardClient() {
                 {accountList.length > 1 && (
                   <AccountToggles
                     accounts={accountList}
+                    displayNames={accountDisplayNames}
                     enabled={enabledAccounts}
                     allOn={allAccountsOn}
                     onToggle={toggleAccount}
@@ -1425,12 +1428,14 @@ function Segmented({
    individually; the chart + monthly/yearly bars re-derive from the selection. */
 function AccountToggles({
   accounts,
+  displayNames,
   enabled,
   allOn,
   onToggle,
   onReset,
 }: {
   accounts: string[];
+  displayNames: Record<string, string>;
   enabled: Set<string>;
   allOn: boolean;
   onToggle: (acct: string) => void;
@@ -1467,7 +1472,7 @@ function AccountToggles({
                 : { background: "transparent", color: "var(--muted-foreground)", borderColor: "var(--border)", textDecoration: "line-through" }
             }
           >
-            {acct}
+            {displayNames[acct] ?? acct}
           </button>
         );
       })}

@@ -142,8 +142,6 @@ export const HOLDINGS: Holding[] = [
   },
 ];
 
-export const LAST_SYNC = new Date(Date.now() - 1000 * 60 * 14); // 14 min ago
-
 /* Simulated today's change — in a real app this comes from the market data API */
 export const TODAY_CHANGES: Record<string, number> = {
   AAPL:  0.84,
