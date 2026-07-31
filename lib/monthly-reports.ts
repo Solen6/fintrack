@@ -3,11 +3,13 @@ import { fetchQuotes } from "@/lib/finnhub";
 import { fetchSectors } from "@/lib/sectors";
 import { resolveAccountType, type AccountType } from "@/lib/account-types";
 import {
-  earliestStoredCapital,
+  resolveSeedCapital,
+  applyLateFlows,
   inceptionDateFor,
   unitCumReturns,
   chainedPeriodReturns,
   type ReturnSnapshot,
+  type ReturnFlow,
 } from "@/lib/portfolio-return";
 import { yahooDailyHistory } from "@/lib/yahoo";
 import { getTreasuryYieldForMonth } from "@/lib/treasury-curve";
@@ -1125,20 +1127,19 @@ export async function generateMonthlyReports(
         costBasis: Number(r.cost_basis) || 0,
         account: r.account == null ? null : norm(r.account),
       }));
-      const seedFor = (acct: string): number => {
-        const seeded = seedByAccount.get(acct);
-        if (seeded != null) return seeded;
-        const anchor = earliestStoredCapital(returnSnaps, new Set([acct]), false);
-        if (anchor) return anchor.costBasis + anchor.cash;
-        const liveCostBasis = uHoldings
+      const liveCapitalFor = (acct: string): number =>
+        uHoldings
           .filter((h) => norm(h.account) === acct)
-          .reduce((s, h) => s + (Number(h.shares) || 0) * (Number(h.cost_basis) || 0), 0);
-        const liveCash = uCash
+          .reduce((s, h) => s + (Number(h.shares) || 0) * (Number(h.cost_basis) || 0), 0) +
+        uCash
           .filter((c) => norm(c.account) === acct)
           .reduce((s, c) => s + (Number(c.balance) || 0), 0);
-        return liveCostBasis + liveCash;
-      };
       const seedAccounts = new Set([...accounts, ...seedByAccount.keys()]);
+      const returnFlows: ReturnFlow[] = uFlows.map((f) => ({
+        date: String(f.trade_date).slice(0, 10),
+        account: f.account == null ? null : norm(f.account),
+        amount: Number(f.amount) || 0,
+      }));
       // Monthly return + the in-month daily return series (for the risk metrics),
       // both off the same flow-adjusted unit-method cumulative curve.
       const returnStatsFor = (
@@ -1155,9 +1156,20 @@ export async function generateMonthlyReports(
           const d = String(f.trade_date).slice(0, 10);
           flowByDate.set(d, (flowByDate.get(d) ?? 0) + (Number(f.amount) || 0));
         }
-        const seed = scope === ALL_ACCOUNTS
-          ? [...seedAccounts].reduce((s, a) => s + seedFor(a), 0)
-          : seedFor(scope);
+        /* Seed via the shared resolver (lib/portfolio-return.ts) — same chain
+           the dashboard uses, and it likewise holds back an account that joined
+           after this scope's series began, minting its capital as a flow so the
+           arrival can't dilute the months before it. */
+        const { seedCostBasis: seed, lateFlows } = resolveSeedCapital({
+          accounts: scope === ALL_ACCOUNTS ? seedAccounts : [scope],
+          snapshots: returnSnaps,
+          flows: returnFlows,
+          storedSeeds: seedByAccount,
+          liveCapital: liveCapitalFor,
+          seriesDates: nav.map((n) => n.date),
+          today: generatedOn,
+        });
+        applyLateFlows(flowByDate, lateFlows);
         const { cumByDate } = unitCumReturns(nav, flowByDate, seed, inceptionDateFor(nav));
         const m = chainedPeriodReturns(cumByDate, (d) => d.slice(0, 7)).find((p) => p.key === period);
         // Day-over-day within the month. A "daily" return can span >1 calendar

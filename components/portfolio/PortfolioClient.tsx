@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { AccountSidebar } from "./AccountSidebar";
 import { SummaryStrip } from "./SummaryStrip";
-import { unitMethodReturn, earliestStoredCapital, type ReturnSnapshot, type ReturnFlow } from "@/lib/portfolio-return";
+import { unitMethodReturn, type ReturnSnapshot, type ReturnFlow } from "@/lib/portfolio-return";
 import { HoldingsTable } from "./HoldingsTable";
 import { PortfolioDeck } from "./PortfolioDeck";
 import { AddAccountPanel } from "./AddAccountPanel";
@@ -131,27 +131,21 @@ export function PortfolioClient() {
     const liveValue = acctHoldings.reduce((s, h) => s + h.value, 0);
     const acctCash = scopedCash;
     const liveCash = acctCash.reduce((s, c) => s + c.balance, 0);
-    // Seed cost basis for the selected account(s): stored anchor (portfolio_seed),
-    // falling back — for any account not seeded yet — to cost basis + cash as of
-    // that account's EARLIEST STORED snapshot, never live/current values. Live
-    // cash already includes every deposit/withdrawal made since inception, which
-    // would double-count them: once baked into the anchor, again minted/redeemed
-    // by unitMethodReturn's flow loop — a deposit would then read as a loss and
-    // a withdrawal as a gain. Only an account with NO stored history at all (a
-    // brand-new account) falls back to live cost basis + cash.
+    /* Seed resolution lives in lib/portfolio-return.ts `resolveSeedCapital` —
+       ONE definition shared with the dashboard hero, the monthly reports and
+       the annual summary, so the four can't drift on what "contributed capital"
+       means. It needs the NAV series to know which accounts predate it, and
+       `unitMethodReturn` builds that series itself, so we hand it the sources
+       (stored anchors + a live-capital fallback) rather than a finished number. */
     const seedByAccount = new Map(seeds.map((s) => [s.account, s.seedCostBasis]));
-    let seedCostBasis = 0;
-    for (const acct of enabled) {
-      const seeded = seedByAccount.get(acct);
-      if (seeded != null) { seedCostBasis += seeded; continue; }
-      const anchor = earliestStoredCapital(snapshots, new Set([acct]), false);
-      if (anchor) { seedCostBasis += anchor.costBasis + anchor.cash; continue; }
-      const liveCostBasis = acctHoldings.filter((h) => h.account === acct).reduce((s, h) => s + h.costTotal, 0);
-      const liveCashAcct = acctCash.filter((c) => c.account === acct).reduce((s, c) => s + c.balance, 0);
-      seedCostBasis += liveCostBasis + liveCashAcct;
-    }
-    if (seedCostBasis <= 0) return null; // no cost basis → fall back to cost-basis unrealized
-    const r = unitMethodReturn(snapshots, flows, enabled, allOn, { value: liveValue, cash: liveCash }, seedCostBasis);
+    const liveCapital = (acct: string) =>
+      acctHoldings.filter((h) => h.account === acct).reduce((s, h) => s + h.costTotal, 0) +
+      acctCash.filter((c) => c.account === acct).reduce((s, c) => s + c.balance, 0);
+    const r = unitMethodReturn(snapshots, flows, enabled, allOn, { value: liveValue, cash: liveCash }, {
+      storedSeeds: seedByAccount,
+      liveCapital,
+    });
+    if (r.seedCostBasis <= 0) return null; // no capital anchor → cost-basis unrealized
     return { pct: r.totalPct, gain: r.totalGain };
   }, [snapshots, flows, seeds, selectedAccount, existingAccounts, scopedHoldings, scopedCash]);
 

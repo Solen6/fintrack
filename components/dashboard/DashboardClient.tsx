@@ -8,7 +8,7 @@ import { Sensitive, PrivateGraphMask } from "@/lib/privacy";
 import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
 import { RemindersCard } from "@/components/dashboard/RemindersCard";
 import { isInvestedType, resolveAccountType, type AccountType } from "@/lib/account-types";
-import { earliestStoredCapital, inceptionDateFor, unitCumReturns, chainedPeriodReturns } from "@/lib/portfolio-return";
+import { resolveSeedCapital, applyLateFlows, inceptionDateFor, unitCumReturns, chainedPeriodReturns } from "@/lib/portfolio-return";
 import { topSectorById } from "@/lib/heatmap-groups";
 import type { HeatmapView } from "@/app/api/heatmap-views/route";
 
@@ -587,32 +587,6 @@ export function DashboardClient() {
     return inceptionDateFor(nav, stored) ?? RETURN_INCEPTION;
   }, [series]);
 
-  /* Unit-method seed cost basis for the enabled accounts: the stored per-account
-     anchor (portfolio_seed), falling back — for any account not seeded yet —
-     to cost basis + cash as of that account's EARLIEST STORED snapshot (never
-     live/current values: live cash already includes every deposit/withdrawal
-     made since inception, which would double-count them — once baked into the
-     anchor, once minted/redeemed by the flow loop below — making a deposit
-     read as a loss and a withdrawal as a gain). Only an account with NO stored
-     history at all falls back to live cost basis + cash, since there's no
-     later flow yet for it to double-count against. Σ over enabled accounts. */
-  const seedCostBasis = useMemo(() => {
-    const seedByAccount = new Map<string, number>();
-    for (const s of seeds) seedByAccount.set(s.account, s.seedCostBasis);
-    let total = 0;
-    for (const acct of enabledAccounts) {
-      const seeded = seedByAccount.get(acct);
-      if (seeded != null) { total += seeded; continue; }
-      const anchor = earliestStoredCapital(snapshots, new Set([acct]), false);
-      if (anchor) { total += anchor.costBasis + anchor.cash; continue; }
-      const liveCostBasis = holdings
-        .filter((h) => h.account === acct)
-        .reduce((s, h) => s + Number(h.shares) * Number(h.cost_basis), 0);
-      total += liveCostBasis + (cashBalances[acct] ?? 0);
-    }
-    return total;
-  }, [seeds, snapshots, holdings, enabledAccounts, cashBalances]);
-
   /* Unit (share) method return. Seed units from cost basis
      (units = seedCostBasis / $10), price = NAV / units, so Total Return =
      value-vs-cost (your full gain, non-zero from day one) and a rebalance —
@@ -623,13 +597,38 @@ export function DashboardClient() {
      cost basis). `cumByDate` holds the return % per date. The math itself
      lives in lib/portfolio-return.ts `unitCumReturns`, SHARED with the
      monthly-report generator — same function, so the dashboard's monthly
-     bars and a report's monthly return can't diverge. */
+     bars and a report's monthly return can't diverge.
+
+     The seed comes from the shared `resolveSeedCapital` (same chain as before:
+     stored portfolio_seed → earliest stored snapshot → live cost basis + cash),
+     which additionally holds back any account that joined AFTER this series
+     started and mints its capital as a flow instead. Resolved here rather than
+     in its own memo because it needs `nav`'s dates to know which accounts
+     predate the series. */
   const navReturns = useMemo(() => {
     const nav = series.map((s) => ({ date: s.date, nav: s.value + s.cash }));
     const netFlowByDate = new Map<string, number>();
     for (const [date, f] of flowByDate) netFlowByDate.set(date, f.inflows - f.outflows);
+
+    const storedSeeds = new Map<string, number>();
+    for (const s of seeds) storedSeeds.set(s.account, s.seedCostBasis);
+    const { seedCostBasis, lateFlows } = resolveSeedCapital({
+      accounts: enabledAccounts,
+      snapshots,
+      flows,
+      storedSeeds,
+      liveCapital: (acct) =>
+        holdings
+          .filter((h) => h.account === acct)
+          .reduce((s, h) => s + Number(h.shares) * Number(h.cost_basis), 0) +
+        (cashBalances[acct] ?? 0),
+      seriesDates: nav.map((n) => n.date),
+      today: new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date()),
+    });
+    applyLateFlows(netFlowByDate, lateFlows);
+
     return unitCumReturns(nav, netFlowByDate, seedCostBasis, inceptionDate);
-  }, [series, flowByDate, inceptionDate, seedCostBasis]);
+  }, [series, flowByDate, inceptionDate, seeds, snapshots, flows, holdings, enabledAccounts, cashBalances]);
 
   /* Performance chart: clip the series to the selected timeframe, then plot
      GAIN VS TOTAL ACCOUNT BALANCE at each point — (value − costBasis) /

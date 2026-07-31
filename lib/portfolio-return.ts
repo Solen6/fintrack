@@ -44,6 +44,9 @@ export interface UnitReturn {
   totalPct: number; // Total Return % (unit price vs base)
   totalGain: number; // Total Return $ (NAV − contributed capital)
   byDate: Map<string, number>; // return % at each date, for the chart / period bars
+  /** The resolved seed. 0 means no capital anchor could be established, and
+   *  totalPct/totalGain are placeholders — callers should fall back. */
+  seedCostBasis: number;
 }
 
 const BASE_PRICE = 10;
@@ -147,6 +150,157 @@ export function earliestStoredCapital(
     .filter(([, acc]) => acc.cash > 0)
     .sort(([a], [b]) => a.localeCompare(b));
   return byCash.length > 0 ? byCash[0][1] : null;
+}
+
+// ── Seed resolution (ONE definition, shared by every caller) ────────────────
+
+export interface SeedResolutionInput {
+  /** The accounts in scope (enabled / selected). */
+  accounts: Iterable<string>;
+  snapshots: ReturnSnapshot[];
+  flows: ReturnFlow[];
+  /** Persisted `portfolio_seed` anchors, by account. */
+  storedSeeds: Map<string, number>;
+  /** Live cost basis + cash for an account, used only when it has no history. */
+  liveCapital: (account: string) => number;
+  /** The dates `unitCumReturns` will actually walk, ascending. */
+  seriesDates: string[];
+  /** Today (ET), the anchor moment for an account with no stored snapshot. */
+  today: string;
+}
+
+export interface SeedResolution {
+  /** Σ capital that was already in the portfolio at `seriesDates[0]`. */
+  seedCostBasis: number;
+  /** Capital that arrived LATER, to be minted at the price prevailing on its
+   *  arrival date. Merge into the caller's flow map before running the loop. */
+  lateFlows: ReturnFlow[];
+  /** Per-account trace, for tests and diagnostics. */
+  perAccount: {
+    account: string;
+    via: "portfolio_seed" | "earliest snapshot" | "live";
+    anchorDate: string;
+    anchorCapital: number;
+    seeded: number;
+    minted: number;
+  }[];
+}
+
+/**
+ * Resolve the unit-method seed for a set of accounts.
+ *
+ * Each account's capital is anchored the usual way — stored `portfolio_seed` →
+ * cost basis + cash at its EARLIEST STORED snapshot → live cost basis + cash
+ * (only when it has no history at all). The addition here is *when* that
+ * capital is allowed to mint units.
+ *
+ * Seed units are minted at $10 as of `seriesDates[0]`. So capital may only go
+ * into the seed if it was actually there on that date. An account that joined
+ * LATER — a newly added account, a first CSV import, an account funded after
+ * you started tracking — must instead mint its units at the price prevailing
+ * when it arrived, exactly like a deposit. Seeding it would do two damaging
+ * things at once:
+ *
+ *   1. DOUBLE-COUNT the money. Its funding deposit is already in `flows`, so
+ *      the loop mints units for it; adding the same dollars to the seed mints
+ *      them a second time. Contributed capital then exceeds the money that
+ *      actually exists, `totalGain` (NAV − contributed capital) is understated
+ *      by exactly the deposit, and the return craters. This is the bug where
+ *      opening a $500 account dropped Overall Return by 21.66 points and Total
+ *      Gain by exactly $500.
+ *   2. Dilute history the money was never in. Seed units exist from
+ *      `seriesDates[0]`, so every past point gets re-divided by a unit count
+ *      inflated with capital that hadn't arrived — the whole chart shifts down,
+ *      not just today.
+ *
+ * So: `anchorDate <= seriesDates[0]` → seed it. Otherwise contribute 0 and emit
+ * a late flow for whatever the recorded flows don't already cover (that
+ * remainder is 0 for a plain deposit, and the full balance for a silent CSV
+ * import that recorded no deposit). Either way the arrival is return-neutral,
+ * which is the whole premise of the unit method.
+ */
+export function resolveSeedCapital(input: SeedResolutionInput): SeedResolution {
+  const { snapshots, flows, storedSeeds, liveCapital, seriesDates, today } = input;
+  const seriesStart = seriesDates[0] ?? today;
+  const inSeries = new Set(seriesDates);
+
+  // Earliest stored snapshot date per account = the moment its anchor describes.
+  const firstSnapDate = new Map<string, string>();
+  for (const s of snapshots) {
+    if (s.account == null) continue;
+    const cur = firstSnapDate.get(s.account);
+    if (cur == null || s.date < cur) firstSnapDate.set(s.account, s.date);
+  }
+
+  const perAccount: SeedResolution["perAccount"] = [];
+  const lateFlows: ReturnFlow[] = [];
+  let seedCostBasis = 0;
+
+  for (const account of input.accounts) {
+    const stored = storedSeeds.get(account);
+    const anchor = stored != null ? null : earliestStoredCapital(snapshots, new Set([account]), false);
+    const via: SeedResolution["perAccount"][number]["via"] =
+      stored != null ? "portfolio_seed" : anchor ? "earliest snapshot" : "live";
+    const anchorCapital =
+      stored != null ? stored : anchor ? anchor.costBasis + anchor.cash : liveCapital(account);
+    const anchorDate = firstSnapDate.get(account) ?? today;
+
+    if (anchorDate <= seriesStart) {
+      seedCostBasis += anchorCapital;
+      perAccount.push({ account, via, anchorDate, anchorCapital, seeded: anchorCapital, minted: 0 });
+      continue;
+    }
+
+    /* Late arrival. Whatever recorded flows the loop will ALREADY mint on or
+       before the anchor date is capital it has accounted for; mint only the
+       remainder. A flow dated on a day absent from the series is never applied,
+       and one dated at seriesStart is skipped by the loop (prevPrice is null
+       there) — so neither counts as already-minted. */
+    const alreadyMinted = flows
+      .filter(
+        (f) =>
+          f.account === account &&
+          f.date <= anchorDate &&
+          inSeries.has(f.date) &&
+          f.date !== seriesStart,
+      )
+      .reduce((s, f) => s + f.amount, 0);
+    const remainder = anchorCapital - alreadyMinted;
+    // Mint on the anchor date itself when the loop visits it, else the first
+    // series date after it (a flow on an unvisited date would silently vanish).
+    const mintDate = inSeries.has(anchorDate)
+      ? anchorDate
+      : seriesDates.find((d) => d > anchorDate) ?? seriesDates[seriesDates.length - 1] ?? today;
+    // Half-a-cent floor: anchor − flows is a difference of floats, so an
+    // exactly-covered account lands on ~1e-13 rather than 0. Minting that as a
+    // "flow" is noise in the ledger and in any diagnostic that prints it.
+    if (Math.abs(remainder) >= 0.005 && mintDate !== seriesStart) {
+      lateFlows.push({ date: mintDate, account, amount: remainder });
+    }
+    perAccount.push({ account, via, anchorDate, anchorCapital, seeded: 0, minted: remainder });
+  }
+
+  /* Guard: the loop returns a flat 0% when the seed is non-positive. That can
+     only happen if every account in scope is "late" — the series then has no
+     owner at its own start date — so fall back to seeding the earliest one
+     rather than reporting a bogus 0%. */
+  if (seedCostBasis <= 0 && perAccount.length > 0) {
+    const earliest = [...perAccount].sort((a, b) => a.anchorDate.localeCompare(b.anchorDate))[0];
+    if (earliest.anchorCapital > 0) {
+      seedCostBasis = earliest.anchorCapital;
+      earliest.seeded = earliest.anchorCapital;
+      earliest.minted = 0;
+      const i = lateFlows.findIndex((f) => f.account === earliest.account);
+      if (i >= 0) lateFlows.splice(i, 1);
+    }
+  }
+
+  return { seedCostBasis, lateFlows, perAccount };
+}
+
+/** Merge resolved late flows into a caller's date→net-flow map, in place. */
+export function applyLateFlows(flowByDate: Map<string, number>, lateFlows: ReturnFlow[]): void {
+  for (const f of lateFlows) flowByDate.set(f.date, (flowByDate.get(f.date) ?? 0) + f.amount);
 }
 
 /* Net external flow per day, same account filter. */
@@ -263,8 +417,10 @@ export function chainedPeriodReturns(
 
 /**
  * Unit-method return for the enabled accounts, treated as one fund.
- * @param seedCostBasis  Σ over enabled accounts of the fixed seed cost basis
- *   (caller resolves each account's stored seed, falling back to live cost basis).
+ * @param seedSources  Where each account's capital anchor comes from. The seed
+ *   is resolved internally by `resolveSeedCapital` — off the same NAV series
+ *   this function walks — so an account that joined after inception mints its
+ *   units as a flow instead of diluting history it was never in.
  */
 export function unitMethodReturn(
   snapshots: ReturnSnapshot[],
@@ -272,14 +428,31 @@ export function unitMethodReturn(
   enabledAccounts: Set<string>,
   allOn: boolean,
   live: LiveNav,
-  seedCostBasis: number,
+  seedSources: {
+    storedSeeds: Map<string, number>;
+    liveCapital: (account: string) => number;
+    today?: string;
+  },
 ): UnitReturn {
   const byDate = new Map<string, number>();
   const series = buildNavSeries(snapshots, enabledAccounts, allOn, live);
+  const today =
+    seedSources.today ??
+    new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+  const { seedCostBasis, lateFlows } = resolveSeedCapital({
+    accounts: enabledAccounts,
+    snapshots,
+    flows,
+    storedSeeds: seedSources.storedSeeds,
+    liveCapital: seedSources.liveCapital,
+    seriesDates: series.map((s) => s.date),
+    today,
+  });
   if (series.length === 0 || seedCostBasis <= 0) {
-    return { totalPct: 0, totalGain: 0, byDate };
+    return { totalPct: 0, totalGain: 0, byDate, seedCostBasis: 0 };
   }
   const flowByDate = buildFlowByDate(flows, enabledAccounts, allOn);
+  applyLateFlows(flowByDate, lateFlows);
 
   let units = seedCostBasis / BASE_PRICE; // seed: price starts implied by NAV/units
   let prevPrice: number | null = null;
@@ -303,5 +476,6 @@ export function unitMethodReturn(
     totalPct: (lastPrice / BASE_PRICE - 1) * 100,
     totalGain: lastNav - (seedCostBasis + netFlow), // NAV − contributed capital
     byDate,
+    seedCostBasis,
   };
 }

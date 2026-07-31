@@ -7,7 +7,8 @@
    Pure: the API route fetches the rows + benchmark + risk-free and calls this. */
 
 import {
-  earliestStoredCapital,
+  resolveSeedCapital,
+  applyLateFlows,
   unitCumReturns,
   chainedPeriodReturns,
   type ReturnSnapshot,
@@ -184,25 +185,9 @@ export function buildAnnualSummary(inputs: {
   }));
   const seedByAccount = new Map<string, number>();
   for (const s of inputs.seeds) seedByAccount.set(norm(s.account), Number(s.seed_cost_basis) || 0);
-  const seedFor = (acct: string): number => {
-    const seeded = seedByAccount.get(acct);
-    if (seeded != null) return seeded;
-    const anchor = earliestStoredCapital(returnSnaps, new Set([acct]), false);
-    if (anchor) return anchor.costBasis + anchor.cash;
-    const liveCost = inputs.holdings
-      .filter((h) => norm(h.account) === acct)
-      .reduce((s, h) => s + (Number(h.shares) || 0) * (Number(h.cost_basis) || 0), 0);
-    const liveCash = inputs.cash
-      .filter((c) => norm(c.account) === acct)
-      .reduce((s, c) => s + (Number(c.balance) || 0), 0);
-    return liveCost + liveCash;
-  };
   const accounts = new Set<string>();
   for (const r of inputs.snapshots) if (r.account != null) accounts.add(norm(r.account));
   for (const a of seedByAccount.keys()) accounts.add(a);
-  const seed = scope === ALL_ACCOUNTS
-    ? [...accounts].reduce((s, a) => s + seedFor(a), 0)
-    : seedFor(scope);
 
   const flowByDate = new Map<string, number>();
   for (const f of inputs.flows) {
@@ -214,6 +199,31 @@ export function buildAnnualSummary(inputs: {
     const d = String(f.trade_date).slice(0, 10);
     flowByDate.set(d, (flowByDate.get(d) ?? 0) + (Number(f.amount) || 0));
   }
+
+  /* Seed via the shared resolver — same chain the dashboard and the monthly
+     reports use, including holding back an account that joined after this
+     scope's series began (its capital mints as a flow on arrival instead of
+     diluting the years before it). */
+  const { seedCostBasis: seed, lateFlows } = resolveSeedCapital({
+    accounts: scope === ALL_ACCOUNTS ? accounts : [scope],
+    snapshots: returnSnaps,
+    flows: inputs.flows.map((f) => ({
+      date: String(f.trade_date).slice(0, 10),
+      account: f.account == null ? null : norm(f.account),
+      amount: Number(f.amount) || 0,
+    })),
+    storedSeeds: seedByAccount,
+    liveCapital: (acct) =>
+      inputs.holdings
+        .filter((h) => norm(h.account) === acct)
+        .reduce((s, h) => s + (Number(h.shares) || 0) * (Number(h.cost_basis) || 0), 0) +
+      inputs.cash
+        .filter((c) => norm(c.account) === acct)
+        .reduce((s, c) => s + (Number(c.balance) || 0), 0),
+    seriesDates: nav.map((n) => n.date),
+    today: `${year}-12-31`,
+  });
+  applyLateFlows(flowByDate, lateFlows);
 
   // Anchor the unit curve at the last snapshot BEFORE the year (the year's
   // opening base), or the first snapshot ever for the inception year. Crucially

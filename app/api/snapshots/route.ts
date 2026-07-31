@@ -93,6 +93,18 @@ export async function GET() {
    "anchor". Only an account with no prior snapshot at all seeds from live
    values, because today IS its inception point.
 
+   BUT an account whose inception is today, in a portfolio that ALREADY has
+   snapshot history, gets no seed row at all. Its capital arrived after the
+   combined series began, so it belongs in the flow stream, not the seed — its
+   funding deposit is already a DEPOSIT transaction, and writing an anchor too
+   would count the same dollars twice (contributed capital exceeding the money
+   that exists, `totalGain` understated by exactly the deposit, and the whole
+   historical curve re-divided by units that hadn't been funded yet). The
+   consumer side enforces this regardless — lib/portfolio-return.ts
+   `resolveSeedCapital` holds back any late-arriving account — so this is
+   belt-and-braces: it keeps a misleading row out of the table, since
+   `ignoreDuplicates` would freeze it permanently once written.
+
    Seed = contributed capital = cost basis + cash, so cash you already hold is
    treated as capital (not gain). Future dividends still register as gain (they
    add cash with no new units), and deposits mint units (neutral). */
@@ -129,9 +141,14 @@ async function ensureSeeds(
     earliestByAccount.set(acct, earliestWithCostBasis.get(acct) ?? earliestWithCash.get(acct)!);
   }
 
+  // Does this user already have snapshot history? If so, an account with no
+  // rows of its own is a LATE ARRIVAL and must not be anchored (see above).
+  const hasPriorHistory = (history ?? []).length > 0;
+
   const seedRows = accounts
     .map((account) => {
       const earliest = earliestByAccount.get(account);
+      if (!earliest && hasPriorHistory) return { account, capital: 0 }; // late arrival → flow, not seed
       const capital = earliest
         ? earliest.costBasis + earliest.cash
         : (costBasisByAccount.get(account) ?? 0) + (cashByAccount.get(account) ?? 0);
