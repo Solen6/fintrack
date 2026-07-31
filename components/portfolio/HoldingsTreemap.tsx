@@ -192,9 +192,18 @@ interface SectorBlock extends Placed<SectorGroup> {
    ("Unsorted" top for unfiled holdings, "Other" sub for loose holdings under a
    branch) are DERIVED for display/drag and never persisted as user sectors —
    that's what lets an empty USER sector survive a save while transient buckets
-   don't. Drag/edit operate on this tree; `serializeUser` converts back. */
-interface NormSub { name: string; path: number[]; cells: HCell[]; synthetic: boolean; }
-interface NormTop { name: string; path: number[]; leaf: boolean; cells: HCell[]; subs: NormSub[]; synthetic: boolean; }
+   don't. Drag/edit operate on this tree; `serializeUser` converts back.
+
+   `hidden` holds stored ids that AREN'T in the current scope (another account's
+   holdings, or cash while excluded). They can't be drawn or dragged, so they're
+   deliberately kept OUT of `cells` — every layout and stats calculation stays
+   scope-correct — but they ride along through each edit and are written straight
+   back out. Without them, saving a layout while one account is selected erased
+   every other account's holdings from the sleeve.
+   On a BRANCH, `hidden` is the branch's own loose ids (its `cells` is always
+   empty; visible loose holdings live in the synthetic "Other" sub). */
+interface NormSub { name: string; path: number[]; cells: HCell[]; hidden: string[]; synthetic: boolean; }
+interface NormTop { name: string; path: number[]; leaf: boolean; cells: HCell[]; hidden: string[]; subs: NormSub[]; synthetic: boolean; }
 interface LeafBlock { path: number[]; x: number; y: number; w: number; h: number; tiles: Placed<{ cell: HCell }>[]; }
 interface GroupLabel {
   path: number[]; name: string; x: number; y: number; w: number; level: 0 | 1; synthetic: boolean;
@@ -213,8 +222,10 @@ function cellStats(cells: HCell[]): { aggPct: number; priced: number; up: number
 function cloneTops(tops: NormTop[]): NormTop[] {
   return tops.map((t) => ({
     name: t.name, path: t.path.slice(), leaf: t.leaf, synthetic: t.synthetic,
-    cells: t.cells.slice(),
-    subs: t.subs.map((s) => ({ name: s.name, path: s.path.slice(), cells: s.cells.slice(), synthetic: s.synthetic })),
+    cells: t.cells.slice(), hidden: t.hidden.slice(),
+    subs: t.subs.map((s) => ({
+      name: s.name, path: s.path.slice(), cells: s.cells.slice(), hidden: s.hidden.slice(), synthetic: s.synthetic,
+    })),
   }));
 }
 
@@ -237,17 +248,21 @@ function moveCellInTree(tops: NormTop[], dragId: string, path: number[], beforeI
 /** Convert the normalized tree back to persistable user sectors: drop the
  *  synthetic "Unsorted" top (its holdings become unassigned), fold each "Other"
  *  sub back into its parent's loose `ids`, and KEEP empty user sectors so they
- *  survive a save (only the user deletes them). */
+ *  survive a save (only the user deletes them). Out-of-scope ids (`hidden`)
+ *  are appended to the node they were stored under, so an edit made with one
+ *  account selected leaves every other account's filing intact. */
 function serializeUser(tops: NormTop[]): HeatmapGroup[] {
+  const ids = (n: { cells: HCell[]; hidden: string[] }) => [...n.cells.map((c) => c.id), ...n.hidden];
   const out: HeatmapGroup[] = [];
   for (const t of tops) {
     if (t.synthetic) continue;
     if (t.leaf) {
-      out.push({ name: t.name, ids: t.cells.map((c) => c.id) });
+      out.push({ name: t.name, ids: ids(t) });
     } else {
-      const loose = t.subs.find((s) => s.synthetic)?.cells ?? [];
-      const children = t.subs.filter((s) => !s.synthetic).map((s) => ({ name: s.name, ids: s.cells.map((c) => c.id) }));
-      out.push({ name: t.name, ids: loose.map((c) => c.id), children });
+      const other = t.subs.find((s) => s.synthetic);
+      const children = t.subs.filter((s) => !s.synthetic).map((s) => ({ name: s.name, ids: ids(s) }));
+      // Loose = the "Other" bucket's visible tiles + the branch's own hidden ids.
+      out.push({ name: t.name, ids: [...(other ? ids(other) : []), ...t.hidden], children });
     }
   }
   return out;
@@ -409,38 +424,63 @@ export function HoldingsTreemap({
   // Working tree (normalized, synthetic flags preserved) during a drag.
   const [dragTree, setDragTree] = useState<NormTop[] | null>(null);
 
-  // Normalize props → a tree of live cells, in stored order. Unknown ids drop
-  // out; loose holdings under a branch gather into a synthetic "Other" sub, and
-  // holdings in no group at all into a synthetic "Unsorted" top. EMPTY USER
-  // sectors are kept (they only vanish when the user deletes them).
+  // Normalize props → a tree of live cells, in stored order. Ids outside the
+  // current scope are parked in `hidden` (kept, never drawn); loose holdings
+  // under a branch gather into a synthetic "Other" sub, and holdings in no group
+  // at all into a synthetic "Unsorted" top. EMPTY USER sectors are kept in edit
+  // mode (they only vanish when the user deletes them).
   const baseNorm = useMemo(() => {
     if (!custom) return { tops: [] as NormTop[], grouped: false };
     const byId = new Map(cells.map((c) => [c.id, c]));
     const assigned = new Set<string>();
-    const take = (ids: string[]): HCell[] => {
+    /** Split a stored id list into the tiles that exist in this scope and the
+     *  ids that don't. Claiming BOTH kinds keeps a duplicated id in one place. */
+    const take = (ids: string[]): { cells: HCell[]; hidden: string[] } => {
       const out: HCell[] = [];
-      for (const id of ids) { const c = byId.get(id); if (c && !assigned.has(id)) { assigned.add(id); out.push(c); } }
-      return out;
+      const hidden: string[] = [];
+      for (const id of ids) {
+        if (assigned.has(id)) continue;
+        assigned.add(id);
+        const c = byId.get(id);
+        if (c) out.push(c); else hidden.push(id);
+      }
+      return { cells: out, hidden };
     };
     const src = groups ?? [];
     const tops: NormTop[] = [];
     src.forEach((g, i) => {
       if (g.children?.length) {
-        const subs: NormSub[] = g.children.map((c, j) => ({ name: c.name ?? "", path: [i, j], cells: take(c.ids), synthetic: false }));
+        const subs: NormSub[] = g.children.map((c, j) => {
+          const t = take(c.ids);
+          return { name: c.name ?? "", path: [i, j], cells: t.cells, hidden: t.hidden, synthetic: false };
+        });
         const loose = take(g.ids);
-        if (loose.length) subs.push({ name: "Other", path: [i, subs.length], cells: loose, synthetic: true });
-        tops.push({ name: g.name ?? "", path: [i], leaf: false, cells: [], subs, synthetic: false });
+        if (loose.cells.length) subs.push({ name: "Other", path: [i, subs.length], cells: loose.cells, hidden: [], synthetic: true });
+        tops.push({ name: g.name ?? "", path: [i], leaf: false, cells: [], hidden: loose.hidden, subs, synthetic: false });
       } else {
-        tops.push({ name: g.name ?? "", path: [i], leaf: true, cells: take(g.ids), subs: [], synthetic: false });
+        const t = take(g.ids);
+        tops.push({ name: g.name ?? "", path: [i], leaf: true, cells: t.cells, hidden: t.hidden, subs: [], synthetic: false });
       }
     });
     const leftovers = cells
       .filter((c) => !assigned.has(c.id))
       .sort((a, b) => b.value - a.value || a.symbol.localeCompare(b.symbol));
-    if (leftovers.length) tops.push({ name: tops.length ? "Unsorted" : "", path: [tops.length], leaf: true, cells: leftovers, subs: [], synthetic: true });
-    const grouped = tops.length > 1 || (tops[0]?.name ?? "") !== "" || !(tops[0]?.leaf ?? true);
-    return { tops, grouped };
-  }, [custom, cells, groups]);
+    if (leftovers.length) tops.push({ name: tops.length ? "Unsorted" : "", path: [tops.length], leaf: true, cells: leftovers, hidden: [], subs: [], synthetic: true });
+
+    /* Outside edit mode, a sector with nothing in the current scope isn't drawn:
+       picking one account shows only the sleeves that account actually holds,
+       and the whole-portfolio view stops reserving slivers for empty ones. Edit
+       mode keeps them — they're the drop targets. `path` stays the SOURCE index
+       (mutations only run while editable, i.e. on the unfiltered list). */
+    const shown = editable
+      ? tops
+      : tops
+          .map((t) => (t.leaf ? t : { ...t, subs: t.subs.filter((s) => s.cells.length > 0) }))
+          .filter((t) => (t.leaf ? t.cells.length > 0 : t.subs.length > 0));
+
+    const grouped = shown.length > 1 || (shown[0]?.name ?? "") !== "" || !(shown[0]?.leaf ?? true);
+    return { tops: shown, grouped };
+  }, [custom, cells, groups, editable]);
 
   // During a drag we edit the normalized tree in place (keeps synthetic flags);
   // otherwise the props-derived tree drives the layout.
@@ -606,8 +646,9 @@ export function HoldingsTreemap({
       if (!parent || !removed) return null;
       parent.subs.splice(j, 1);
       let other = parent.subs.find((s) => s.synthetic);
-      if (!other) { other = { name: "Other", path: [i, parent.subs.length], cells: [], synthetic: true }; parent.subs.push(other); }
+      if (!other) { other = { name: "Other", path: [i, parent.subs.length], cells: [], hidden: [], synthetic: true }; parent.subs.push(other); }
       other.cells.push(...removed.cells);
+      parent.hidden.push(...removed.hidden); // out-of-scope ids go loose too, not missing
       return t;
     });
   }, [mutateTops]);
@@ -623,13 +664,14 @@ export function HoldingsTreemap({
       const target = t[i];
       if (!target) return null;
       // Splitting a leaf into sub-sectors: its holdings become loose ("Other").
+      // `target.hidden` needs no move — on a branch it already means "loose".
       if (target.leaf) {
         target.leaf = false;
         const loose = target.cells;
         target.cells = [];
-        target.subs = loose.length ? [{ name: "Other", path: [i, 1], cells: loose, synthetic: true }] : [];
+        target.subs = loose.length ? [{ name: "Other", path: [i, 1], cells: loose, hidden: [], synthetic: true }] : [];
       }
-      target.subs.push({ name: name || `Sub-sector ${n}`, path: [i, target.subs.length], cells: [], synthetic: false });
+      target.subs.push({ name: name || `Sub-sector ${n}`, path: [i, target.subs.length], cells: [], hidden: [], synthetic: false });
       return t;
     });
   }, [baseNorm, mutateTops]);

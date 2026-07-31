@@ -165,6 +165,17 @@ export function PortfolioDeck({
   const [editing, setEditing] = useState(false);
   const [viewsMsg, setViewsMsg] = useState("");
 
+  /* A sleeve is ONE whole-portfolio arrangement, authored in "All Accounts" and
+     projected into each account — pick a single account and the same sleeves
+     render with only that account's holdings in them (empty ones drop out).
+     Authoring is therefore all-accounts only: a sleeve can only be built from
+     tiles you can see, so arranging while scoped would file this account's
+     holdings against a picture missing every other account's. */
+  const canArrange = account === "all";
+  // Derived, not reset — switching to one account suspends arranging without
+  // forgetting it, so going back to All Accounts drops you where you left off.
+  const arranging = editing && canArrange;
+
   useEffect(() => {
     fetch("/api/heatmap-views")
       .then((r) => r.json())
@@ -312,8 +323,8 @@ export function PortfolioDeck({
         selected={selected}
         layout={activeView ? "custom" : "sector"}
         groups={activeGroups}
-        editable={!!activeView && editing}
-        onGroupsChange={activeView ? (g) => persistGroups(activeView.id, g) : undefined}
+        editable={!!activeView && arranging}
+        onGroupsChange={activeView && canArrange ? (g) => persistGroups(activeView.id, g) : undefined}
       />
     );
 
@@ -327,18 +338,20 @@ export function PortfolioDeck({
         {views.map((v) => (
           <ViewPill key={v.id} label={v.name} active={activeViewId === v.id} onClick={() => selectView(v.id)} />
         ))}
-        <button
-          onClick={createView}
-          title="New custom view from the current layout"
-          className="text-xs px-2 py-1 rounded-sm border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-[var(--primary)] transition-colors"
-        >
-          + New
-        </button>
+        {canArrange && (
+          <button
+            onClick={createView}
+            title="New custom view from the current layout"
+            className="text-xs px-2 py-1 rounded-sm border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-[var(--primary)] transition-colors"
+          >
+            + New
+          </button>
+        )}
       </div>
       <div className="flex items-center gap-2">
         {activeView && (
           <>
-            {editing && (
+            {arranging && (
               <button
                 onClick={addSector}
                 className="text-xs px-2 py-1 rounded-sm border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-[var(--primary)] transition-colors"
@@ -347,18 +360,20 @@ export function PortfolioDeck({
                 + Sector
               </button>
             )}
-            <button
-              onClick={() => setEditing((e) => !e)}
-              aria-pressed={editing}
-              className="text-xs px-2.5 py-1 rounded-sm border transition-colors"
-              style={{
-                borderColor: editing ? "var(--primary)" : "var(--border)",
-                background: editing ? "oklch(0.72 0.14 74 / 0.14)" : "transparent",
-                color: editing ? "var(--primary)" : "oklch(0.64 0.008 74)",
-              }}
-            >
-              {editing ? "Done arranging" : "Edit layout"}
-            </button>
+            {canArrange && (
+              <button
+                onClick={() => setEditing((e) => !e)}
+                aria-pressed={arranging}
+                className="text-xs px-2.5 py-1 rounded-sm border transition-colors"
+                style={{
+                  borderColor: arranging ? "var(--primary)" : "var(--border)",
+                  background: arranging ? "oklch(0.72 0.14 74 / 0.14)" : "transparent",
+                  color: arranging ? "var(--primary)" : "oklch(0.64 0.008 74)",
+                }}
+              >
+                {arranging ? "Done arranging" : "Edit layout"}
+              </button>
+            )}
             <button onClick={() => renameView(activeView.id)} className="text-xs px-2 py-1 text-muted-foreground hover:text-foreground transition-colors">Rename</button>
             <button onClick={() => deleteView(activeView.id)} className="text-xs px-2 py-1 text-muted-foreground transition-colors" style={{ color: "oklch(0.55 0.12 28)" }}>Delete</button>
           </>
@@ -368,9 +383,15 @@ export function PortfolioDeck({
     </div>
   );
 
-  const heatmapHint = (editing || viewsMsg) && (
-    <p className="text-xs" style={{ color: viewsMsg ? "var(--negative)" : "var(--primary)" }}>
-      {viewsMsg || "Drag tiles to move them between sectors — click a sector name to rename it. Saves automatically; sizes track position value."}
+  const heatmapHint = (arranging || viewsMsg || (activeView && !canArrange)) && (
+    <p
+      className="text-xs"
+      style={{ color: viewsMsg ? "var(--negative)" : arranging ? "var(--primary)" : "oklch(0.64 0.008 74)" }}
+    >
+      {viewsMsg
+        || (arranging
+          ? "Drag tiles to move them between sectors — click a sector name to rename it. Saves automatically; sizes track position value."
+          : `Showing this view's sectors filtered to ${account} — sectors it holds nothing in are hidden. Switch to All Accounts to rearrange.`)}
     </p>
   );
 
