@@ -134,12 +134,57 @@ export async function POST(request: NextRequest) {
         }
       : {}),
   };
-  let { error } = await supabase.from("holdings").insert(row);
-  if (error && /acquired_at/i.test(error.message ?? "")) {
-    delete row.acquired_at; // pre-migration fallback
-    ({ error } = await supabase.from("holdings").insert(row));
+  // Buying more of an equity already held in this account folds into the
+  // existing row at a share-weighted average cost — the way a broker reports
+  // one blended position — instead of leaving two rows at two different bases.
+  // Bonds (CUSIP/maturity-specific) and derivatives (distinct contracts, combo
+  // legs) always get their own row. Only merges when exactly one row matches;
+  // anything ambiguous falls through to a plain insert.
+  let merged = false;
+  if (!isBond && !isDerivative) {
+    const { data: existingRows } = await supabase
+      .from("holdings")
+      .select("id,shares,cost_basis,notes,instrument_type")
+      .eq("user_id", user.id)
+      .eq("ticker", ticker.toUpperCase())
+      .eq("account", account.trim());
+    const matches = (existingRows ?? []).filter((r) => (r.instrument_type ?? "equity") === "equity");
+
+    if (matches.length === 1) {
+      const prev = matches[0];
+      const prevShares = Number(prev.shares) || 0;
+      const prevCost = Number(prev.cost_basis) || 0;
+      const totalShares = prevShares + effectiveShares;
+      const blendedCost =
+        totalShares !== 0
+          ? (prevShares * prevCost + effectiveShares * perUnit) / totalShares
+          : perUnit;
+
+      // acquired_at is deliberately NOT bumped: it gates dividend entitlement
+      // (lib/corporate-actions.ts), so resetting it to now would strip the
+      // shares already held of a dividend they earned.
+      const { error: mergeErr } = await supabase
+        .from("holdings")
+        .update({
+          shares: totalShares,
+          cost_basis: blendedCost,
+          ...(!prev.notes && notes ? { notes } : {}),
+        })
+        .eq("id", prev.id)
+        .eq("user_id", user.id);
+      if (mergeErr) return NextResponse.json({ error: mergeErr.message }, { status: 500 });
+      merged = true;
+    }
   }
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  if (!merged) {
+    let { error } = await supabase.from("holdings").insert(row);
+    if (error && /acquired_at/i.test(error.message ?? "")) {
+      delete row.acquired_at; // pre-migration fallback
+      ({ error } = await supabase.from("holdings").insert(row));
+    }
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   // Record the buy in the activity ledger (best-effort). For bonds/derivatives
   // we omit the quantity/price so the feed doesn't render a raw "effective
