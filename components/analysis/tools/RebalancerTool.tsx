@@ -22,17 +22,112 @@ const TRADE_EPS = 1;
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+interface RawHolding {
+  account: string;
+  instrument_type: string | null;
+  bond_type: string | null;
+}
+
+/** Same priceable-sleeve filter /api/analysis/history applies server-side
+    (equities + bond ETFs; no options/futures/individual bonds) — used here
+    only to decide which accounts get a section at all. */
+function isRebalanceable(h: RawHolding): boolean {
+  const it = h.instrument_type ?? "equity";
+  if (it === "option" || it === "future") return false;
+  if (it === "bond" && h.bond_type !== "etf") return false;
+  return true;
+}
+
 export function RebalancerTool() {
+  // The account list itself (not any account's holdings) — each account gets
+  // its own independent section below, each with its own data fetch and its
+  // own saved targets. null = still loading.
+  const [accounts, setAccounts] = useState<string[] | null>(null);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/holdings")
+      .then((r) => r.json())
+      .then((json) => {
+        if (!alive) return;
+        const rows = (json.holdings ?? []) as RawHolding[];
+        const names = new Set<string>();
+        for (const h of rows) {
+          if (h.account && isRebalanceable(h)) names.add(h.account);
+        }
+        setAccounts([...names].sort((a, b) => a.localeCompare(b)));
+      })
+      .catch(() => {
+        if (alive) setAccountsError("Couldn't load accounts");
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return (
+    <ToolShell
+      category="Allocation"
+      title="Rebalancer"
+      subtitle="See how far each account has drifted from its own target weights — measured as a share of that account, cash included — and the exact buys and sells that bring its invested sleeve back in line. Every account keeps its own targets."
+    >
+      {accounts === null ? (
+        accountsError ? <ErrorBlock message={accountsError} /> : <LoadingBlock />
+      ) : accounts.length === 0 ? (
+        <EmptyBlock
+          title="No priceable holdings to rebalance."
+          hint="The rebalancer needs at least one equity or ETF position in an account's invested sleeve. Cash accounts, options, futures, and individual bonds are excluded."
+        />
+      ) : (
+        <div className="flex flex-col gap-8">
+          {accounts.map((account) => (
+            <AccountRebalancePanel key={account} account={account} />
+          ))}
+
+          <MethodologyNote>
+            <p>
+              Each account above is its own sleeve, rebalanced independently — its Current % is
+              that holding&apos;s value ÷ that account&apos;s total value (invested holdings + cash),
+              and its Target % is what you type for that account, normalized to sum to 100{" "}
+              <em>within that account&apos;s invested sleeve</em> and then scaled down by whatever
+              share of the account sits in cash, since cash is never reallocated — Cash is shown as
+              its own row with its current % for reference, but it has no target and isn&apos;t part
+              of the drift/trade math. Drift is current&nbsp;% − scaled-target&nbsp;%. The trade for
+              a holding is the dollar move that lands it on its target within the sleeve —
+              (sleeve-target − current) × invested value — where a positive figure is a buy and a
+              negative one a sell. Turnover is the sum of the absolute trades divided by two (buys
+              and sells net out), and a move under ${TRADE_EPS.toFixed(0)} is treated as no trade.
+            </p>
+            <p>
+              Assumptions and limits: each account&apos;s targets persist only once you click{" "}
+              <strong>Save targets</strong> for that account — edits before that are local to the
+              browser tab and are lost on reload. Trades are computed against a single snapshot of
+              the invested value; execution prices, transaction costs, bid/ask spreads, taxes on
+              realized gains, wash-sale rules, tax lots, and fractional-share or round-lot
+              constraints are <strong>not</strong> modeled. Cash is not reallocated: the cash sleeve
+              neither funds buys nor absorbs sells, so the plan rebalances only the priceable
+              holdings within each account among themselves — nothing moves between accounts.
+              Options, futures, and individual bonds are excluded.
+            </p>
+          </MethodologyNote>
+        </div>
+      )}
+    </ToolShell>
+  );
+}
+
+function AccountRebalancePanel({ account }: { account: string }) {
   const { data, loading, error, retry } = useAnalysisData<AnalysisHistoryResponse>(
-    "/api/analysis/history?days=365",
+    `/api/analysis/history?days=365&account=${encodeURIComponent(account)}`,
   );
 
-  // Target weights (percent) keyed by ticker. Seeded from the saved targets
-  // (once loaded) falling back to each holding's current weight for any
-  // ticker with no saved value, so there's no flash and new holdings default
-  // sensibly. `savedTargets === null` means "still loading" — seeding waits
-  // for it so a saved value never gets clobbered by the current-weight
-  // fallback racing ahead of the fetch.
+  // Target weights (percent) keyed by ticker, scoped to this account. Seeded
+  // from this account's saved targets (once loaded) falling back to each
+  // holding's current weight for any ticker with no saved value, so there's
+  // no flash and new holdings default sensibly. `savedTargets === null` means
+  // "still loading" — seeding waits for it so a saved value never gets
+  // clobbered by the current-weight fallback racing ahead of the fetch.
   const [targets, setTargets] = useState<Record<string, number>>({});
   const [savedTargets, setSavedTargets] = useState<Record<string, number> | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -40,7 +135,8 @@ export function RebalancerTool() {
 
   useEffect(() => {
     let alive = true;
-    fetch("/api/analysis/rebalance-targets")
+    setSavedTargets(null);
+    fetch(`/api/analysis/rebalance-targets?account=${encodeURIComponent(account)}`)
       .then((r) => r.json().catch(() => ({})))
       .then((json) => {
         if (alive) setSavedTargets(json?.targets ?? {});
@@ -51,7 +147,7 @@ export function RebalancerTool() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [account]);
 
   useEffect(() => {
     if (!data || data.empty || data.assets.length === 0) return;
@@ -70,7 +166,7 @@ export function RebalancerTool() {
       const res = await fetch("/api/analysis/rebalance-targets", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targets }),
+        body: JSON.stringify({ account, targets }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json?.error || `Request failed (${res.status})`);
@@ -90,8 +186,8 @@ export function RebalancerTool() {
     const totalValue = riskyValue + cash;
     // Share of the account that's even eligible for reallocation — cash is
     // pinned (never traded), so a sleeve target of 100% still only ever
-    // claims this fraction of the whole account. Keeps Current %/Target %
-    // on the same "% of total account (incl. cash)" basis as everywhere else.
+    // claims this fraction of the account. Keeps Current %/Target % on the
+    // same "% of account (incl. cash)" basis as everywhere else.
     const riskyFraction = totalValue > 0 ? riskyValue / totalValue : 0;
     const cashPct = totalValue > 0 ? (cash / totalValue) * 100 : 0;
 
@@ -159,37 +255,45 @@ export function RebalancerTool() {
   };
 
   return (
-    <ToolShell
-      category="Allocation"
-      title="Rebalancer"
-      subtitle="See how far each holding has drifted from its target weight — measured as a share of the whole account, cash included — and the exact buys and sells that bring the invested sleeve back in line."
-      asOf={data?.asOf}
-    >
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-2.5">
+        <div className="flex items-baseline gap-2.5">
+          <h2 className="text-[15px] font-semibold text-foreground">{account}</h2>
+          {data?.asOf && (
+            <span className="font-mono text-[11px] tabular-nums" style={{ color: CHART.muted }}>
+              as of {data.asOf}
+            </span>
+          )}
+        </div>
+        {model && (
+          <div className="flex flex-wrap items-center gap-2">
+            <ToolbarButton onClick={resetToCurrent}>Reset to current</ToolbarButton>
+            <ToolbarButton onClick={equalWeight}>Equal weight</ToolbarButton>
+            <ToolbarButton onClick={saveTargets} disabled={saveState === "saving"}>
+              {saveState === "saving" ? "Saving…" : "Save targets"}
+            </ToolbarButton>
+            {saveState === "saved" && (
+              <span className="text-[11.5px]" style={{ color: CHART.positive }}>Saved</span>
+            )}
+            {saveState === "error" && (
+              <span className="text-[11.5px]" style={{ color: CHART.negative }}>{saveError}</span>
+            )}
+          </div>
+        )}
+      </div>
+
       {loading ? (
         <LoadingBlock />
       ) : error ? (
         <ErrorBlock message={error} onRetry={retry} />
       ) : !model ? (
         <EmptyBlock
-          title="No priceable holdings to rebalance."
-          hint="The rebalancer needs at least one equity or ETF position in the invested sleeve. Cash accounts, options, futures, and individual bonds are excluded."
+          title="No priceable holdings in this account."
+          hint="The rebalancer needs at least one equity or ETF position. Options, futures, and individual bonds are excluded."
         />
       ) : (
         <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <ToolbarButton onClick={resetToCurrent}>Reset to current</ToolbarButton>
-              <ToolbarButton onClick={equalWeight}>Equal weight</ToolbarButton>
-              <ToolbarButton onClick={saveTargets} disabled={saveState === "saving"}>
-                {saveState === "saving" ? "Saving…" : "Save targets"}
-              </ToolbarButton>
-              {saveState === "saved" && (
-                <span className="text-[11.5px]" style={{ color: CHART.positive }}>Saved</span>
-              )}
-              {saveState === "error" && (
-                <span className="text-[11.5px]" style={{ color: CHART.negative }}>{saveError}</span>
-              )}
-            </div>
+          <div className="flex justify-end">
             <span className="font-mono text-[11.5px] tabular-nums" style={{ color: CHART.muted }}>
               targets sum: {model.sum.toFixed(1)}%
             </span>
@@ -248,7 +352,7 @@ export function RebalancerTool() {
                             min={0}
                             step="0.1"
                             inputMode="decimal"
-                            aria-label={`Target weight for ${r.ticker}`}
+                            aria-label={`Target weight for ${r.ticker} in ${account}`}
                             value={r.targetShown}
                             onChange={(e) => onTargetChange(r.ticker, e.target.value)}
                             className="w-20 rounded-sm border border-border bg-card px-2 py-1 text-right font-mono text-[12px] tabular-nums outline-none focus:border-[oklch(0.72_0.14_74_/_0.5)]"
@@ -304,35 +408,9 @@ export function RebalancerTool() {
               ]}
             />
           </Panel>
-
-          <MethodologyNote>
-            <p>
-              Current % is each holding&apos;s value ÷ total account value (invested holdings + cash) —
-              the same basis used everywhere else in the app. The Target % column is what you type,
-              normalized to sum to 100 <em>within the invested sleeve</em> (so the entered numbers
-              need not be balanced by hand) and then scaled down by whatever share of the account
-              sits in cash, since cash is never reallocated — Cash is shown as its own row with its
-              current % for reference, but it has no target and isn&apos;t part of the drift/trade
-              math. Drift is current&nbsp;% − scaled-target&nbsp;%. The trade for a holding is the
-              dollar move that lands it on its target within the sleeve — (sleeve-target − current) ×
-              invested value — where a positive figure is a buy and a negative one a sell. Turnover
-              is the sum of the absolute trades divided by two (buys and sells net out), and a move
-              under ${TRADE_EPS.toFixed(0)} is treated as no trade.
-            </p>
-            <p>
-              Assumptions and limits: targets persist only once you click{" "}
-              <strong>Save targets</strong> — edits before that are local to the browser tab and
-              are lost on reload. Trades are computed against a single snapshot of the invested
-              value; execution prices, transaction costs, bid/ask spreads, taxes on realized gains,
-              wash-sale rules, tax lots, and fractional-share or round-lot constraints are{" "}
-              <strong>not</strong> modeled. Cash is not reallocated: the cash sleeve neither funds
-              buys nor absorbs sells, so the plan rebalances only the priceable holdings among
-              themselves. Options, futures, and individual bonds are excluded from the sleeve.
-            </p>
-          </MethodologyNote>
         </div>
       )}
-    </ToolShell>
+    </section>
   );
 }
 

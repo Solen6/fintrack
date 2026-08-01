@@ -49,19 +49,26 @@ export async function GET(request: NextRequest) {
     2000,
     Math.max(120, Number(request.nextUrl.searchParams.get("days")) || 730),
   );
+  // Optional account scope (Rebalancer's per-account sections). Every other
+  // consumer of this route omits it and keeps today's whole-portfolio behavior.
+  const account = request.nextUrl.searchParams.get("account")?.trim() || null;
 
-  const { data: holdingsData, error } = await supabase
+  let holdingsQuery = supabase
     .from("holdings")
     .select("ticker,name,sector,shares,cost_basis,acquired_at,instrument_type,bond_type")
     .eq("user_id", user.id);
+  if (account) holdingsQuery = holdingsQuery.eq("account", account);
+  const { data: holdingsData, error } = await holdingsQuery;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   // Cash (best-effort; table may not be migrated).
   let cash = 0;
-  const { data: cashRows } = await supabase
+  let cashQuery = supabase
     .from("cash_balances")
     .select("balance")
     .eq("user_id", user.id);
+  if (account) cashQuery = cashQuery.eq("account", account);
+  const { data: cashRows } = await cashQuery;
   if (cashRows) for (const r of cashRows) cash += Number(r.balance) || 0;
 
   // Priceable = equities + bond ETFs (real quote symbols). Aggregate shares per ticker.
