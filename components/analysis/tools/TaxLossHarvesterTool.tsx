@@ -17,8 +17,32 @@ import { useAnalysisData } from "../useAnalysisData";
 import { CHART } from "../charts";
 import { Sensitive } from "@/lib/privacy";
 
-const YEAR_MS = 365 * 86_400_000;
 const MONTH_MS = 30 * 86_400_000;
+
+/**
+ * `acquiredAt` comes straight off the `acquired_at` timestamptz column, so it
+ * arrives as a full ISO timestamp ("2025-03-14T18:22:33.123+00:00"), not a bare
+ * date. Parsing it directly handles that and a plain "YYYY-MM-DD" alike.
+ * Returns null when there's no usable date.
+ */
+function parseAcquired(acquiredAt: string | null): number | null {
+  if (!acquiredAt) return null;
+  const t = new Date(acquiredAt).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Long-term only when the position has actually been held a year or more, measured
+ * against the calendar anniversary of the acquisition (not 365 fixed days, which
+ * flags a day early across a leap year). Returns null when we can't tell — an
+ * unprovable holding period must not be claimed as long-term.
+ */
+function longTermStatus(acquiredMs: number | null, now: number): boolean | null {
+  if (acquiredMs == null || acquiredMs > now) return null;
+  const anniversary = new Date(acquiredMs);
+  anniversary.setUTCFullYear(anniversary.getUTCFullYear() + 1);
+  return now >= anniversary.getTime();
+}
 
 export function TaxLossHarvesterTool() {
   const { data, loading, error, retry } =
@@ -35,11 +59,12 @@ export function TaxLossHarvesterTool() {
     const losers = data.assets
       .filter((a) => a.unrealizedPL < 0)
       .map((a) => {
-        const ageMs = a.acquiredAt
-          ? now - new Date(a.acquiredAt + "T00:00:00Z").getTime()
-          : null;
-        const isLong = ageMs != null ? ageMs >= YEAR_MS : true;
-        const rate = (isLong ? longRate : shortRate) / 100;
+        const acquiredMs = parseAcquired(a.acquiredAt);
+        const ageMs = acquiredMs != null ? now - acquiredMs : null;
+        const isLong = longTermStatus(acquiredMs, now);
+        // Unknown holding period is priced at the short-term rate — the burden is on
+        // proving a year was held, so we never assume the friendlier treatment.
+        const rate = (isLong === true ? longRate : shortRate) / 100;
         const loss = -a.unrealizedPL; // positive dollars of realizable loss
         const taxSaved = -a.unrealizedPL * rate;
         const washRisk = ageMs != null ? ageMs <= MONTH_MS : false;
@@ -60,8 +85,9 @@ export function TaxLossHarvesterTool() {
 
     const totalLoss = losers.reduce((s, l) => s + l.loss, 0);
     const totalTaxSaved = losers.reduce((s, l) => s + l.taxSaved, 0);
-    const stCount = losers.filter((l) => !l.isLong).length;
-    const ltCount = losers.filter((l) => l.isLong).length;
+    const stCount = losers.filter((l) => l.isLong === false).length;
+    const ltCount = losers.filter((l) => l.isLong === true).length;
+    const unknownCount = losers.filter((l) => l.isLong == null).length;
 
     return {
       losers,
@@ -70,6 +96,7 @@ export function TaxLossHarvesterTool() {
       count: losers.length,
       stCount,
       ltCount,
+      unknownCount,
       totalHoldings: data.assets.length,
     };
   }, [data, shortRate, longRate]);
@@ -123,7 +150,11 @@ export function TaxLossHarvesterTool() {
             <Stat
               label="Short / Long"
               value={`${model.stCount} / ${model.ltCount}`}
-              sub="ST / LT losers"
+              sub={
+                model.unknownCount > 0
+                  ? `ST / LT losers · ${model.unknownCount} unknown`
+                  : "ST / LT losers"
+              }
             />
           </StatRow>
 
@@ -167,7 +198,15 @@ export function TaxLossHarvesterTool() {
                           {formatPercent(l.unrealizedPct * 100)}
                         </td>
                         <td className="py-1.5 text-center" style={{ color: CHART.muted }}>
-                          {l.isLong ? "LT" : "ST"}
+                          {l.isLong == null ? (
+                            <span title="No acquisition date on this position — holding term unknown, priced at your short-term rate.">
+                              —
+                            </span>
+                          ) : l.isLong ? (
+                            "LT"
+                          ) : (
+                            "ST"
+                          )}
                         </td>
                         <td className="py-1.5 text-right" style={{ color: CHART.positive }}>
                           <Sensitive>{formatCurrency(l.taxSaved)}</Sensitive>
@@ -200,8 +239,11 @@ export function TaxLossHarvesterTool() {
               real harvestable loss can differ from what your broker would let you sell lot by lot.
             </p>
             <p>
-              Holding term is inferred from the most recent acquisition date: on or after 365 days is treated
-              as long-term, otherwise short-term; a missing acquisition date is assumed long-term. Estimated
+              Holding term is inferred from the most recent acquisition date, so a position is only marked
+              <strong> LT</strong> once it has actually been held to its one-year anniversary; anything
+              younger is <strong>ST</strong>. A position with no acquisition date shows{" "}
+              <strong>&mdash;</strong> rather than a term, and is priced at your short-term rate — an
+              unprovable holding period never gets the friendlier long-term treatment. Estimated
               tax saved is simply the unrealized loss × your assumed marginal rate ({longRate.toFixed(0)}%
               long-term, {shortRate.toFixed(0)}% short-term) — it ignores gain offsetting order, the
               $3,000 ordinary-income limit on net capital losses, carryforwards, state taxes, and NIIT.
