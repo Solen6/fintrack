@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
-import { formatCurrencyCompact } from "@/lib/format";
+import { formatCurrencyCompact, formatPercent } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
+import { computeDayChange, type DayChange } from "@/lib/day-change";
 import type { HoldingWithMetrics } from "@/lib/types";
 import {
   ACCOUNT_TYPES,
@@ -59,6 +60,22 @@ export function AccountSidebar({ holdings, cash = [], extraAccounts = [], select
     };
   }, []);
 
+  /* Today's move per account, from the same helper the summary strip uses — the
+     row for an account and the header once you select it read off one function. */
+  const dayByAccount = useMemo(() => {
+    const byAccount = new Map<string, HoldingWithMetrics[]>();
+    for (const h of holdings) {
+      const list = byAccount.get(h.account);
+      if (list) list.push(h);
+      else byAccount.set(h.account, [h]);
+    }
+    const m = new Map<string, DayChange>();
+    for (const [name, list] of byAccount) m.set(name, computeDayChange(list));
+    return m;
+  }, [holdings]);
+
+  const dayAll = useMemo(() => computeDayChange(holdings), [holdings]);
+
   const accounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const h of holdings) {
@@ -107,6 +124,7 @@ export function AccountSidebar({ holdings, cash = [], extraAccounts = [], select
           label="All Accounts"
           sublabel={`${accounts.length} account${accounts.length !== 1 ? "s" : ""}`}
           value={<Sensitive>{formatCurrencyCompact(grandTotal)}</Sensitive>}
+          day={dayAll}
           active={selected === "all"}
           onClick={() => { onSelect("all"); setConfirmRemove(null); }}
         />
@@ -132,6 +150,7 @@ export function AccountSidebar({ holdings, cash = [], extraAccounts = [], select
                 <AccountItem
                   label={displayNames[name] ?? name}
                   value={<Sensitive>{formatCurrencyCompact(value)}</Sensitive>}
+                  day={dayByAccount.get(name)}
                   active={selected === name}
                   onClick={() => { onSelect(name); setConfirmRemove(null); }}
                 />
@@ -166,11 +185,13 @@ interface AccountItemProps {
   label: string;
   sublabel?: string;
   value?: React.ReactNode;
+  /** Today's move for this account. Omitted / all-cash accounts show no line. */
+  day?: DayChange;
   active: boolean;
   onClick: () => void;
 }
 
-function AccountItem({ label, sublabel, value, active, onClick }: AccountItemProps) {
+function AccountItem({ label, sublabel, value, day, active, onClick }: AccountItemProps) {
   return (
     <button
       onClick={onClick}
@@ -200,6 +221,30 @@ function AccountItem({ label, sublabel, value, active, onClick }: AccountItemPro
       {sublabel && (
         <span className="text-xs text-muted-foreground mt-0.5 block">{sublabel}</span>
       )}
+      {/* Own line, right-aligned under the total — sharing a row with the
+          sublabel wraps "6 accounts" at the 208px sidebar width. */}
+      {day && day.priorValue > 0 && (
+        <span className="mt-0.5 flex pr-4">
+          <DayChangeLine day={day} />
+        </span>
+      )}
     </button>
+  );
+}
+
+/** "+$412  +0.38%" — today's move for one account, under its total. Dollars are
+ *  masked in Private mode; the percent isn't a dollar figure, so it stays. */
+function DayChangeLine({ day }: { day: DayChange }) {
+  const up = day.dollar >= 0;
+  const color = day.dollar === 0 ? "oklch(0.52 0.008 74)" : up ? "var(--positive)" : "var(--negative)";
+  return (
+    <span
+      className="ml-auto flex items-center gap-1.5 font-mono text-[10.5px] tabular-nums"
+      style={{ color }}
+      title={`Today: ${up ? "+" : "-"}${formatCurrencyCompact(Math.abs(day.dollar))} (${formatPercent(day.pct)}) — market positions only, excludes cash`}
+    >
+      <Sensitive>{`${up ? "+" : "-"}${formatCurrencyCompact(Math.abs(day.dollar))}`}</Sensitive>
+      <span>{formatPercent(day.pct)}</span>
+    </span>
   );
 }

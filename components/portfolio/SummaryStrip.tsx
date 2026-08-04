@@ -1,5 +1,6 @@
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
+import { computeDayChange } from "@/lib/day-change";
 import type { HoldingWithMetrics } from "@/lib/types";
 
 interface CashBalance {
@@ -33,18 +34,11 @@ export function SummaryStrip({ holdings, cash = [], account, cumReturn = null }:
   const unrealized = positionsValue - totalCost;
   const unrealizedPct = totalCost > 0 ? (unrealized / totalCost) * 100 : 0;
 
-  // A position acquired today is measured from cost (your entry), not yesterday's
-  // close it never held through — matching the broker on same-day buys.
-  const todayStrET = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
-  const acquiredToday = (h: HoldingWithMetrics) =>
-    h.acquiredAt != null &&
-    new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date(h.acquiredAt)) === todayStrET;
-  const todayChange = filtered.reduce((s, h) => {
-    if (acquiredToday(h)) return s + (h.value - h.costTotal);
-    const pct = h.todayChangePct / 100;
-    return s + (h.value / (1 + pct)) * pct;
-  }, 0);
-  const todayPct = positionsValue > 0 ? (todayChange / (positionsValue - todayChange)) * 100 : 0;
+  /* Today's move — computed by the shared helper the account sidebar also uses,
+     so the header and the sidebar row for the same account always agree. */
+  const today = computeDayChange(filtered);
+  const todayChange = today.dollar;
+  const todayPct = today.pct;
 
   return (
     <div className="flex items-center gap-8 px-6 py-4 border-b border-border text-sm shrink-0 overflow-x-auto">

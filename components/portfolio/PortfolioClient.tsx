@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { AccountSidebar } from "./AccountSidebar";
 import { SummaryStrip } from "./SummaryStrip";
 import { unitMethodReturn, type ReturnSnapshot, type ReturnFlow } from "@/lib/portfolio-return";
@@ -59,6 +59,16 @@ type BondMark = BondMetrics & { currentPrice: number };
 type DerivativeMark = { currentPrice: number; iv?: number; spot?: number };
 
 type ViewState = "loading" | "empty" | "addAccount" | "addPosition" | "addBond" | "addOption" | "addFuture" | "addCash" | "deposit" | "ready";
+
+/** How often live quotes are re-pulled. Matches the 60s TTL on the quote cache
+ *  in lib/finnhub.ts, so polling faster would only ever return the same marks. */
+const QUOTE_REFRESH_MS = 60_000;
+
+/** Priced by /api/quotes — equities and ETF-wrapped bonds. Non-ETF bonds mark
+ *  via /api/bonds/marks and options/futures via /api/holdings/derivatives-marks
+ *  (their "ticker" is a constructed label, not a quotable symbol). */
+const pricesViaQuotes = (h: HoldingWithMetrics) =>
+  !isDerivative(h) && (h.instrumentType !== "bond" || h.bondType === "etf");
 
 interface CashBalance {
   account: string;
@@ -300,6 +310,59 @@ export function PortfolioClient() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  /* ── Live re-pricing, every minute ──
+     The sidebar's per-account day change is only as fresh as the quotes behind
+     it, so equities/ETFs are re-marked on an interval. This is deliberately NOT
+     `loadData()`: that flips the whole page to "loading" and re-reads holdings,
+     cash, snapshots and sectors, none of which move minute to minute. Only the
+     quote leg is refetched and folded into the existing rows, so the table,
+     heatmap, hero and sidebar all re-price together without a visible reload.
+     Non-ETF bonds and derivatives are skipped — they mark from different
+     endpoints and carry no intraday change here.
+     `holdingsRef` keeps the poll off the `holdings` dependency, so the interval
+     isn't torn down and restarted by its own updates. */
+  const holdingsRef = useRef<HoldingWithMetrics[]>([]);
+  useEffect(() => { holdingsRef.current = holdings; }, [holdings]);
+
+  const refreshQuotes = useCallback(async () => {
+    const tickers = [...new Set(holdingsRef.current.filter(pricesViaQuotes).map((h) => h.ticker))];
+    if (tickers.length === 0) return;
+    try {
+      const res = await fetch(`/api/quotes?tickers=${tickers.join(",")}`);
+      if (!res.ok) { setQuotesError(true); return; }
+      const quotes: Record<string, Quote> = (await res.json()).quotes ?? {};
+      setQuotesError(false);
+      setHoldings((prev) =>
+        prev.map((h) => {
+          if (!pricesViaQuotes(h)) return h;
+          const q = quotes[h.ticker];
+          // No quote back for this ticker → keep the last good mark rather than
+          // dropping the row to cost basis.
+          if (!q || !Number.isFinite(q.price) || q.price <= 0) return h;
+          return computeMetrics({ ...h, currentPrice: q.price }, q.changePct ?? 0);
+        }),
+      );
+      setLastRefreshed(new Date());
+    } catch {
+      setQuotesError(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (view !== "ready") return;
+    const tick = () => {
+      // Don't poll a tab nobody is looking at; refresh on the way back instead.
+      if (document.visibilityState === "visible") refreshQuotes();
+    };
+    const id = setInterval(tick, QUOTE_REFRESH_MS);
+    const onVisible = () => { if (document.visibilityState === "visible") refreshQuotes(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [view, refreshQuotes]);
 
   const handleRemoveAccount = async (accountName: string) => {
     await Promise.all([
