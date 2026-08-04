@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { recordTransaction, sumNetDeposits } from "@/lib/transactions";
+import { normalizeNote } from "@/lib/notes";
 
 /* POST: withdraw cash from an account — DECREMENTS its cash balance by `amount`
    and records a WITHDRAWAL in the transactions ledger. Rejects if the account
@@ -15,6 +16,9 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const account: string = (body.account ?? "").trim();
   const amount = Number(body.amount);
+  // Optional free-text note — stored as the ledger row's description, the field
+  // the activity feed and the reports already print.
+  const note = normalizeNote(body.note);
 
   if (!account) return NextResponse.json({ error: "Account is required" }, { status: 400 });
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -89,7 +93,9 @@ export async function POST(request: NextRequest) {
   await recordTransaction(supabase, user.id, {
     account,
     action: "WITHDRAWAL",
-    description: "Cash withdrawal",
+    // The WITHDRAWAL badge already says what this is, so a note REPLACES the
+    // generic label rather than being appended to it.
+    description: note ?? "Cash withdrawal",
     amount: -amount, // outflow (−)
   });
 

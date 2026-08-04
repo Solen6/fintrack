@@ -22,6 +22,11 @@ export interface TxnInput {
 
 const FLOW_ACTIONS = ["DEPOSIT", "WITHDRAWAL", "TRANSFER_IN", "TRANSFER_OUT", "TRANSFER"] as const;
 
+/** Which ledger actions may carry a user-authored note (and have it edited
+ *  afterwards). Deliberately only the manual cash flows — a BUY/SELL/DIV
+ *  description is derived from the trade or the CSV import, not authored. */
+export const NOTABLE_ACTIONS = ["DEPOSIT", "WITHDRAWAL"] as const;
+
 /** Σ signed external cash flows (deposits +, withdrawals −) recorded so far
  *  for one account — used to audit that cash_balance stays in lockstep with
  *  the ledger (cash − netDeposits must be flow-invariant). Best-effort: 0 if

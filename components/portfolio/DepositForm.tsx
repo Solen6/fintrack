@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
+import { NOTE_MAX } from "@/lib/notes";
 
 interface Props {
   existingAccounts: string[];
@@ -22,6 +23,7 @@ export function DepositForm({ existingAccounts, cashByAccount = {}, onSaved, onC
   const [account, setAccount] = useState(initialAccount);
   const [newAccount, setNewAccount] = useState("");
   const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
   const [label, setLabel] = useState("Cash");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -50,6 +52,7 @@ export function DepositForm({ existingAccounts, cashByAccount = {}, onSaved, onC
       body: JSON.stringify({
         account: acct,
         amount: amt,
+        ...(note.trim() ? { note: note.trim() } : {}),
         ...(isDeposit && showNew ? { label: label.trim() || "Cash" } : {}),
       }),
     });
@@ -120,6 +123,28 @@ export function DepositForm({ existingAccounts, cashByAccount = {}, onSaved, onC
             placeholder="1000.00"
             autoFocus
           />
+        </div>
+
+        <div>
+          <label htmlFor="cashflow-note" className="text-xs text-muted-foreground mb-1 block">
+            Note <span className="text-[10px]">(optional)</span>
+          </label>
+          <input
+            id="cashflow-note"
+            className={inputClass}
+            value={note}
+            onChange={(e) => setNote(e.target.value.slice(0, NOTE_MAX))}
+            placeholder={isDeposit ? "Year-end bonus" : "Tuition payment"}
+            maxLength={NOTE_MAX}
+          />
+          <div className="flex items-baseline justify-between mt-1 gap-2">
+            <span className="text-[10px] text-muted-foreground">
+              Shows in your activity feed and monthly reports instead of “Cash {isDeposit ? "deposit" : "withdrawal"}”.
+            </span>
+            {note.length > NOTE_MAX - 40 && (
+              <span className="text-[10px] font-mono text-muted-foreground shrink-0">{NOTE_MAX - note.length}</span>
+            )}
+          </div>
         </div>
 
         {isDeposit && showNew && (

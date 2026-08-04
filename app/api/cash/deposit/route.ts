@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { recordTransaction, sumNetDeposits } from "@/lib/transactions";
+import { normalizeNote } from "@/lib/notes";
 
 /* POST: deposit cash into an account — INCREMENTS its cash balance by `amount`
    and records a DEPOSIT in the transactions ledger. Deliberately does NOT touch
@@ -14,6 +15,10 @@ export async function POST(request: NextRequest) {
   const account: string = (body.account ?? "").trim();
   const label: string = (body.label ?? "").trim();
   const amount = Number(body.amount);
+  // Optional free-text note ("Christmas bonus"). Stored as the ledger row's
+  // description, which is what the activity feed and the monthly/annual reports
+  // already print — so a note needs no new column and shows up everywhere.
+  const note = normalizeNote(body.note);
 
   if (!account) return NextResponse.json({ error: "Account is required" }, { status: 400 });
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -96,7 +101,9 @@ export async function POST(request: NextRequest) {
   await recordTransaction(supabase, user.id, {
     account,
     action: "DEPOSIT",
-    description: "Cash deposit",
+    // The DEPOSIT badge already says what this is, so a note REPLACES the
+    // generic label rather than being appended to it.
+    description: note ?? "Cash deposit",
     amount, // inflow (+)
   });
 

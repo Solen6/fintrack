@@ -6,6 +6,7 @@ import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { isFaceValueBond, isDerivative } from "@/lib/types";
 import type { HoldingWithMetrics, TickerEventInfo } from "@/lib/types";
+import { NOTE_MAX } from "@/lib/notes";
 import { recognizeStrategy } from "@/lib/option-strategies";
 import { netCost, OPTION_MULTIPLIER } from "@/lib/options-math";
 import { toLeg, PayoffPanel } from "./DerivativesView";
@@ -936,6 +937,31 @@ function ActivityFeed({ account }: { account: string }) {
     (it) => active.match(it.type) && (account === "all" || it.account === account),
   );
 
+  /* Notes are editable in place on cash flows only — the server enforces the
+     same rule, this just keeps the affordance off rows that would be rejected.
+     Ledger ids are prefixed `txn-` by /api/transactions/recent; the bare uuid
+     is what the PATCH route wants back. */
+  const noteId = (it: ActivityItem) =>
+    (it.type === "DEPOSIT" || it.type === "WITHDRAWAL") && it.id.startsWith("txn-")
+      ? it.id.slice(4)
+      : null;
+
+  const saveNote = async (item: ActivityItem, txnId: string, next: string) => {
+    const res = await fetch("/api/transactions/note", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: txnId, note: next }),
+    });
+    if (!res.ok) return false;
+    const d = await res.json().catch(() => ({}));
+    // Trust the server's resolved text — a cleared note falls back to the
+    // action's default label there, not here.
+    setItems((prev) =>
+      (prev ?? []).map((p) => (p.id === item.id ? { ...p, description: d.description ?? next } : p)),
+    );
+    return true;
+  };
+
   return (
     <section className="rounded-md border border-border bg-card p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -975,12 +1001,19 @@ function ActivityFeed({ account }: { account: string }) {
               </span>
               <TypeBadge type={it.type} />
               <span className="font-mono text-foreground w-16 shrink-0 truncate">{it.symbol ?? "—"}</span>
-              <span className="text-muted-foreground flex-1 truncate text-xs">
-                {it.description}
-                {it.shares != null && it.price != null && (
-                  <span className="font-mono"> · <Sensitive>{it.shares}</Sensitive> @ <Sensitive>{fmtPx(it.price)}</Sensitive></span>
-                )}
-              </span>
+              {noteId(it) ? (
+                <NoteCell
+                  text={it.description}
+                  onSave={(next) => saveNote(it, noteId(it)!, next)}
+                />
+              ) : (
+                <span className="text-muted-foreground flex-1 truncate text-xs">
+                  {it.description}
+                  {it.shares != null && it.price != null && (
+                    <span className="font-mono"> · <Sensitive>{it.shares}</Sensitive> @ <Sensitive>{fmtPx(it.price)}</Sensitive></span>
+                  )}
+                </span>
+              )}
               {it.account && <span className="text-[10px] text-muted-foreground hidden sm:block shrink-0">{it.account}</span>}
               {it.type === "DIV" && it.amount === 0 && it.gross > 0 ? (
                 <span className="font-mono tabular-nums w-24 text-right shrink-0 text-muted-foreground" title="Reinvested — no cash impact">
@@ -996,6 +1029,82 @@ function ActivityFeed({ account }: { account: string }) {
         </ul>
       )}
     </section>
+  );
+}
+
+/* The auto-generated descriptions the three cash-flow writers use. Treated as
+   "no note yet" so the row offers to add one instead of presenting boilerplate
+   as if the user had written it. */
+const DEFAULT_FLOW_LABELS = new Set(["Cash deposit", "Cash withdrawal", "Cash balance adjustment"]);
+
+/** A deposit/withdrawal's note, editable in place. Click to edit, Enter or blur
+    to save, Escape to cancel. Clearing it reverts to the generic label. */
+function NoteCell({ text, onSave }: { text: string; onSave: (next: string) => Promise<boolean> }) {
+  const isDefault = DEFAULT_FLOW_LABELS.has(text);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const open = () => {
+    setDraft(isDefault ? "" : text);   // editing boilerplate starts from blank
+    setFailed(false);
+    setEditing(true);
+  };
+
+  const commit = async () => {
+    if (saving) return;
+    const next = draft.trim();
+    // Unchanged (including "still no note") → close without a round trip.
+    if (next === (isDefault ? "" : text)) { setEditing(false); return; }
+    setSaving(true);
+    const ok = await onSave(next);
+    setSaving(false);
+    setFailed(!ok);
+    if (ok) setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <span className="flex-1 min-w-0 flex items-center gap-1.5">
+        <input
+          autoFocus
+          value={draft}
+          disabled={saving}
+          maxLength={NOTE_MAX}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); commit(); }
+            else if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
+          }}
+          placeholder="Add a note…"
+          aria-label="Note"
+          className="flex-1 min-w-0 bg-transparent border-b border-[var(--primary)] text-xs text-foreground px-0.5 py-0.5 focus:outline-none disabled:opacity-50"
+        />
+        {failed && <span className="text-[10px] shrink-0" style={{ color: "var(--negative)" }}>failed</span>}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      onClick={open}
+      title={isDefault ? "Add a note" : "Edit note"}
+      className="flex-1 min-w-0 text-left text-xs truncate group/note hover:text-foreground transition-colors"
+      style={{ color: isDefault ? "oklch(0.52 0.008 74)" : "var(--muted-foreground)" }}
+    >
+      <span className="truncate">{isDefault ? "＋ Add note" : text}</span>
+      {!isDefault && (
+        <span
+          aria-hidden
+          className="opacity-0 group-hover/note:opacity-100 transition-opacity ml-1.5"
+          style={{ color: "var(--primary)" }}
+        >
+          ✎
+        </span>
+      )}
+    </button>
   );
 }
 
