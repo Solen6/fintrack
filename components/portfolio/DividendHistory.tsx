@@ -9,7 +9,15 @@ import type { HoldingWithMetrics } from "@/lib/types";
 interface DividendRecord {
   id: string;
   holdingId: string;
+  /** Income date — the pay date when known, else the ex-date as a placeholder. */
   date: string;
+  /** Ex-date: the ownership deadline. Entitlement, not income. */
+  exDate?: string;
+  /** Payable date. Null = not published (every ETF, and history older than the
+      currently-declared dividend) — those rows stay Pending. */
+  payDate?: string | null;
+  /** True only when a pay date is known AND has arrived. */
+  paid?: boolean;
   ticker: string;
   name: string | null;
   amount: number | null;
@@ -39,6 +47,13 @@ type RowAction = { type: "correct" | "delete"; id: string } | null;
 /* ─── Coupon schedule (computed — no coupon ledger yet, Phase 5) ─── */
 function isoUTC(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+/** "2026-07-31" → "Jul 31". UTC-parsed so a timezone can't shift the day. */
+function shortDate(ds: string): string {
+  const [y, m, dd] = ds.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, dd)).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", timeZone: "UTC",
+  });
 }
 function addMonthsUTC(date: Date, months: number): Date {
   const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
@@ -134,12 +149,15 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
   }
 
   // Merge dividends + computed coupon payments (past 12mo → next 12mo).
-  const { rows, divTotal, couponReceived } = useMemo(() => {
+  const { rows, divTotal, divPending, pendingCount, couponReceived } = useMemo(() => {
     const now = Date.now();
     const start = new Date(now - 365 * 86_400_000);
     const end = new Date(now + 365 * 86_400_000);
     const todayISO = isoUTC(new Date(now));
 
+    /* A dividend is income on its PAY date, not its ex-date. Anything without
+       a pay date that has arrived is `upcoming` — it shows a Pending badge and
+       is excluded from the received total, exactly like an unpaid coupon. */
     const divRows: IncomeRow[] = dividends.map((d) => ({
       key: `div-${d.id}`,
       date: d.date,
@@ -148,6 +166,7 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
       amount: d.amount,
       account: d.account,
       kind: "dividend",
+      upcoming: d.paid === false,
       dividend: d,
     }));
 
@@ -168,9 +187,15 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
     }
 
     const all = [...divRows, ...couponRows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-    const divTotal = dividends.reduce((s, d) => s + (d.amount ?? 0), 0);
+    // Received vs pending are reported separately rather than one blended
+    // number — money that hasn't been paid out shouldn't inflate income, but it
+    // shouldn't be invisible either.
+    const paidDivs = dividends.filter((d) => d.paid !== false);
+    const unpaidDivs = dividends.filter((d) => d.paid === false);
+    const divTotal = paidDivs.reduce((s, d) => s + (d.amount ?? 0), 0);
+    const divPending = unpaidDivs.reduce((s, d) => s + (d.amount ?? 0), 0);
     const couponReceived = couponRows.filter((c) => !c.upcoming).reduce((s, c) => s + (c.amount ?? 0), 0);
-    return { rows: all, divTotal, couponReceived };
+    return { rows: all, divTotal, divPending, pendingCount: unpaidDivs.length, couponReceived };
   }, [dividends, bonds]);
 
   if (loading) {
@@ -195,6 +220,15 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
               Dividends: <Sensitive>{formatCurrency(divTotal)}</Sensitive>
             </span>
           )}
+          {divPending > 0 && (
+            <span
+              className="text-xs font-mono"
+              style={{ color: "oklch(0.66 0.008 74)" }}
+              title={`${pendingCount} dividend${pendingCount === 1 ? " has" : "s have"} gone ex-dividend but not yet paid (or have no published pay date). Excluded from the Dividends total until paid.`}
+            >
+              Pending: <Sensitive>{formatCurrency(divPending)}</Sensitive>
+            </span>
+          )}
           {couponReceived > 0 && (
             <span className="text-xs font-mono font-medium" style={{ color: "oklch(0.74 0.09 240)" }}>
               Coupons (12mo): <Sensitive>{formatCurrency(couponReceived)}</Sensitive>
@@ -216,7 +250,7 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
               {account === "all" ? "No income recorded yet." : `No income recorded in ${account}.`}
             </p>
             <p className="text-xs" style={{ color: "oklch(0.52 0.008 74)" }}>
-              Dividends are logged when a holding goes ex-dividend; bond coupons appear from each bond’s schedule.
+              Dividends are logged when a holding goes ex-dividend and count as income on their pay date; bond coupons appear from each bond’s schedule.
             </p>
           </div>
         ) : (
@@ -248,6 +282,19 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
                         {new Date(`${row.date}T00:00:00`).toLocaleDateString("en-US", {
                           month: "short", day: "numeric", year: "numeric",
                         })}
+                        {/* When the date shown IS the pay date, say so, and keep
+                            the ex-date visible — it's what proves entitlement.
+                            A row with no pay date is dated by its ex-date, and
+                            is labelled that way so the two never get confused. */}
+                        {d && (
+                          <span className="block text-[10px]" style={{ color: "oklch(0.50 0.008 74)" }}>
+                            {d.payDate
+                              ? `pay date${d.exDate ? ` · ex ${shortDate(d.exDate)}` : ""}`
+                              : d.exDate
+                                ? "ex-date · pay date unknown"
+                                : ""}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 font-mono font-semibold text-foreground">
                         {row.ticker}
@@ -269,6 +316,20 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
                             style={{ background: "oklch(0.22 0.04 240)", color: "oklch(0.74 0.09 240)" }}
                           >
                             Coupon{row.upcoming ? " · upcoming" : ""}
+                          </span>
+                        ) : row.upcoming ? (
+                          /* Gone ex-dividend but not paid out yet (or no pay
+                             date published) — announced money, not income. */
+                          <span
+                            className="inline-block text-xs px-2 py-0.5 rounded-sm"
+                            style={{ background: "oklch(0.18 0.02 74)", color: "oklch(0.72 0.10 74)" }}
+                            title={
+                              d?.payDate
+                                ? `Pays ${shortDate(d.payDate)} — not yet received`
+                                : "No published pay date — not counted as income until one is known"
+                            }
+                          >
+                            Pending{d?.payDate ? ` · ${shortDate(d.payDate)}` : ""}
                           </span>
                         ) : d?.reinvested == null ? (
                           <span className="text-xs text-muted-foreground">Dividend</span>

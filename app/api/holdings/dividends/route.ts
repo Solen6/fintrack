@@ -6,12 +6,27 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { data, error } = await supabase
-    .from("applied_corporate_actions")
-    .select("id, holding_id, effective_date, detail, ticker, name, amount, reinvested, shares_delta, cash_delta, account, is_manual")
-    .eq("user_id", user.id)
-    .eq("action_type", "dividend")
-    .order("effective_date", { ascending: false });
+  type Row = Record<string, unknown>;
+  const read = (cols: string) =>
+    supabase
+      .from("applied_corporate_actions")
+      .select(cols)
+      .eq("user_id", user.id)
+      .eq("action_type", "dividend")
+      .order("effective_date", { ascending: false });
+
+  const BASE =
+    "id, holding_id, effective_date, detail, ticker, name, amount, reinvested, shares_delta, cash_delta, account, is_manual";
+
+  let { data, error } = await read(`${BASE}, pay_date`);
+  // Pre-migration (supabase/dividend-pay-date.sql not run yet) → retry without
+  // pay_date so the history still loads, just with every row Pending-unknown.
+  let hasPayDate = true;
+  if (error && /pay_date|column|schema cache|PGRST204/i.test(error.message ?? "")) {
+    hasPayDate = false;
+    ({ data, error } = await read(BASE));
+  }
+  const rows = (data ?? []) as unknown as Row[];
 
   if (error) {
     if (error.message?.includes("does not exist")) {
@@ -20,11 +35,24 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const dividends = (data ?? []).map((r) => ({
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+
+  const dividends = rows.map((r) => {
+    const payDate = hasPayDate ? ((r.pay_date as string | null) ?? null) : null;
+    return {
     // Use real UUID if available (post-migration), fall back to composite key.
     id: (r.id as string | null) ?? `${r.holding_id}-${r.effective_date}`,
     holdingId: r.holding_id as string,
-    date: r.effective_date as string,
+    /* `date` is the row's INCOME date — the pay date when we know it, so the
+       history sorts and reports on when the cash actually landed. The ex-date
+       stays available separately; it's the entitlement date, not income. */
+    date: payDate ?? (r.effective_date as string),
+    exDate: r.effective_date as string,
+    payDate,
+    /* Paid = we know a pay date and it has arrived. An unknown pay date is
+       NOT treated as paid: it stays Pending, which is what keeps an ETF
+       distribution out of the received total until its date is known. */
+    paid: payDate != null && payDate <= today,
     ticker: (r.ticker as string | null) ?? "—",
     name: (r.name as string | null) ?? null,
     amount: (r.amount as number | null) ?? null,
@@ -34,7 +62,11 @@ export async function GET() {
     cashDelta: (r.cash_delta as number | null) ?? 0,
     account: (r.account as string | null) ?? null,
     isManual: (r.is_manual as boolean | null) ?? false,
-  }));
+    };
+  })
+  // Re-sort on the income date — swapping ex-dates for pay dates reorders rows
+  // (a late-month ex-date can pay after an early-month one).
+  .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
-  return NextResponse.json({ dividends });
+  return NextResponse.json({ dividends, hasPayDate });
 }

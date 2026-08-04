@@ -11,7 +11,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchQuote } from "@/lib/finnhub";
 import { isMarketDay } from "@/lib/market-calendar";
-import { yahooDailyHistory } from "@/lib/yahoo";
+import { yahooDailyHistory, yahooNextDividend } from "@/lib/yahoo";
 
 export interface SplitDue {
   ratio: number; // new shares per old share. 2:1 → 2, 1:10 reverse → 0.1
@@ -200,6 +200,23 @@ export async function applyCorporateActions(
     if (divByTicker.get(t)) exCloseByTicker.set(t, await fetchExDateClose(t, date));
   }
 
+  /* Pay date per dividend-paying ticker — when the cash ACTUALLY lands, which
+     is what the income view recognises on (TXN goes ex 7/31 and pays 8/11).
+     Yahoo quoteSummary only advertises the CURRENTLY declared dividend, so the
+     lookup is guarded on its ex-date matching the one we just detected: true on
+     the ex-date itself and through the 7-day look-back window, after which
+     Yahoo has rolled to the next quarter and we correctly store nothing rather
+     than a later quarter's date. ETFs return null outright — no free source has
+     their forward distributions (Finnhub's /stock/dividend2, which carries
+     payDate, is premium). A null pay date is a first-class state, not an error:
+     the income view shows those rows as Pending. */
+  const payDateByTicker = new Map<string, string | null>();
+  for (const t of tickers) {
+    if (!divByTicker.get(t)) continue;
+    const next = await yahooNextDividend(t).catch(() => null);
+    payDateByTicker.set(t, next && next.exDate === date ? next.payDate ?? null : null);
+  }
+
   // Dividend entitlement needs ownership BEFORE the ex-date. `acquired_at`
   // carries that for holdings first seen after 2026-07-10; for a position
   // re-added/re-imported later (acquired_at after ex-date but really owned for
@@ -373,6 +390,8 @@ export async function applyCorporateActions(
       cash_delta: l.cash_delta ?? 0,
       price_per_share: l.price_per_share ?? null,
       account: l.account ?? null,
+      // Only dividends have a pay date; a split takes effect on its own date.
+      pay_date: l.action_type === "dividend" ? payDateByTicker.get(t) ?? null : null,
       is_manual: false,
     }));
     let { error: ledErr } = await db.from("applied_corporate_actions").insert(fullRows);
