@@ -21,9 +21,24 @@
 -- behavior, so existing subscribers are unaffected until they change anything).
 create table if not exists calendar_feed_prefs (
   user_id    uuid primary key references auth.users(id) on delete cascade,
-  categories text[] not null default array['Macro','Earnings','Dividend','Split','Custom'],
+  categories text[] not null default array['Macro','Earnings','Ex-Dividend','Dividend','Split','Custom'],
   updated_at timestamptz not null default now()
 );
+
+-- 2026-08-03: 'Ex-Dividend' split out of 'Dividend' (the Dividend event moved to
+-- the PAY date; the ownership deadline became its own event). Re-set the default
+-- for tables created before that, and opt existing rows in — but ONLY where the
+-- user still has 'Dividend' on, so anyone who deliberately turned dividends off
+-- doesn't get them back through the new category.
+alter table calendar_feed_prefs
+  alter column categories
+  set default array['Macro','Earnings','Ex-Dividend','Dividend','Split','Custom'];
+
+update calendar_feed_prefs
+   set categories = categories || array['Ex-Dividend'],
+       updated_at = now()
+ where 'Dividend' = any(categories)
+   and not ('Ex-Dividend' = any(categories));
 
 alter table calendar_feed_prefs enable row level security;
 

@@ -4,7 +4,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { formatCurrencyCompact } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { isFaceValueBond } from "@/lib/types";
-import type { HoldingWithMetrics } from "@/lib/types";
+import type { HoldingWithMetrics, TickerEventInfo } from "@/lib/types";
 import type { HeatmapGroup } from "@/lib/heatmap-groups";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -55,6 +55,51 @@ function strategyAbbrev(name: string): string {
 }
 function signedPct(n: number): string {
   return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+/* ─── Upcoming-event badges (E = earnings, D = dividend) ─── */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Today in America/New_York — the day boundary every market date uses here. */
+function etToday(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+}
+
+/** "2026-08-14" → "Fri, Aug 14". Parsed as UTC so DST can't shift the day. */
+function fmtEventDate(ds: string): string {
+  const [y, m, d] = ds.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", {
+    weekday: "short", month: "short", day: "numeric", timeZone: "UTC",
+  });
+}
+
+/** "in 5d" / "today" / "tomorrow" / "5d ago" — the part that makes a date scan fast. */
+function relativeDays(ds: string, today: string): string {
+  const [y, m, d] = ds.split("-").map(Number);
+  const [ty, tm, td] = today.split("-").map(Number);
+  const days = Math.round((Date.UTC(y, m - 1, d) - Date.UTC(ty, tm - 1, td)) / DAY_MS);
+  if (days === 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days === -1) return "yesterday";
+  return days > 0 ? `in ${days}d` : `${-days}d ago`;
+}
+
+type BadgeKind = "E" | "D";
+
+/** Which badges a ticker earns, soonest date first (drives left-to-right order
+    and which one survives when only a single badge fits). */
+function badgesFor(info: TickerEventInfo | undefined): { kind: BadgeKind; date: string }[] {
+  if (!info) return [];
+  const out: { kind: BadgeKind; date: string }[] = [];
+  if (info.earningsDate) out.push({ kind: "E", date: info.earningsDate });
+  // Anchor the D badge on whichever dividend date comes first — usually the
+  // ex-date, but a position that already went ex still has a pay date coming.
+  const divDate = info.exDate && info.payDate
+    ? (info.exDate < info.payDate ? info.exDate : info.payDate)
+    : info.exDate ?? info.payDate;
+  if (divDate) out.push({ kind: "D", date: divDate });
+  return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
 /* ─── Color: alpha scales with move magnitude, normalized by `scale` ─── */
@@ -291,6 +336,7 @@ export function HoldingsTreemap({
   groups,
   editable = false,
   onGroupsChange,
+  tickerEvents,
 }: {
   holdings: HoldingWithMetrics[];
   colorBy: "daily" | "total";
@@ -309,6 +355,9 @@ export function HoldingsTreemap({
   editable?: boolean;
   /** Fired on any layout change (drag, rename, delete, add sub-sector). */
   onGroupsChange?: (groups: HeatmapGroup[]) => void;
+  /** Upcoming earnings / dividend dates by TICKER (from /api/holdings/events).
+   *  Drives the clickable E/D corner badges; absent = no badges drawn. */
+  tickerEvents?: Record<string, TickerEventInfo>;
 }) {
   const scale = colorBy === "daily" ? 3 : 20;
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -676,13 +725,39 @@ export function HoldingsTreemap({
     });
   }, [baseNorm, mutateTops]);
 
-  const hoveredCell = hover && !dragId ? cells.find((c) => c.symbol === hover.symbol) ?? null : null;
+  /* An open E/D badge popover. Lives here, not in the Tile, because the tile
+     clips its overflow — the card has to be drawn at the container level (fixed
+     positioning off the badge's screen rect, like Tooltip). */
+  const [badgeState, setBadgeState] = useState<{ symbol: string; cx: number; cy: number } | null>(null);
+  useEffect(() => {
+    if (!badgeState) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setBadgeState(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [badgeState]);
+
+  /* Anything that moves the tiles under the popover invalidates its anchor.
+     DERIVED, not reset in an effect — the same rule the rest of this file
+     follows (a set-state-in-effect is an error here), and it means the popover
+     comes back if you drop out of edit mode without having closed it. */
+  const badgeCell = badgeState && !dragId && !editable
+    ? cells.find((c) => c.symbol === badgeState.symbol) ?? null
+    : null;
+  const badgeOpen = badgeCell ? badgeState : null;
+  const badgeInfo = badgeOpen ? tickerEvents?.[badgeOpen.symbol.toUpperCase()] : undefined;
+
+  // The hover tooltip and the popover would stack on top of each other.
+  const hoveredCell = hover && !dragId && !badgeOpen ? cells.find((c) => c.symbol === hover.symbol) ?? null : null;
   const transition = reduce ? "none" : "filter 150ms ease, border-color 150ms ease";
 
   // Stable handlers so the memoized Tile only re-renders the 1-2 tiles whose
   // hovered/selected state actually flips on each mouse event.
   const handleEnter = useCallback((symbol: string, cx: number, cy: number) => setHover({ symbol, cx, cy }), []);
   const handleLeave = useCallback((symbol: string) => setHover((h) => (h?.symbol === symbol ? null : h)), []);
+  const handleBadge = useCallback((symbol: string, cx: number, cy: number) => {
+    setHover(null);
+    setBadgeState((b) => (b?.symbol === symbol ? null : { symbol, cx, cy })); // click again to close
+  }, []);
 
   return (
     <div
@@ -692,7 +767,9 @@ export function HoldingsTreemap({
       aria-label={`Portfolio heatmap by sector, colored by ${colorBy === "daily" ? "daily change" : "total return"}`}
     >
       {/* Amber focus ring (single-lamp rule) on keyboard focus only — not on mouse hover. */}
-      <style>{`.hmtile:focus-visible{outline:2px solid oklch(${AMBER});outline-offset:-2px;z-index:7;}`}</style>
+      {/* The badge sits ON amber, so its own focus ring is white instead. */}
+      <style>{`.hmtile:focus-visible{outline:2px solid oklch(${AMBER});outline-offset:-2px;z-index:7;}
+.hmbadge:focus-visible{outline:2px solid oklch(0.99 0.005 74);outline-offset:1px;}`}</style>
       <div style={{ position: "relative", width: "100%", height: custom ? "100%" : (contentH || "100%") }}>
         {custom
           ? (
@@ -724,6 +801,9 @@ export function HoldingsTreemap({
                     editable={editable}
                     dragging={dragId === t.item.cell.id}
                     onDragStart={startTileDrag}
+                    events={tickerEvents?.[t.item.cell.symbol.toUpperCase()]}
+                    onBadge={handleBadge}
+                    badgeOpen={badgeOpen?.symbol === t.item.cell.symbol}
                   />
                 )),
               )}
@@ -774,6 +854,9 @@ export function HoldingsTreemap({
                 onEnter={handleEnter}
                 onLeave={handleLeave}
                 maskPct={colorBy === "total"}
+                events={tickerEvents?.[t.item.cell.symbol.toUpperCase()]}
+                onBadge={handleBadge}
+                badgeOpen={badgeOpen?.symbol === t.item.cell.symbol}
               />
             ))}
           </div>
@@ -805,6 +888,26 @@ export function HoldingsTreemap({
       )}
 
       {hoveredCell && hover && <Tooltip cell={hoveredCell} cx={hover.cx} cy={hover.cy} maskPct={colorBy === "total"} />}
+
+      {badgeOpen && badgeCell && badgeInfo && (
+        <>
+          {/* Click-away layer — covers the viewport so any outside click closes. */}
+          <button
+            className="fixed inset-0 cursor-default"
+            style={{ zIndex: 69, background: "transparent" }}
+            onClick={() => setBadgeState(null)}
+            aria-label="Close event details"
+            tabIndex={-1}
+          />
+          <EventPopover
+            symbol={badgeCell.symbol}
+            name={badgeCell.name}
+            info={badgeInfo}
+            cx={badgeOpen.cx}
+            cy={badgeOpen.cy}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -812,7 +915,7 @@ export function HoldingsTreemap({
 /* ─── A single tile (memoized — only re-renders on hovered/selected flip) ─── */
 const Tile = memo(function Tile({
   placed, scale, transition, hovered, selected, onSelect, onEnter, onLeave, maskPct,
-  editable = false, dragging = false, onDragStart,
+  editable = false, dragging = false, onDragStart, events, onBadge, badgeOpen = false,
 }: {
   placed: Placed<{ cell: HCell }>;
   scale: number;
@@ -826,6 +929,10 @@ const Tile = memo(function Tile({
   editable?: boolean;
   dragging?: boolean;
   onDragStart?: (cell: HCell, e: React.PointerEvent<HTMLDivElement>) => void;
+  /** This ticker's upcoming earnings / dividend, if any. */
+  events?: TickerEventInfo;
+  onBadge?: (symbol: string, cx: number, cy: number) => void;
+  badgeOpen?: boolean;
 }) {
   const { x, y, w, h } = placed;
   const cell = placed.item.cell;
@@ -868,6 +975,13 @@ const Tile = memo(function Tile({
   // In edit mode the parent owns click-vs-drag (via pointer events); the tile's
   // own onClick is disabled so a drop doesn't also fire a select.
   const handleSelect = () => { if (!editable && selectable) onSelect!(cell.symbol); };
+
+  /* Corner badges. Hidden while arranging — the whole tile is a drag handle
+     there, so a click target inside it would fight the drag. A badge needs
+     ~15px of clear corner; below that the tile shows its % instead. */
+  const badges = editable || isCash || !onBadge ? [] : badgesFor(events);
+  const badgeRoom = tw >= 40 && th >= 24;
+  const visibleBadges = badgeRoom ? badges.slice(0, tw >= 58 ? 2 : 1) : [];
 
   return (
     <div
@@ -938,6 +1052,37 @@ const Tile = memo(function Tile({
         >
           {positive ? "▲" : "▼"}
         </span>
+      )}
+
+      {/* Upcoming-event badges: black E / D on brand amber, top-right corner. */}
+      {visibleBadges.length > 0 && (
+        <div className="absolute flex" style={{ top: 2, right: 2, gap: 2, zIndex: 4 }}>
+          {visibleBadges.map((b) => (
+            <button
+              key={b.kind}
+              type="button"
+              // Never let a badge click also select (or drag) the tile beneath it.
+              onClick={(e) => { e.stopPropagation(); onBadge!(cell.symbol, e.clientX, e.clientY); }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseEnter={(e) => e.stopPropagation()}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); }}
+              aria-label={`${cell.symbol} upcoming ${b.kind === "E" ? "earnings" : "dividend"} — ${fmtEventDate(b.date)}`}
+              aria-expanded={badgeOpen}
+              title={`${b.kind === "E" ? "Earnings" : "Dividend"} ${fmtEventDate(b.date)}`}
+              className="hmbadge font-mono flex items-center justify-center cursor-pointer"
+              style={{
+                width: 13, height: 13, borderRadius: 2, padding: 0,
+                background: `oklch(${AMBER})`,
+                border: badgeOpen ? "1px solid oklch(0.99 0.005 74)" : "1px solid oklch(0.55 0.11 74)",
+                color: "oklch(0.13 0 0)",
+                fontSize: 9, fontWeight: 700, lineHeight: 1,
+                boxShadow: "0 1px 2px oklch(0 0 0 / 0.45)",
+              }}
+            >
+              {b.kind}
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -1016,6 +1161,88 @@ function CustomLabel({
             </button>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+/* ─── E/D badge popover: the dates behind the corner badge ───
+   Shows everything upcoming for the ticker regardless of which badge was
+   clicked — earnings and the dividend's ex/pay pair are usually read together.
+   Fixed-positioned off the badge's click point so the tile's overflow:hidden
+   can't clip it, and clamped to the viewport on both axes. */
+function EventPopover({
+  symbol, name, info, cx, cy,
+}: {
+  symbol: string;
+  name: string;
+  info: TickerEventInfo;
+  cx: number;
+  cy: number;
+}) {
+  const today = etToday();
+  const W = 214;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1440;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 900;
+  const left = Math.max(8, Math.min(cx - W / 2, vw - W - 8));
+  // Flip below the badge when there isn't room above it.
+  const above = cy > vh / 2;
+
+  const row = (label: string, date: string, sub?: string) => (
+    <div style={{ marginTop: 6 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+        <span className="font-sans" style={{ fontSize: 10.5, color: "oklch(0.62 0.008 74)" }}>{label}</span>
+        <span className="font-mono tabular-nums" style={{ fontSize: 11.5, color: "oklch(0.95 0.005 74)" }}>
+          {fmtEventDate(date)}
+        </span>
+      </div>
+      <div className="font-mono" style={{ fontSize: 10, color: "oklch(0.72 0.10 74)", textAlign: "right" }}>
+        {relativeDays(date, today)}
+        {sub ? <span style={{ color: "oklch(0.55 0.008 74)" }}> · {sub}</span> : null}
+      </div>
+    </div>
+  );
+
+  return (
+    <div
+      role="dialog"
+      aria-label={`${symbol} upcoming events`}
+      className="font-sans"
+      style={{
+        position: "fixed", left, top: above ? cy - 12 : cy + 16, width: W,
+        transform: above ? "translateY(-100%)" : undefined,
+        zIndex: 70,
+        background: "oklch(0.14 0 0)", border: "1px solid oklch(0.24 0 0)",
+        borderRadius: 5, padding: "9px 11px",
+        boxShadow: "0 8px 26px oklch(0 0 0 / 0.6)",
+      }}
+    >
+      <div style={{ fontSize: 12.5, fontWeight: 600, color: "oklch(0.98 0.005 74)" }}>
+        {symbol}{" "}
+        <span style={{ fontWeight: 400, fontSize: 11, color: "oklch(0.6 0.008 74)" }}>{name}</span>
+      </div>
+
+      {info.earningsDate && row("Earnings", info.earningsDate, info.earningsDetail)}
+
+      {info.exDate && row("Ex-dividend", info.exDate, "own before to be paid")}
+      {info.payDate && row("Dividend paid", info.payDate, info.perShare != null ? `$${info.perShare.toFixed(2)}/sh` : undefined)}
+      {info.exDate && !info.payDate && (
+        <div className="font-sans" style={{ fontSize: 10, color: "oklch(0.55 0.008 74)", marginTop: 4 }}>
+          Pay date not yet announced
+        </div>
+      )}
+      {info.estAmount != null && (
+        <div
+          style={{
+            marginTop: 7, paddingTop: 6, borderTop: "1px solid oklch(0.20 0 0)",
+            display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8,
+          }}
+        >
+          <span style={{ fontSize: 10.5, color: "oklch(0.62 0.008 74)" }}>Est. payment</span>
+          <span className="font-mono tabular-nums" style={{ fontSize: 11.5, color: "var(--positive)" }}>
+            <Sensitive>{formatCurrencyCompact(info.estAmount)}</Sensitive>
+          </span>
+        </div>
       )}
     </div>
   );

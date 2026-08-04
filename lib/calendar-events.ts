@@ -1,5 +1,6 @@
-import { yahooNextDividend } from "@/lib/yahoo";
+import { yahooNextDividend, type NextDividend } from "@/lib/yahoo";
 import { mapLimit } from "@/lib/async";
+import type { TickerEventInfo } from "@/lib/types";
 
 /* Shared event builder for the calendar page (/api/calendar) and the iCal
    subscribe feed (/api/calendar/ics). Extracted from the calendar route so the
@@ -8,11 +9,14 @@ import { mapLimit } from "@/lib/async";
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
 
-export type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split";
+/* "Ex-Dividend" and "Dividend" are deliberately two categories, not one event
+   with two dates: the ex-date is an ownership deadline and the pay date is when
+   the cash lands, and they routinely fall weeks (and often months) apart. */
+export type EventCategory = "Macro" | "Earnings" | "Ex-Dividend" | "Dividend" | "Split";
 
 /** Canonical category order — mirrors components/calendar/calendar-shared.ts.
     The feed prefs table stores a subset of these. */
-export const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Dividend", "Split"];
+export const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Ex-Dividend", "Dividend", "Split"];
 
 export interface CalendarEvent {
   date: string; // YYYY-MM-DD
@@ -137,24 +141,60 @@ async function fetchDividends(ticker: string, from: string, to: string, shares: 
   // undeclared future quarters won't show — that's the honest limit of free data.
   const next = await yahooNextDividend(ticker);
   if (!next) return [];
-  // "Upcoming" the way a brokerage shows it = the PAYMENT is still ahead, even if
-  // the ex-date just passed (e.g. LRCX went ex 6/17 but pays 7/8). Anchor the
-  // agenda entry to whichever of pay/ex date is still in the forward window.
-  const anchor = next.payDate && next.payDate >= from ? next.payDate : next.exDate;
-  if (anchor < from || anchor > to) return [];
-  const amt = next.amount != null ? `$${next.amount.toFixed(2)}/sh · ` : "";
-  const detail = `${amt}ex ${next.exDate}${next.payDate ? ` · pays ${next.payDate}` : ""}`;
+  return dividendEvents(ticker, next, from, to, shares);
+}
+
+/** The pure ex/pay → events rule, split out of the fetch so it's testable
+    without a network round trip (scratchpad/dividend-split-test.ts). */
+export function dividendEvents(
+  ticker: string,
+  next: NextDividend,
+  from: string,
+  to: string,
+  shares: number,
+): CalendarEvent[] {
+  /* TWO events, because they are two different facts about two different days:
+       Ex-Dividend — the ownership deadline (hold it BEFORE this day to be paid)
+       Dividend    — the PAY date, the day the cash actually lands
+     Each is range-checked against its OWN date rather than sharing one anchor,
+     so a ticker that goes ex in one month and pays in the next appears in both
+     months instead of the pair collapsing to whichever date the anchor picked.
+     The $ estimate rides on the pay event only, so a period's "Est. dividends"
+     means money actually received in that period, not merely locked in. */
+  const perShare = next.amount != null ? `$${next.amount.toFixed(2)}/sh` : null;
   const est = next.amount != null && shares > 0 ? Math.round(next.amount * shares * 100) / 100 : undefined;
-  return [
-    {
-      date: anchor,
+  const events: CalendarEvent[] = [];
+
+  if (next.exDate >= from && next.exDate <= to) {
+    events.push({
+      date: next.exDate,
+      category: "Ex-Dividend" as const,
+      title: `${ticker} ex-dividend`,
+      detail: [
+        perShare,
+        "own before today to be paid",
+        // A declared ex-date with no pay date yet is normal on free data — say
+        // so rather than silently implying the money arrives on the ex-date.
+        next.payDate ? `pays ${next.payDate}` : "pay date not yet announced",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      ticker,
+    });
+  }
+
+  if (next.payDate && next.payDate >= from && next.payDate <= to) {
+    events.push({
+      date: next.payDate,
       category: "Dividend" as const,
       title: `${ticker} dividend`,
-      detail,
+      detail: [perShare, `went ex ${next.exDate}`].filter(Boolean).join(" · "),
       ticker,
       ...(est != null ? { amount: est } : {}),
-    },
-  ];
+    });
+  }
+
+  return events;
 }
 
 async function fetchSplits(ticker: string, from: string, to: string): Promise<CalendarEvent[]> {
@@ -220,7 +260,9 @@ export async function buildCalendarEvents(
     return events;
   };
 
-  // Run all four groups concurrently.
+  // Run all four groups concurrently. The dividend fetcher emits BOTH the
+  // Ex-Dividend and the Dividend (pay-date) event, so one cache entry covers
+  // both categories.
   // Dividends: Yahoo quoteSummary forward ex/pay date. ETF distributions (SPDR
   // sector funds) aren't in any free feed, so they only appear once Yahoo posts
   // the ex-date around ex-day — accepted free-data lag.
@@ -235,4 +277,82 @@ export async function buildCalendarEvents(
   return [...macroEvents, ...earningsEvents, ...dividendEvents, ...splitEvents].sort((a, b) =>
     a.date.localeCompare(b.date)
   );
+}
+
+/* ── Per-ticker upcoming events (heatmap badges) ────────────────────────────
+   The Accounts-tab heatmap wants ONE compact answer per ticker ("does this
+   position have earnings or a dividend coming, and when?") rather than a date-
+   sorted event stream. Built on the SAME fetchers the calendar uses, so the
+   badge and the calendar can never disagree about a date. */
+
+export type { TickerEventInfo } from "@/lib/types";
+
+const badgeCache = new Map<string, { info: Record<string, TickerEventInfo>; ts: number }>();
+const BADGE_TTL = 30 * 60 * 1000;
+
+/** Upcoming earnings + dividend dates per ticker, for holdings in [from, to]. */
+export async function buildTickerEventInfo(
+  userId: string,
+  holdings: HoldingRef[],
+  from: string,
+  to: string,
+): Promise<Record<string, TickerEventInfo>> {
+  const key = `${userId}|${from}|${to}`;
+  const hit = badgeCache.get(key);
+  if (hit && Date.now() - hit.ts < BADGE_TTL) return hit.info;
+
+  // Same aggregation rule as buildCalendarEvents: one entry per ticker with
+  // shares summed across accounts, so the $ estimate covers every lot held.
+  const byTicker = new Map<string, { name: string; shares: number }>();
+  for (const h of holdings) {
+    const t = h.ticker.toUpperCase();
+    const cur = byTicker.get(t);
+    if (cur) cur.shares += h.shares;
+    else byTicker.set(t, { name: h.name, shares: h.shares });
+  }
+
+  const tickers = [...byTicker.keys()];
+  const info: Record<string, TickerEventInfo> = {};
+
+  await mapLimit(tickers, 8, async (t) => {
+    const { name, shares } = byTicker.get(t)!;
+    const [earnings, dividend] = await Promise.all([
+      fetchEarnings(t, from, to, name),
+      yahooNextDividend(t),
+    ]);
+
+    const entry: TickerEventInfo = {};
+
+    // Finnhub can return several quarters in a wide window — take the soonest.
+    const nextEarnings = earnings
+      .filter((e) => e.date >= from && e.date <= to)
+      .sort((a, b) => a.date.localeCompare(b.date))[0];
+    if (nextEarnings) {
+      entry.earningsDate = nextEarnings.date;
+      entry.earningsDetail = nextEarnings.detail;
+    }
+
+    /* A dividend counts as "upcoming" if EITHER of its two dates is still in
+       the window — a position that went ex last week but pays next week still
+       has money coming, and one going ex tomorrow matters even when the pay
+       date is months out (or unannounced). */
+    if (dividend) {
+      const exAhead = dividend.exDate >= from && dividend.exDate <= to;
+      const payAhead = !!dividend.payDate && dividend.payDate >= from && dividend.payDate <= to;
+      if (exAhead || payAhead) {
+        entry.exDate = dividend.exDate;
+        if (dividend.payDate) entry.payDate = dividend.payDate;
+        if (dividend.amount != null) {
+          entry.perShare = dividend.amount;
+          if (shares > 0) entry.estAmount = Math.round(dividend.amount * shares * 100) / 100;
+        }
+      }
+    }
+
+    if (entry.earningsDate || entry.exDate) info[t] = entry;
+  });
+
+  if (badgeCache.size >= CACHE_CAP) badgeCache.clear();
+  badgeCache.set(key, { info, ts: Date.now() });
+  return info;
 }

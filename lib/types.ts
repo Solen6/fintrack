@@ -141,6 +141,25 @@ export interface HoldingWithMetrics extends Holding {
   todayChangePct: number;
 }
 
+/** One ticker's upcoming earnings + dividend, as served by
+ *  /api/holdings/events and drawn as the heatmap's E/D corner badges. Lives
+ *  here rather than in lib/calendar-events.ts so client components can type
+ *  against it without pulling that server-only module into the bundle. */
+export interface TickerEventInfo {
+  /** Next reported earnings date in the window (YYYY-MM-DD). */
+  earningsDate?: string;
+  /** e.g. "Q3 2026 · after close". */
+  earningsDetail?: string;
+  /** Next declared ex-dividend date — the ownership deadline. */
+  exDate?: string;
+  /** Pay date for that dividend. Often not yet announced when the ex-date is. */
+  payDate?: string;
+  /** Last known per-share payment (Yahoo's most recent), used to estimate. */
+  perShare?: number;
+  /** perShare × shares held. Sensitive — masked in Private mode. */
+  estAmount?: number;
+}
+
 export interface Quote {
   ticker: string;
   price: number;

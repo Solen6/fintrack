@@ -1,6 +1,9 @@
 /* Shared types + helpers for the calendar views (Month / Week / Year / Agenda). */
 
-export type EventCategory = "Macro" | "Earnings" | "Dividend" | "Split";
+/* Mirrors lib/calendar-events.ts. "Ex-Dividend" (ownership deadline) and
+   "Dividend" (pay date — when the cash lands) are separate categories because
+   they fall on different days and answer different questions. */
+export type EventCategory = "Macro" | "Earnings" | "Ex-Dividend" | "Dividend" | "Split";
 
 export interface CalendarEvent {
   date: string; // YYYY-MM-DD
@@ -13,13 +16,16 @@ export interface CalendarEvent {
   id?: string;     // present on user-added one-off events — the DB row id (for delete)
 }
 
-export const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Dividend", "Split"];
+export const CATEGORIES: EventCategory[] = ["Macro", "Earnings", "Ex-Dividend", "Dividend", "Split"];
 
 export const CATEGORY_COLORS: Record<EventCategory, string> = {
-  Macro:    "oklch(0.64 0.07 240)",
-  Earnings: "oklch(0.72 0.14 74)",
-  Dividend: "oklch(0.72 0.15 152)",
-  Split:    "oklch(0.70 0.13 300)",
+  Macro:         "oklch(0.64 0.07 240)",
+  Earnings:      "oklch(0.72 0.14 74)",
+  // Teal — the same family as the Dividend green but visibly cooler, so the
+  // ex/pay pair reads as related without the two dots looking identical.
+  "Ex-Dividend": "oklch(0.70 0.10 195)",
+  Dividend:      "oklch(0.72 0.15 152)",
+  Split:         "oklch(0.70 0.13 300)",
 };
 
 /* Day-P/L tint colors — green gain / red loss, matching the Positions donut

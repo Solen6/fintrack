@@ -5,7 +5,7 @@ import nextDynamic from "next/dynamic";
 import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { isFaceValueBond, isDerivative } from "@/lib/types";
-import type { HoldingWithMetrics } from "@/lib/types";
+import type { HoldingWithMetrics, TickerEventInfo } from "@/lib/types";
 import { recognizeStrategy } from "@/lib/option-strategies";
 import { netCost, OPTION_MULTIPLIER } from "@/lib/options-math";
 import { toLeg, PayoffPanel } from "./DerivativesView";
@@ -194,6 +194,22 @@ export function PortfolioDeck({
       .catch(() => {});
   }, []);
 
+  /* Upcoming earnings / dividend dates per ticker → the heatmap's E/D corner
+     badges. Whole-portfolio and account-independent (the treemap looks each
+     tile up by ticker), so this fetches once on mount rather than per account.
+     Purely decorative — a failure just means no badges. */
+  const [tickerEvents, setTickerEvents] = useState<Record<string, TickerEventInfo>>({});
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/holdings/events")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (alive && d?.events) setTickerEvents(d.events);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   // If the active view was deleted (elsewhere), fall back to Auto.
   useEffect(() => {
     if (activeViewId !== "auto" && !views.some((v) => v.id === activeViewId)) {
@@ -325,6 +341,7 @@ export function PortfolioDeck({
         groups={activeGroups}
         editable={!!activeView && arranging}
         onGroupsChange={activeView && canArrange ? (g) => persistGroups(activeView.id, g) : undefined}
+        tickerEvents={tickerEvents}
       />
     );
 

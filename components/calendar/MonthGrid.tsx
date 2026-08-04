@@ -23,6 +23,7 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** Short label for a cramped month-cell chip. */
 function chipLabel(e: CalendarEvent): string {
   if (e.category === "Dividend") return `${e.ticker ?? ""} div`.trim();
+  if (e.category === "Ex-Dividend") return `${e.ticker ?? ""} ex-div`.trim();
   if (e.category === "Split") return `${e.ticker ?? ""} split`.trim();
   if (e.category === "Earnings") return e.ticker ?? e.title;
   return e.title;
