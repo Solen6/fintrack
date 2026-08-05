@@ -10,8 +10,8 @@ import { usePrivacy } from "@/lib/privacy";
 
 const NAV_TABS = [
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/analysis",  label: "Analysis"  },
   { href: "/accounts",  label: "Accounts"  },
+  { href: "/analysis",  label: "Analysis"  },
   { href: "/news",      label: "News"      },
   { href: "/calendar",  label: "Calendar"  },
   { href: "/paper",     label: "Paper"     },
