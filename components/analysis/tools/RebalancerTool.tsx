@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
-import { planRebalance, TRADE_EPS, type RebalanceMode } from "@/lib/rebalance";
+import { planRebalance, retargetForCash, TRADE_EPS, type RebalanceMode } from "@/lib/rebalance";
 import type { AnalysisHistoryResponse } from "@/lib/analytics/api-types";
 import {
   ToolShell,
@@ -104,7 +104,19 @@ export function RebalancerTool() {
               allocate is the share meant to stay in cash, shown on the Cash row with its own
               current %, target, and drift. Targets summing to 90 asks to hold 10% cash; summing to
               100 asks to be fully invested. Going past 100 would mean holding more than the account
-              is worth, so the entries are scaled back to fit and the tool says so. Drift is
+              is worth, so the entries are scaled back to fit and the tool says so.
+            </p>
+            <p>
+              <strong>Setting the cash target.</strong> The Cash row&apos;s target is editable like
+              any other. Because it&apos;s defined as the share the holdings don&apos;t claim,
+              changing it <em>rewrites the holdings&apos; targets</em> to leave exactly that much —
+              scaling them together so their proportions to each other are untouched. Drop your cash
+              target and the holdings rise to absorb it, which is what turns idle cash into buys;
+              raise it and they fall, which raises cash by selling. The move is proportional, so it
+              round-trips: lower the cash target and put it back and you land on the same numbers.
+              The exception is asking for 100% cash, which zeroes every holding target and loses the
+              proportions with them — coming back from there spreads the account evenly, since
+              there&apos;s nothing left to infer a split from. Drift is
               current&nbsp;% − target&nbsp;%, the trade is the dollar move that closes it — positive
               a buy, negative a sell — turnover is the larger of total buys and total sells (the
               one-way figure), and a move under ${TRADE_EPS.toFixed(0)} is treated as no trade.
@@ -234,6 +246,23 @@ function AccountRebalancePanel({ account }: { account: string }) {
     const v = raw === "" ? 0 : Number(raw);
     if (!Number.isFinite(v)) return;
     setTargets((t) => ({ ...t, [ticker]: Math.max(0, v) }));
+    setSaveState("idle");
+  };
+
+  // Setting the cash target rewrites the security targets to leave exactly
+  // that much unclaimed — there's nowhere else to store it, and this keeps
+  // every number in the column literal. Proportions are preserved, so it
+  // round-trips.
+  const onCashTargetChange = (raw: string) => {
+    const v = raw === "" ? 0 : Number(raw);
+    if (!Number.isFinite(v) || !data) return;
+    setTargets((t) =>
+      retargetForCash(
+        t,
+        data.assets.map((a) => a.ticker),
+        v,
+      ),
+    );
     setSaveState("idle");
   };
 
@@ -491,15 +520,35 @@ function AccountRebalancePanel({ account }: { account: string }) {
                       </tr>
                     );
                   })}
-                  {/* Cash is a real target now — whatever share of the account
-                      the targets above leave unallocated — so it gets the same
-                      columns as any holding rather than a row of dashes. */}
-                  {(model.cashNow > 0 || model.cashTargetPct > 0) && (
+                  {/* Cash is a real target — whatever share of the account the
+                      targets above leave unallocated — so it gets the same
+                      columns as any holding rather than a row of dashes, and
+                      it renders even at zero balance so a cash target can be
+                      set on an account that holds none. */}
+                  {
                     <tr className="border-t border-border">
                       <td className="py-1.5 font-sans font-medium">Cash</td>
                       <td className="py-1.5 text-right">{formatPercent(model.cashPct, false)}</td>
-                      <td className="py-1.5 pr-2 text-right" style={{ color: CHART.muted }}>
-                        {formatPercent(model.cashTargetPct, false)}
+                      <td className="py-1.5 text-right">
+                        <div className="flex flex-col items-end gap-0.5">
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step="0.1"
+                            inputMode="decimal"
+                            aria-label={`Target cash weight in ${account}`}
+                            value={round2(model.cashTargetPct)}
+                            onChange={(e) => onCashTargetChange(e.target.value)}
+                            title="Set how much of this account should sit in cash. The holdings above are rescaled to leave exactly that much, keeping their proportions to each other."
+                            className="w-20 rounded-sm border border-border bg-card px-2 py-1 text-right font-mono text-[12px] tabular-nums outline-none focus:border-[oklch(0.72_0.14_74_/_0.5)]"
+                          />
+                          <span className="text-[10.5px]" style={{ color: CHART.muted }}>
+                            <Sensitive>
+                              {formatCurrency((model.cashTargetPct / 100) * model.totalValue)}
+                            </Sensitive>
+                          </span>
+                        </div>
                       </td>
                       <td
                         className="py-1.5 text-right"
@@ -542,7 +591,7 @@ function AccountRebalancePanel({ account }: { account: string }) {
                         </td>
                       )}
                     </tr>
-                  )}
+                  }
                 </tbody>
               </table>
             </div>

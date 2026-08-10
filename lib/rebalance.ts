@@ -186,6 +186,53 @@ export function planRebalance(input: RebalanceInput): RebalancePlan {
   };
 }
 
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Rewrite the security targets so the account holds `cashPct` in cash.
+ *
+ * The cash target isn't stored anywhere — it's whatever share of the account
+ * the security targets leave unclaimed. So "set cash to 5%" is an edit to the
+ * securities: scale them to sum to 95, keeping their proportions to each other
+ * exactly as they were. Every number in the column stays literal, and the
+ * column plus cash always adds to 100.
+ *
+ * Scaling is proportional, so it round-trips — drop the cash target and raise
+ * it again and you're back where you started. The one exception is asking for
+ * 100% cash, which zeroes every target and loses the proportions with them;
+ * coming back from there spreads the account evenly, since there's nothing
+ * left to infer a split from.
+ */
+export function retargetForCash(
+  current: Record<string, number>,
+  tickers: string[],
+  cashPct: number,
+): Record<string, number> {
+  const next: Record<string, number> = {};
+  if (tickers.length === 0) return next;
+
+  const want = round2(100 - Math.min(100, Math.max(0, cashPct)));
+  const values = tickers.map((t) => Math.max(0, current[t] ?? 0));
+  const sum = values.reduce((s, n) => s + n, 0);
+
+  const scaled =
+    sum > 0 ? values.map((n) => (n / sum) * want) : values.map(() => want / tickers.length);
+  const rounded = scaled.map(round2);
+
+  // Park the rounding residue on the largest entry — proportionally the least
+  // distortion — so the column sums to exactly what was asked for rather than
+  // leaving a stray hundredth that shows up as a wrong cash target.
+  let iMax = 0;
+  for (let i = 1; i < rounded.length; i++) if (rounded[i] > rounded[iMax]) iMax = i;
+  const residue = round2(want - rounded.reduce((s, n) => s + n, 0));
+  rounded[iMax] = Math.max(0, round2(rounded[iMax] + residue));
+
+  tickers.forEach((t, i) => {
+    next[t] = rounded[i];
+  });
+  return next;
+}
+
 /**
  * Spread `cash` across holdings without selling anything.
  *

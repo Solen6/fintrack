@@ -7,7 +7,9 @@
  * share you don't allocate is the share meant to stay in cash — so a deposit
  * splits between securities and cash the way the targets imply.
  */
-import { planRebalance, type RebalanceHolding } from "@/lib/rebalance";
+import { planRebalance, retargetForCash, type RebalanceHolding } from "@/lib/rebalance";
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 let pass = 0;
 const failures: string[] = [];
@@ -211,6 +213,91 @@ const TOTAL = 11000;
   const noMoney = planRebalance({ holdings: [], cash: 0 });
   near("[edge] an empty account is all zeros, not NaN", noMoney.cashPct, 0);
   ok("[edge] turnover on an empty account is finite", Number.isFinite(noMoney.turnover));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 7b. Setting the cash target rewrites the holdings to leave exactly that
+//     much, without disturbing their proportions to each other.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const TICKERS = H.map((h) => h.ticker);
+  const base = Object.fromEntries(H.map((h) => [h.ticker, h.targetShown])); // 22.5 ×4 = 90
+
+  const to5 = retargetForCash(base, TICKERS, 5);
+  near("[cash-target] holdings sum to 100 − cash", Object.values(to5).reduce((s, n) => s + n, 0), 95, 1e-9);
+  ok("[cash-target] all four moved together", TICKERS.every((t) => Math.abs(to5[t] - 23.75) < 0.01));
+
+  // Proportions survive: an uneven column keeps its ratios exactly.
+  const uneven = { AAA: 45.45, BBB: 22.73, CCC: 13.64, DDD: 9.09 }; // sums to 90.91
+  const u5 = retargetForCash(uneven, TICKERS, 5);
+  near("[cash-target] uneven column still sums right", Object.values(u5).reduce((s, n) => s + n, 0), 95, 1e-9);
+  near(
+    "[cash-target] AAA:BBB ratio is preserved",
+    u5.AAA / u5.BBB,
+    uneven.AAA / uneven.BBB,
+    2e-3,
+  );
+  near("[cash-target] CCC:DDD ratio is preserved", u5.CCC / u5.DDD, uneven.CCC / uneven.DDD, 2e-3);
+
+  // Round-trip: down and back lands on the same numbers.
+  const back = retargetForCash(u5, TICKERS, round2(100 - 90.91));
+  for (const t of TICKERS) {
+    near(`[cash-target] ${t} round-trips`, back[t], uneven[t as keyof typeof uneven], 0.02);
+  }
+
+  // Lowering the cash target is what frees cash to buy with.
+  const before = planRebalance({ holdings: H, cash: CASH, mode: "buy-only" });
+  near("[cash-target] at a 10% target there's nothing spare", before.investableCash, 0, 1e-9);
+  const after = planRebalance({
+    holdings: H.map((h) => ({ ...h, targetShown: to5[h.ticker] })),
+    cash: CASH,
+    mode: "buy-only",
+  });
+  // 5% of $11,000 = $550 should stay in cash, so $450 of the $1,000 is freed.
+  near("[cash-target] dropping it to 5% frees $450 to invest", after.investableCash, 450, 1e-9);
+  near("[cash-target] and the plan spends it", after.cashDeployed, 450, 1e-9);
+  near("[cash-target] leaving $550 = 5% in cash", after.cashAfter, 550, 1e-9);
+  near("[cash-target] which is exactly the target", after.cashPctAfter, 5, 1e-6);
+
+  // Raising it does the opposite — buy & sell raises cash by selling.
+  const to20 = retargetForCash(base, TICKERS, 20);
+  const raised = planRebalance({
+    holdings: H.map((h) => ({ ...h, targetShown: to20[h.ticker] })),
+    cash: CASH,
+    mode: "both",
+  });
+  ok("[cash-target] raising the target sells to raise cash", raised.cashDeployed < 0);
+  near("[cash-target] landing on 20% cash", raised.cashPctAfter, 20, 1e-6);
+
+  // Edges.
+  const all = retargetForCash(base, TICKERS, 100);
+  ok("[cash-target] 100% cash zeroes every holding", TICKERS.every((t) => all[t] === 0));
+  const recover = retargetForCash(all, TICKERS, 20);
+  ok(
+    "[cash-target] coming back from all-cash spreads evenly",
+    TICKERS.every((t) => Math.abs(recover[t] - 20) < 0.01),
+  );
+  near("[cash-target] and still sums right", Object.values(recover).reduce((s, n) => s + n, 0), 80, 1e-9);
+
+  const clamped = retargetForCash(base, TICKERS, -30);
+  near("[cash-target] a negative target clamps to 0", Object.values(clamped).reduce((s, n) => s + n, 0), 100, 1e-9);
+  const over = retargetForCash(base, TICKERS, 150);
+  near("[cash-target] above 100 clamps to 100", Object.values(over).reduce((s, n) => s + n, 0), 0, 1e-9);
+  ok("[cash-target] no holdings → no crash", Object.keys(retargetForCash(base, [], 10)).length === 0);
+
+  // Rounding residue is parked, so the cash target reads back exactly.
+  let residueBad = 0;
+  for (let n = 2; n <= 9; n++) {
+    for (const target of [3, 5, 7, 12.5, 33.33]) {
+      const tks = Array.from({ length: n }, (_, i) => `T${i}`);
+      const cur = Object.fromEntries(tks.map((t, i) => [t, 1 + i * 3.7]));
+      const out = retargetForCash(cur, tks, target);
+      const sum = Object.values(out).reduce((s, v) => s + v, 0);
+      if (Math.abs(sum - round2(100 - target)) > 1e-9) residueBad++;
+      if (Object.values(out).some((v) => v < 0)) residueBad++;
+    }
+  }
+  ok("[cash-target] 40 rescales all land exactly, none negative", residueBad === 0, `${residueBad} bad`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
