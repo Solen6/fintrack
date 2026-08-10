@@ -3,12 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
+import { planRebalance, TRADE_EPS, type RebalanceMode } from "@/lib/rebalance";
 import type { AnalysisHistoryResponse } from "@/lib/analytics/api-types";
 import {
   ToolShell,
   Panel,
   Stat,
   StatRow,
+  MiniButton,
   LoadingBlock,
   ErrorBlock,
   EmptyBlock,
@@ -17,10 +19,13 @@ import {
 import { useAnalysisData } from "../useAnalysisData";
 import { HBarList, CHART } from "../charts";
 
-/** Trades smaller than this (in dollars) are treated as noise, not a trade. */
-const TRADE_EPS = 1;
-
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Reads a money input, treating blank/garbage/negative as nothing entered. */
+function parseMoney(raw: string): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
 
 interface RawHolding {
   account: string;
@@ -70,7 +75,7 @@ export function RebalancerTool() {
     <ToolShell
       category="Allocation"
       title="Rebalancer"
-      subtitle="See how far each account has drifted from its own target weights — measured as a share of that account, cash included — and the exact buys and sells that bring its invested sleeve back in line. Every account keeps its own targets."
+      subtitle="See how far each account has drifted from its own target weights — measured as a share of that account, cash included — and the exact buys and sells that bring it back in line. Add a deposit or put idle cash to work and the plan tells you where the money should go. Every account keeps its own targets."
     >
       {accounts === null ? (
         accountsError ? <ErrorBlock message={accountsError} /> : <LoadingBlock />
@@ -87,27 +92,38 @@ export function RebalancerTool() {
 
           <MethodologyNote>
             <p>
-              Each account above is its own sleeve, rebalanced independently — its Current % is
-              that holding&apos;s value ÷ that account&apos;s total value (invested holdings + cash),
-              and its Target % is what you type for that account, normalized to sum to 100{" "}
-              <em>within that account&apos;s invested sleeve</em> and then scaled down by whatever
-              share of the account sits in cash, since cash is never reallocated — Cash is shown as
-              its own row with its current % for reference, but it has no target and isn&apos;t part
-              of the drift/trade math. Drift is current&nbsp;% − scaled-target&nbsp;%. The trade for
-              a holding is the dollar move that lands it on its target within the sleeve —
-              (sleeve-target − current) × invested value — where a positive figure is a buy and a
-              negative one a sell. Turnover is the sum of the absolute trades divided by two (buys
-              and sells net out), and a move under ${TRADE_EPS.toFixed(0)} is treated as no trade.
+              Each account above is its own sleeve, rebalanced independently. Every percentage is a
+              share of that account&apos;s <em>total</em> value — invested holdings plus cash — so
+              the columns always add up to the whole account. Target % is what you type, normalized
+              to sum to 100 <em>within that account&apos;s invested sleeve</em> and then scaled down
+              by whatever share of the account is left sitting in cash. Drift is
+              current&nbsp;% − target&nbsp;%, and the trade for a holding is the dollar move that
+              lands it on that target: positive is a buy, negative a sell. Turnover is the larger of
+              total buys and total sells (the one-way figure), and a move under $
+              {TRADE_EPS.toFixed(0)} is treated as no trade.
+            </p>
+            <p>
+              <strong>Cash.</strong> Cash is never a target — it&apos;s what funds the plan. A{" "}
+              <strong>deposit</strong> is money arriving in the account: it counts as cash from the
+              moment you enter it, which is why the cash row swells and every holding&apos;s current
+              % dilutes before a single trade is placed. <strong>Idle cash</strong> is the balance
+              already sitting there, and only the amount you ask for is put to work — the rest stays
+              in cash. In <strong>buy only</strong> mode nothing is sold: the cash goes to the most
+              underweight holdings first and keeps filling until it runs out, which is usually what
+              you want for a deposit but can leave the most overweight names above target, shown as
+              a non-zero drift after. <strong>Buy &amp; sell</strong> spends the same cash but also
+              sells whatever is overweight, landing every holding exactly on target. With no deposit
+              and no idle cash deployed, both modes are the same straight rebalance of what&apos;s
+              already invested.
             </p>
             <p>
               Assumptions and limits: each account&apos;s targets persist only once you click{" "}
               <strong>Save targets</strong> for that account — edits before that are local to the
-              browser tab and are lost on reload. Trades are computed against a single snapshot of
-              the invested value; execution prices, transaction costs, bid/ask spreads, taxes on
+              browser tab and are lost on reload. Deposit and idle-cash amounts are never saved;
+              they are planning inputs and reset on reload. Trades are computed against a single
+              snapshot of value; execution prices, transaction costs, bid/ask spreads, taxes on
               realized gains, wash-sale rules, tax lots, and fractional-share or round-lot
-              constraints are <strong>not</strong> modeled. Cash is not reallocated: the cash sleeve
-              neither funds buys nor absorbs sells, so the plan rebalances only the priceable
-              holdings within each account among themselves — nothing moves between accounts.
+              constraints are <strong>not</strong> modeled, and nothing moves between accounts.
               Options, futures, and individual bonds are excluded.
             </p>
           </MethodologyNote>
@@ -132,6 +148,13 @@ function AccountRebalancePanel({ account }: { account: string }) {
   const [savedTargets, setSavedTargets] = useState<Record<string, number> | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Cash to put to work. Kept as raw strings so the fields can be cleared
+  // rather than snapping back to 0, and deliberately NOT persisted — a
+  // deposit is a one-off planning input, unlike the targets.
+  const [depositRaw, setDepositRaw] = useState("");
+  const [idleRaw, setIdleRaw] = useState("");
+  const [mode, setMode] = useState<RebalanceMode>("buy-only");
 
   useEffect(() => {
     let alive = true;
@@ -178,57 +201,29 @@ function AccountRebalancePanel({ account }: { account: string }) {
     }
   };
 
+  const cashOnHand = data?.cash ?? 0;
+  const deposit = parseMoney(depositRaw);
+  const idleDeploy = Math.min(parseMoney(idleRaw), cashOnHand);
+  const hasCash = deposit + idleDeploy > 0;
+
   const model = useMemo(() => {
     if (!data || data.empty || data.assets.length === 0) return null;
-    const assets = data.assets;
-    const riskyValue = data.riskyValue;
-    const cash = data.cash;
-    const totalValue = riskyValue + cash;
-    // Share of the account that's even eligible for reallocation — cash is
-    // pinned (never traded), so a sleeve target of 100% still only ever
-    // claims this fraction of the account. Keeps Current %/Target % on the
-    // same "% of account (incl. cash)" basis as everywhere else.
-    const riskyFraction = totalValue > 0 ? riskyValue / totalValue : 0;
-    const cashPct = totalValue > 0 ? (cash / totalValue) * 100 : 0;
-
-    const withTarget = assets.map((a) => ({
-      ticker: a.ticker,
-      name: a.name,
-      weightWithCash: a.weightWithCash,
-      value: a.value,
-      targetShown: targets[a.ticker] ?? round2(a.weightWithCash * 100),
-    }));
-
-    // Normalize entered targets to sum 100 WITHIN the sleeve (so the numbers
-    // need not be balanced by hand), then scale that sleeve fraction down by
-    // riskyFraction to express it as a % of the whole account.
-    const sum = withTarget.reduce((s, r) => s + r.targetShown, 0);
-
-    const rows = withTarget
-      .map((r) => {
-        const currentPct = r.weightWithCash * 100;
-        const sleeveFrac = sum > 0 ? r.targetShown / sum : 0;
-        const targetPct = sleeveFrac * riskyFraction * 100;
-        const driftPct = currentPct - targetPct;
-        const tradeDollar = sleeveFrac * riskyValue - r.value; // + buy / − sell
-        return {
-          ticker: r.ticker,
-          name: r.name,
-          currentPct,
-          targetShown: r.targetShown,
-          targetPct,
-          driftPct,
-          tradeDollar,
-        };
-      })
-      .sort((x, y) => y.currentPct - x.currentPct);
-
-    const maxDrift = rows.reduce((m, r) => Math.max(m, Math.abs(r.driftPct)), 0);
-    const nTrades = rows.filter((r) => Math.abs(r.tradeDollar) > TRADE_EPS).length;
-    const turnover = rows.reduce((s, r) => s + Math.abs(r.tradeDollar), 0) / 2;
-
-    return { rows, sum, maxDrift, nTrades, turnover, count: rows.length, cash, cashPct };
-  }, [data, targets]);
+    return planRebalance({
+      holdings: data.assets.map((a) => ({
+        ticker: a.ticker,
+        name: a.name,
+        value: a.value,
+        targetShown: targets[a.ticker] ?? round2(a.weightWithCash * 100),
+      })),
+      cash: data.cash,
+      deposit,
+      idleDeploy,
+      // With nothing to deploy the two modes are identical; pinning to `both`
+      // keeps a stale buy-only toggle from silently blanking every trade once
+      // the cash fields are cleared.
+      mode: hasCash ? mode : "both",
+    });
+  }, [data, targets, deposit, idleDeploy, hasCash, mode]);
 
   const onTargetChange = (ticker: string, raw: string) => {
     const v = raw === "" ? 0 : Number(raw);
@@ -293,9 +288,93 @@ function AccountRebalancePanel({ account }: { account: string }) {
         />
       ) : (
         <div className="flex flex-col gap-4">
+          <Panel title="Cash to put to work">
+            <div className="flex flex-wrap items-end gap-x-6 gap-y-4">
+              <MoneyField
+                label="Deposit"
+                hint="new money into this account"
+                value={depositRaw}
+                onChange={setDepositRaw}
+                ariaLabel={`Deposit into ${account}`}
+              />
+              <MoneyField
+                label="Idle cash to invest"
+                hint={
+                  cashOnHand > 0 ? (
+                    <>
+                      <Sensitive>{formatCurrency(cashOnHand)}</Sensitive> on hand
+                    </>
+                  ) : (
+                    "no cash in this account"
+                  )
+                }
+                value={idleRaw}
+                onChange={setIdleRaw}
+                disabled={cashOnHand <= 0}
+                ariaLabel={`Idle cash to invest in ${account}`}
+                action={
+                  cashOnHand > 0 ? (
+                    <MiniButton onClick={() => setIdleRaw(String(round2(cashOnHand)))}>
+                      All
+                    </MiniButton>
+                  ) : undefined
+                }
+              />
+              {hasCash && (
+                <div className="flex flex-col gap-1.5">
+                  <span
+                    className="text-[10px] uppercase tracking-[0.08em]"
+                    style={{ color: CHART.muted }}
+                  >
+                    Trades
+                  </span>
+                  <div className="flex gap-1.5">
+                    <MiniButton primary={mode === "buy-only"} onClick={() => setMode("buy-only")}>
+                      Buy only
+                    </MiniButton>
+                    <MiniButton primary={mode === "both"} onClick={() => setMode("both")}>
+                      Buy &amp; sell
+                    </MiniButton>
+                  </div>
+                </div>
+              )}
+            </div>
+            <p className="mt-3.5 text-[11.5px] leading-relaxed" style={{ color: CHART.muted }}>
+              {hasCash ? (
+                <>
+                  Putting <Sensitive>{formatCurrency(model.cashToInvest)}</Sensitive> to work
+                  {deposit > 0 && idleDeploy > 0 && (
+                    <>
+                      {" "}
+                      (<Sensitive>{formatCurrency(deposit)}</Sensitive> new +{" "}
+                      <Sensitive>{formatCurrency(idleDeploy)}</Sensitive> idle)
+                    </>
+                  )}
+                  .{" "}
+                  {mode === "buy-only"
+                    ? "Nothing is sold — it goes to the most underweight holdings first."
+                    : "Overweight holdings are sold down so every target is hit exactly."}{" "}
+                  <Sensitive>{formatCurrency(model.cashAfter)}</Sensitive> stays in cash.
+                </>
+              ) : cashOnHand > 0 ? (
+                <>
+                  Nothing in the plan yet — the trades below only shuffle what&apos;s already
+                  invested. Enter a deposit, or put some of the{" "}
+                  <Sensitive>{formatCurrency(cashOnHand)}</Sensitive> idle cash to work, and the
+                  plan will tell you where it should go.
+                </>
+              ) : (
+                <>
+                  This account holds no cash. Enter a deposit to see how new money should be
+                  distributed across your targets.
+                </>
+              )}
+            </p>
+          </Panel>
+
           <div className="flex justify-end">
             <span className="font-mono text-[11.5px] tabular-nums" style={{ color: CHART.muted }}>
-              targets sum: {model.sum.toFixed(1)}%
+              targets sum: {model.targetSum.toFixed(1)}%
             </span>
           </div>
 
@@ -308,18 +387,36 @@ function AccountRebalancePanel({ account }: { account: string }) {
             <Stat
               label="Trades needed"
               value={model.nTrades}
-              sub={`of ${model.count} holdings`}
+              sub={`of ${model.rows.length} holdings`}
             />
             <Stat
               label="Turnover"
               value={<Sensitive>{formatCurrency(model.turnover)}</Sensitive>}
               sub="one-way $ traded"
             />
+            {hasCash && (
+              <>
+                <Stat
+                  label="Cash deployed"
+                  value={<Sensitive>{formatCurrency(model.cashDeployed)}</Sensitive>}
+                  sub={<><Sensitive>{formatCurrency(model.cashAfter)}</Sensitive> left in cash</>}
+                />
+                <Stat
+                  label="Drift after"
+                  value={formatPercent(model.maxDriftAfter, false)}
+                  sub="largest gap once traded"
+                  tone={model.maxDriftAfter > 0.05 ? "default" : "muted"}
+                />
+              </>
+            )}
           </StatRow>
 
           <Panel title="Targets & trades">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[520px] text-[12.5px]">
+              <table
+                className="w-full text-[12.5px]"
+                style={{ minWidth: hasCash ? 620 : 520 }}
+              >
                 <thead>
                   <tr className="text-left" style={{ color: CHART.muted }}>
                     <th className="pb-2 font-medium">Ticker</th>
@@ -327,6 +424,7 @@ function AccountRebalancePanel({ account }: { account: string }) {
                     <th className="pb-2 text-right font-medium">Target %</th>
                     <th className="pb-2 text-right font-medium">Drift</th>
                     <th className="pb-2 text-right font-medium">Trade</th>
+                    {hasCash && <th className="pb-2 text-right font-medium">After %</th>}
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
@@ -338,6 +436,7 @@ function AccountRebalancePanel({ account }: { account: string }) {
                           ? CHART.negative
                           : CHART.positive;
                     const isTrade = Math.abs(r.tradeDollar) > TRADE_EPS;
+                    const onTarget = Math.abs(r.driftAfterPct) < 0.05;
                     return (
                       <tr key={r.ticker} className="border-t border-border">
                         <td className="py-1.5 font-sans font-medium" title={r.name}>
@@ -374,16 +473,44 @@ function AccountRebalancePanel({ account }: { account: string }) {
                             <span style={{ color: CHART.muted }}>—</span>
                           )}
                         </td>
+                        {hasCash && (
+                          <td
+                            className="py-1.5 text-right"
+                            // On target is the expected outcome, so it recedes;
+                            // a name buy-only couldn't sell down stays legible.
+                            style={onTarget ? { color: CHART.muted } : undefined}
+                            title={
+                              onTarget
+                                ? "Lands on target"
+                                : `Still ${formatPercent(r.driftAfterPct)} from target — buy only can't sell it down`
+                            }
+                          >
+                            {formatPercent(r.afterPct, false)}
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
-                  {model.cash > 0 && (
+                  {model.cashNow > 0 && (
                     <tr className="border-t border-border">
                       <td className="py-1.5 font-sans font-medium">Cash</td>
                       <td className="py-1.5 text-right">{formatPercent(model.cashPct, false)}</td>
                       <td className="py-1.5 text-right" style={{ color: CHART.muted }}>—</td>
                       <td className="py-1.5 text-right" style={{ color: CHART.muted }}>—</td>
-                      <td className="py-1.5 text-right" style={{ color: CHART.muted }}>—</td>
+                      <td className="py-1.5 text-right">
+                        {model.cashDeployed > TRADE_EPS ? (
+                          <span style={{ color: CHART.negative }}>
+                            <Sensitive>{`−${formatCurrency(model.cashDeployed)}`}</Sensitive>
+                          </span>
+                        ) : (
+                          <span style={{ color: CHART.muted }}>—</span>
+                        )}
+                      </td>
+                      {hasCash && (
+                        <td className="py-1.5 text-right" style={{ color: CHART.muted }}>
+                          {formatPercent(model.cashPctAfter, false)}
+                        </td>
+                      )}
                     </tr>
                   )}
                 </tbody>
@@ -411,6 +538,58 @@ function AccountRebalancePanel({ account }: { account: string }) {
         </div>
       )}
     </section>
+  );
+}
+
+function MoneyField({
+  label,
+  hint,
+  value,
+  onChange,
+  disabled,
+  action,
+  ariaLabel,
+}: {
+  label: string;
+  hint: React.ReactNode;
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  action?: React.ReactNode;
+  ariaLabel: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[10px] uppercase tracking-[0.08em]" style={{ color: CHART.muted }}>
+        {label}
+      </span>
+      <div className="flex items-center gap-1.5">
+        <div className="relative">
+          <span
+            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 font-mono text-[12px]"
+            style={{ color: CHART.muted }}
+          >
+            $
+          </span>
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            inputMode="decimal"
+            placeholder="0"
+            aria-label={ariaLabel}
+            value={value}
+            disabled={disabled}
+            onChange={(e) => onChange(e.target.value)}
+            className="w-32 rounded-sm border border-border bg-card py-1 pl-5 pr-2 text-right font-mono text-[12px] tabular-nums outline-none focus:border-[oklch(0.72_0.14_74_/_0.5)] disabled:opacity-40"
+          />
+        </div>
+        {action}
+      </div>
+      <span className="text-[10.5px]" style={{ color: CHART.muted }}>
+        {hint}
+      </span>
+    </div>
   );
 }
 

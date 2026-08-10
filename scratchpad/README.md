@@ -36,4 +36,5 @@ Some hit live Yahoo Finance and need network; they use no credentials.
 | `spy-point-test.ts` | the S&P 500 frontier point, live, incl. total-vs-price return |
 | `spy-sharpe-windows.ts` | SPY return/vol/Sharpe across 1/2/3/5-year windows |
 | `frontier-cron-test.ts` | yearly snapshot capture: who's due, weights, degradation |
+| `rebalance-cash-test.ts` | the cash-aware rebalance planner (`lib/rebalance.ts`): that a plan with no cash entered still reproduces the pre-cash formulas exactly, that buy-only spends the contribution to the cent without ever selling, and that it level-fills the most underweight holdings first (82 checks, incl. 400 randomized invariant runs) |
 | `seed-resolution-test.ts` | unit-method seed anchoring: a late-arriving account mints its capital as a flow instead of being seeded at the series start (the "opening a funded account tanked Overall Return" regression) |
