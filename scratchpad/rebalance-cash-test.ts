@@ -2,13 +2,10 @@
  *
  *   JITI_ALIAS='{"@/":"'"$PWD"'/"}' node_modules/.bin/jiti scratchpad/rebalance-cash-test.ts
  *
- * The two things that matter most:
- *   1. With no cash entered, the plan must reproduce the OLD formulas exactly
- *      (targetPct = sleeveFrac × riskyFraction, trade = sleeveFrac × riskyValue
- *      − value). A silent change there would rewrite trades Carter already
- *      trusts.
- *   2. Buy-only must spend the cash to the last cent, never sell, and put it
- *      where it closes the most underweight gaps first.
+ * The governing rule: a target is a percent OF THE WHOLE ACCOUNT, used exactly
+ * as typed and never renormalized. That makes cash a first-class target — the
+ * share you don't allocate is the share meant to stay in cash — so a deposit
+ * splits between securities and cash the way the targets imply.
  */
 import { planRebalance, type RebalanceHolding } from "@/lib/rebalance";
 
@@ -24,248 +21,192 @@ function near(label: string, got: number, want: number, eps = 1e-6) {
 }
 
 /* ── Fixture: a $10,000 sleeve that has drifted, plus $1,000 idle cash. ──
-   Equal 25% targets; AAA is badly overweight, DDD badly under.            */
+   Targets sum to 90, so 10% of the account is meant to be cash.           */
 const H: RebalanceHolding[] = [
-  { ticker: "AAA", name: "A", value: 5000, targetShown: 25 },
-  { ticker: "BBB", name: "B", value: 2500, targetShown: 25 },
-  { ticker: "CCC", name: "C", value: 1500, targetShown: 25 },
-  { ticker: "DDD", name: "D", value: 1000, targetShown: 25 },
+  { ticker: "AAA", name: "A", value: 5000, targetShown: 22.5 },
+  { ticker: "BBB", name: "B", value: 2500, targetShown: 22.5 },
+  { ticker: "CCC", name: "C", value: 1500, targetShown: 22.5 },
+  { ticker: "DDD", name: "D", value: 1000, targetShown: 22.5 },
 ];
 const CASH = 1000;
-const TOTAL = 11000; // 10,000 invested + 1,000 cash
+const TOTAL = 11000;
 
 // ─────────────────────────────────────────────────────────────────────────
-// 1. No cash entered → identical to the pre-cash tool, formula for formula.
+// 1. A target means exactly what it says: percent of the account.
 // ─────────────────────────────────────────────────────────────────────────
 {
   const p = planRebalance({ holdings: H, cash: CASH });
-  const riskyValue = 10000;
-  const riskyFraction = riskyValue / TOTAL;
-
   for (const r of p.rows) {
+    near(`[literal] ${r.ticker} target is used verbatim`, r.targetPct, r.targetShown);
     const src = H.find((h) => h.ticker === r.ticker)!;
-    const sleeveFrac = 0.25;
-    near(`[no-cash] ${r.ticker} currentPct = weightWithCash×100`, r.currentPct, (src.value / TOTAL) * 100);
-    near(`[no-cash] ${r.ticker} targetPct = sleeveFrac×riskyFraction`, r.targetPct, sleeveFrac * riskyFraction * 100);
-    near(`[no-cash] ${r.ticker} trade = sleeveFrac×riskyValue − value`, r.tradeDollar, sleeveFrac * riskyValue - src.value);
+    near(`[literal] ${r.ticker} current % is its share of the account`, r.currentPct, (src.value / TOTAL) * 100);
+    near(`[literal] ${r.ticker} trade closes the gap in dollars`, r.tradeDollar, 0.225 * TOTAL - src.value);
+    near(`[literal] ${r.ticker} lands exactly on target`, r.afterPct, r.targetPct, 1e-9);
   }
-  near("[no-cash] trades net to zero (cash untouched)", p.rows.reduce((s, r) => s + r.tradeDollar, 0), 0, 1e-9);
-  near("[no-cash] cash deployed", p.cashDeployed, 0);
-  near("[no-cash] cash after == cash before", p.cashAfter, CASH);
-  // Old turnover was Σ|trade|/2; max(buys,sells) must agree when they balance.
-  const legacyTurnover = p.rows.reduce((s, r) => s + Math.abs(r.tradeDollar), 0) / 2;
-  near("[no-cash] turnover matches the legacy Σ|trade|÷2", p.turnover, legacyTurnover);
-  near("[no-cash] every holding lands on target", p.maxDriftAfter, 0, 1e-9);
-  ok("[no-cash] sorted by current % desc", p.rows.map((r) => r.ticker).join() === "AAA,BBB,CCC,DDD");
-}
+  near("[literal] the unallocated share is the cash target", p.cashTargetPct, 10);
+  ok("[literal] not flagged as over-allocated", !p.overAllocated);
+  near("[literal] cash lands on its target too", p.cashPctAfter, 10, 1e-9);
+  near("[literal] which is $1,100 — so $100 is raised", p.cashAfter, 1100, 1e-9);
+  near("[literal] cash deployed is negative (cash went UP)", p.cashDeployed, -100, 1e-9);
+  ok("[literal] sorted by current % desc", p.rows.map((r) => r.ticker).join() === "AAA,BBB,CCC,DDD");
 
-// ─────────────────────────────────────────────────────────────────────────
-// 2. Carter's case: deposit new money, buy only.
-// ─────────────────────────────────────────────────────────────────────────
-{
-  const p = planRebalance({ holdings: H, cash: CASH, deposit: 4000, mode: "buy-only" });
-
-  near("[deposit] total counts the deposit", p.totalValue, 15000);
-  near("[deposit] cash on hand includes it", p.cashNow, 5000);
-  near("[deposit] cash to invest = the deposit", p.cashToInvest, 4000);
-  ok("[deposit] nothing is sold", p.rows.every((r) => r.tradeDollar >= 0));
-  near("[deposit] spends the whole deposit", p.rows.reduce((s, r) => s + r.tradeDollar, 0), 4000, 1e-9);
-  near("[deposit] cashDeployed == deposit", p.cashDeployed, 4000, 1e-9);
-  near("[deposit] nothing left unplaced", p.cashLeftOver, 0, 1e-9);
-  near("[deposit] idle cash is untouched", p.cashAfter, 1000, 1e-9);
-  near("[deposit] turnover is the full buy side, not half of it", p.turnover, 4000, 1e-9);
-
-  // $14,000 invested at 25% each = $3,500 target. AAA is already at $5,000,
-  // so it gets nothing and the other three fill toward a common level.
-  const by = Object.fromEntries(p.rows.map((r) => [r.ticker, r]));
-  near("[deposit] AAA (overweight) gets nothing", by.AAA.tradeDollar, 0);
-  // Level solves (4000 + 2500+1500+1000) / 0.75 = 12,000 → 25% = $3,000 each.
-  near("[deposit] BBB filled to the level", by.BBB.tradeDollar, 500, 1e-9);
-  near("[deposit] CCC filled to the level", by.CCC.tradeDollar, 1500, 1e-9);
-  near("[deposit] DDD filled to the level", by.DDD.tradeDollar, 2000, 1e-9);
-  ok(
-    "[deposit] the three funded names end at the SAME weight",
-    Math.abs(by.BBB.afterPct - by.CCC.afterPct) < 1e-9 &&
-      Math.abs(by.CCC.afterPct - by.DDD.afterPct) < 1e-9,
+  // Every column adds to the whole account, before and after.
+  near(
+    "[literal] current weights + cash = 100%",
+    p.rows.reduce((s, r) => s + r.currentPct, 0) + p.cashPct,
+    100,
+    1e-9,
   );
-  ok("[deposit] AAA is still over target", by.AAA.driftAfterPct > 0.05);
-  ok("[deposit] and the shortfall is reported", p.maxDriftAfter > 0.05);
-
-  const sumAfter = p.rows.reduce((s, r) => s + r.afterPct, 0) + p.cashPctAfter;
-  near("[deposit] after-weights + cash = 100% of the account", sumAfter, 100, 1e-9);
+  near(
+    "[literal] after-weights + cash = 100%",
+    p.rows.reduce((s, r) => s + r.afterPct, 0) + p.cashPctAfter,
+    100,
+    1e-9,
+  );
+  near("[literal] targets + cash target = 100%", p.targetSum + p.cashTargetPct, 100);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 3. Same deposit, buy & sell → every target hit exactly.
+// 2. Carter's case: deposit new money. The targets DON'T move — that was the
+//    whole complaint — and the deposit splits per the targets.
 // ─────────────────────────────────────────────────────────────────────────
 {
   const p = planRebalance({ holdings: H, cash: CASH, deposit: 4000, mode: "both" });
-  near("[both] spends exactly the deposit, net", p.rows.reduce((s, r) => s + r.tradeDollar, 0), 4000, 1e-9);
-  near("[both] every holding lands on target", p.maxDriftAfter, 0, 1e-9);
-  for (const r of p.rows) near(`[both] ${r.ticker} ends at $3,500 of $15,000`, r.afterPct, (3500 / 15000) * 100, 1e-9);
+  near("[deposit] total counts the deposit", p.totalValue, 15000);
+  near("[deposit] cash on hand includes it", p.cashNow, 5000);
+
+  for (const r of p.rows) {
+    near(`[deposit] ${r.ticker} target is UNCHANGED by the deposit`, r.targetPct, 22.5);
+    near(`[deposit] ${r.ticker} ends on target`, r.afterPct, 22.5, 1e-9);
+    near(`[deposit] ${r.ticker} target value is 22.5% of $15,000`, r.value + r.tradeDollar, 3375, 1e-9);
+  }
+  near("[deposit] every gap closes", p.maxDriftAfter, 0, 1e-9);
+
+  // 10% of $15,000 = $1,500 stays in cash, so $3,500 of the $5,000 on hand
+  // goes into securities — the deposit is split, not blindly all invested.
+  near("[deposit] cash lands on its 10% target", p.cashAfter, 1500, 1e-9);
+  near("[deposit] so $3,500 is deployed", p.cashDeployed, 3500, 1e-9);
+  near("[deposit] and the cash % is exactly the target", p.cashPctAfter, 10, 1e-9);
+  near("[deposit] trades net to the cash deployed", p.rows.reduce((s, r) => s + r.tradeDollar, 0), 3500, 1e-9);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 3. Same deposit, buy only. Nothing is sold; spare cash level-fills.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const p = planRebalance({ holdings: H, cash: CASH, deposit: 4000, mode: "buy-only" });
+  ok("[buy-only] nothing is sold", p.rows.every((r) => r.tradeDollar >= 0));
+  near("[buy-only] investable cash is what sits above the cash target", p.investableCash, 3500, 1e-9);
+  near("[buy-only] and it spends all of it", p.cashDeployed, 3500, 1e-9);
+  near("[buy-only] leaving the cash target", p.cashAfter, 1500, 1e-9);
+  near("[buy-only] turnover is the full buy side, not half of it", p.turnover, 3500, 1e-9);
+
+  // AAA is already at $5,000 > its $3,375 target, so it gets nothing and the
+  // level fill splits $3,500 among the other three.
   const by = Object.fromEntries(p.rows.map((r) => [r.ticker, r]));
-  ok("[both] AAA is sold down", by.AAA.tradeDollar < 0);
-  near("[both] AAA sells to its target", by.AAA.tradeDollar, -1500, 1e-9);
-  // Buys 1000+2000+2500 = 5500, sells 1500 (net = the 4,000 deposit) → the
-  // one-way figure is the buy side. Σ|trade|÷2 would say 3,500 here, which is
-  // why turnover can't stay halved once cash enters the plan.
-  near("[both] turnover = max(buys, sells)", p.turnover, 5500, 1e-9);
-  near("[both] idle cash untouched", p.cashAfter, 1000, 1e-9);
+  near("[buy-only] AAA (overweight) gets nothing", by.AAA.tradeDollar, 0);
+  ok("[buy-only] AAA is left above target", by.AAA.driftAfterPct > 0.05);
+  ok("[buy-only] and the shortfall is reported", p.maxDriftAfter > 0.05);
+  // Level = (3500 + 2500+1500+1000) / 0.675 = $12,592.59 → each ends at 22.5%
+  // of that = $2,833.33.
+  for (const t of ["BBB", "CCC", "DDD"]) {
+    near(`[buy-only] ${t} filled to the common level`, by[t].value + by[t].tradeDollar, 2833.3333333, 1e-4);
+  }
+  near("[buy-only] the three buys sum to the cash", by.BBB.tradeDollar + by.CCC.tradeDollar + by.DDD.tradeDollar, 3500, 1e-6);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 4. Deploying existing idle cash instead of depositing.
+// 4. Fully invested (targets sum to 100) → all the cash is deployed.
 // ─────────────────────────────────────────────────────────────────────────
 {
-  const p = planRebalance({ holdings: H, cash: CASH, idleDeploy: 1000, mode: "buy-only" });
-  near("[idle] account total is unchanged", p.totalValue, TOTAL);
-  near("[idle] cash on hand is unchanged", p.cashNow, CASH);
-  near("[idle] cash is drained", p.cashAfter, 0, 1e-9);
-  near("[idle] all of it is spent", p.cashDeployed, 1000, 1e-9);
-  near("[idle] invested sleeve grows by it", p.investedAfter, 11000);
+  const full: RebalanceHolding[] = H.map((h) => ({ ...h, targetShown: 25 }));
+  const p = planRebalance({ holdings: full, cash: CASH, mode: "both" });
+  near("[full] no cash target", p.cashTargetPct, 0);
+  near("[full] cash is drained", p.cashAfter, 0, 1e-9);
+  near("[full] all $1,000 deployed", p.cashDeployed, 1000, 1e-9);
+  for (const r of p.rows) near(`[full] ${r.ticker} ends at 25%`, r.afterPct, 25, 1e-9);
 
-  const half = planRebalance({ holdings: H, cash: CASH, idleDeploy: 400, mode: "buy-only" });
-  near("[idle] partial deploy spends only what was asked", half.cashDeployed, 400, 1e-9);
-  near("[idle] the rest stays in cash", half.cashAfter, 600, 1e-9);
-
-  const over = planRebalance({ holdings: H, cash: CASH, idleDeploy: 9999, mode: "buy-only" });
-  near("[idle] a request above the balance is clamped", over.cashDeployed, CASH, 1e-9);
-  near("[idle] cash can't go negative", over.cashAfter, 0, 1e-9);
+  const dep = planRebalance({ holdings: full, cash: CASH, deposit: 4000, mode: "buy-only" });
+  near("[full] with a deposit the whole $5,000 is investable", dep.investableCash, 5000, 1e-9);
+  near("[full] and buy-only spends it all", dep.cashDeployed, 5000, 1e-9);
+  near("[full] cash ends at zero", dep.cashAfter, 0, 1e-9);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 5. Level-filling behaviour: order of filling, and enough cash to catch up.
+// 5. Level-filling order — the money goes to the most underweight first.
 // ─────────────────────────────────────────────────────────────────────────
 {
-  // A tiny deposit must land entirely on the single most underweight name
-  // (DDD at ratio 1000/0.25 = 4,000, vs CCC at 6,000) and stop when it
-  // reaches CCC's ratio: DDD needs (6000−4000)×0.25 = $500 to catch up.
-  const small = planRebalance({ holdings: H, cash: CASH, deposit: 300, mode: "buy-only" });
+  // Ratios value÷target: AAA 22222, BBB 11111, CCC 6666, DDD 4444. DDD is the
+  // most underweight; it needs (6666.67−4444.44)×0.225 = $500 to catch CCC.
+  const small = planRebalance({ holdings: H, cash: CASH, deposit: 1300, mode: "buy-only" });
   const s = Object.fromEntries(small.rows.map((r) => [r.ticker, r]));
-  near("[fill] a small deposit goes only to the most underweight", s.DDD.tradeDollar, 300, 1e-9);
-  ok("[fill] nobody else is touched", s.AAA.tradeDollar === 0 && s.BBB.tradeDollar === 0 && s.CCC.tradeDollar === 0);
+  near("[fill] investable = 2300 on hand − 10% of 12,300", small.investableCash, 1070, 1e-9);
+  ok("[fill] DDD (most underweight) gets the most", s.DDD.tradeDollar > s.CCC.tradeDollar);
+  ok("[fill] CCC next", s.CCC.tradeDollar > s.BBB.tradeDollar);
+  ok("[fill] AAA, already over target, gets nothing", s.AAA.tradeDollar === 0);
+  near("[fill] and it all gets spent", small.cashDeployed, small.investableCash, 1e-6);
 
-  const exact = planRebalance({ holdings: H, cash: CASH, deposit: 500, mode: "buy-only" });
-  const e = Object.fromEntries(exact.rows.map((r) => [r.ticker, r]));
-  near("[fill] $500 exactly closes DDD's gap to CCC", e.DDD.tradeDollar, 500, 1e-9);
-  near("[fill] CCC still gets nothing at the breakpoint", e.CCC.tradeDollar, 0, 1e-9);
+  // Fully-invested targets, so the whole $200 is investable. DDD is the most
+  // underweight and needs $500 to catch CCC, so all $200 lands on DDD.
+  const tiny = planRebalance({
+    holdings: H.map((h) => ({ ...h, targetShown: 25 })),
+    cash: 0,
+    deposit: 200,
+    mode: "buy-only",
+  });
+  const t = Object.fromEntries(tiny.rows.map((r) => [r.ticker, r]));
+  near("[fill] a tiny amount lands only on the most underweight", t.DDD.tradeDollar, 200, 1e-9);
+  ok("[fill] nobody else is touched", t.AAA.tradeDollar === 0 && t.BBB.tradeDollar === 0 && t.CCC.tradeDollar === 0);
 
-  const past = planRebalance({ holdings: H, cash: CASH, deposit: 700, mode: "buy-only" });
-  const q = Object.fromEntries(past.rows.map((r) => [r.ticker, r]));
-  ok("[fill] past the breakpoint CCC joins in", q.CCC.tradeDollar > 0);
-  near("[fill] and DDD+CCC still spend it all", q.CCC.tradeDollar + q.DDD.tradeDollar, 700, 1e-9);
-  ok("[fill] they end level with each other", Math.abs(q.CCC.afterPct - q.DDD.afterPct) < 1e-9);
+  // Below the cash target, buy-only has nothing to spend — raising cash would
+  // mean selling, which it won't do.
+  const short = planRebalance({ holdings: H, cash: 0, deposit: 200, mode: "buy-only" });
+  near("[fill] below the cash target, nothing is investable", short.investableCash, 0);
+  near("[fill] so buy-only places no trades", short.cashDeployed, 0);
+  ok("[fill] but buy & sell will raise the cash", planRebalance({ holdings: H, cash: 0, deposit: 200, mode: "both" }).cashAfter > 200);
 
-  // Enough cash and buy-only converges on the target for everyone.
+  // Enough cash and buy-only converges on every target.
   const huge = planRebalance({ holdings: H, cash: CASH, deposit: 1_000_000, mode: "buy-only" });
   ok("[fill] a large enough deposit closes every gap", huge.maxDriftAfter < 0.05, `drift ${huge.maxDriftAfter}`);
-  near("[fill] and still spends every cent", huge.rows.reduce((s2, r) => s2 + r.tradeDollar, 0), 1_000_000, 1e-6);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 6. Uneven targets — level-filling is per point of target, not per dollar.
+// 6. Over-allocation: past 100% the column is scaled back, and flagged.
 // ─────────────────────────────────────────────────────────────────────────
 {
-  const uneven: RebalanceHolding[] = [
-    { ticker: "BIG", name: "big", value: 1000, targetShown: 80 },
-    { ticker: "SML", name: "small", value: 1000, targetShown: 20 },
-  ];
-  const p = planRebalance({ holdings: uneven, cash: 0, deposit: 1000, mode: "buy-only" });
-  const by = Object.fromEntries(p.rows.map((r) => [r.ticker, r]));
-  // BIG ratio 1250, SML ratio 5000 → only BIG is under. Level = (1000+1000)/0.8
-  // = 2500 → BIG buys 2500×0.8 − 1000 = $1,000. SML gets nothing.
-  near("[uneven] the whole deposit goes to the underweight target", by.BIG.tradeDollar, 1000, 1e-9);
-  near("[uneven] the over-target name gets nothing", by.SML.tradeDollar, 0, 1e-9);
-  ok("[uneven] SML is still above its target", by.SML.driftAfterPct > 0.05);
+  const over: RebalanceHolding[] = H.map((h) => ({ ...h, targetShown: 50 })); // sums to 200
+  const p = planRebalance({ holdings: over, cash: CASH, mode: "both" });
+  ok("[over] flagged", p.overAllocated);
+  near("[over] the raw sum is still reported", p.targetSum, 200);
+  for (const r of p.rows) near(`[over] ${r.ticker} scaled to fit`, r.targetPct, 25);
+  near("[over] no cash target is left", p.cashTargetPct, 0);
+  near("[over] cash is fully deployed, never negative", p.cashAfter, 0, 1e-9);
+  ok("[over] and cash can't go below zero", p.cashAfter >= -1e-9);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 7. Targets are normalized, not read as literal percents.
+// 7. Degenerate inputs must not produce nonsense.
 // ─────────────────────────────────────────────────────────────────────────
 {
-  const asPct = planRebalance({ holdings: H, cash: CASH, deposit: 2000, mode: "buy-only" });
-  const asRatio = planRebalance({
-    holdings: H.map((h) => ({ ...h, targetShown: h.targetShown * 7.3 })),
-    cash: CASH,
-    deposit: 2000,
-    mode: "buy-only",
-  });
-  ok(
-    "[normalize] scaling every target by 7.3× changes nothing",
-    asPct.rows.every((r, i) => Math.abs(r.tradeDollar - asRatio.rows[i].tradeDollar) < 1e-9),
-  );
-  near("[normalize] targetSum echoes what was typed", asPct.targetSum, 100);
-  near("[normalize] even when it isn't 100", asRatio.targetSum, 730);
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// 7b. Investing cash RAISES every target — and the typed number is not the
-//     target. Carter hit this: After % came out above the number in the
-//     Target box and looked like an overshoot. It isn't. The tool seeds
-//     targets from weightWithCash, so the column sums to riskyFraction×100
-//     (90.91 here), not 100; the deposit then goes entirely into securities
-//     while the idle cash stays put, so the invested sleeve grows as a share
-//     of the account and each target rises with it. The plan still lands
-//     exactly on target — which is the assertion that matters.
-// ─────────────────────────────────────────────────────────────────────────
-{
-  const seeded: RebalanceHolding[] = H.map((h) => ({
-    ...h,
-    targetShown: Math.round((h.value / TOTAL) * 10000) / 100, // 45.45 / 22.73 / 13.64 / 9.09
-  }));
-
-  const flat = planRebalance({ holdings: seeded, cash: CASH, mode: "both" });
-  for (const r of flat.rows) {
-    near(`[basis] ${r.ticker} typed == effective when nothing moves`, r.targetPct, r.targetShown, 0.01);
-  }
-
-  const dep = planRebalance({ holdings: seeded, cash: CASH, deposit: 4000, mode: "both" });
-  near("[basis] the sleeve's share of the account grows", dep.investedAfter / dep.totalValue, 14000 / 15000, 1e-9);
-  for (const r of dep.rows) {
-    ok(
-      `[basis] ${r.ticker} target RISES once the deposit is invested`,
-      r.targetPct > r.targetShown,
-      `target ${r.targetPct.toFixed(2)} vs typed ${r.targetShown}`,
-    );
-    // The point: it isn't an overshoot — the plan is dead on the real target.
-    near(`[basis] ${r.ticker} lands exactly on that raised target`, r.afterPct, r.targetPct, 1e-9);
-  }
-  near("[basis] and the plan is still fully funded", dep.maxDriftAfter, 0, 1e-9);
-
-  // Deploying idle cash does the same thing, for the same reason.
-  const idle = planRebalance({ holdings: seeded, cash: CASH, idleDeploy: CASH, mode: "both" });
-  ok("[basis] draining cash raises targets too", idle.rows.every((r) => r.targetPct > r.targetShown));
-  // ≈50, not exactly: the seeded targets are rounded to 2dp, so 45.45/90.91
-  // isn't a clean half.
-  near("[basis] with no cash left, targets are the pure sleeve shares", idle.rows[0].targetPct, 50, 0.01);
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// 8. Degenerate inputs must not produce nonsense.
-// ─────────────────────────────────────────────────────────────────────────
-{
-  const zero = planRebalance({
-    holdings: H.map((h) => ({ ...h, targetShown: 0 })),
-    cash: CASH,
-    deposit: 500,
-    mode: "buy-only",
-  });
-  near("[edge] no targets → nothing bought", zero.cashDeployed, 0);
-  near("[edge] and the cash is reported as unplaced", zero.cashLeftOver, 500);
-  near("[edge] it all stays in cash", zero.cashAfter, 1500);
+  const zero = planRebalance({ holdings: H.map((h) => ({ ...h, targetShown: 0 })), cash: CASH, deposit: 500, mode: "buy-only" });
+  near("[edge] no targets → 100% cash target", zero.cashTargetPct, 100);
+  near("[edge] so nothing is bought", zero.cashDeployed, 0);
+  near("[edge] and nothing is investable", zero.investableCash, 0);
 
   const empty = planRebalance({ holdings: [], cash: 500, deposit: 100, mode: "buy-only" });
   ok("[edge] no holdings → no rows", empty.rows.length === 0);
   near("[edge] no holdings → nothing deployed", empty.cashDeployed, 0);
   near("[edge] no holdings → drift is zero, not NaN", empty.maxDrift, 0);
 
-  const noCash = planRebalance({ holdings: H, cash: 0 });
+  const noCash = planRebalance({ holdings: H.map((h) => ({ ...h, targetShown: 25 })), cash: 0 });
   near("[edge] cash-free account still rebalances", noCash.totalValue, 10000);
-  near("[edge] cash-free targetPct is the raw sleeve share", noCash.rows[0].targetPct, 25);
+  near("[edge] cash-free targets are literal too", noCash.rows[0].targetPct, 25);
 
-  const negative = planRebalance({ holdings: H, cash: CASH, deposit: -500, idleDeploy: -20 });
-  near("[edge] negative deposit is floored at 0", negative.cashToInvest, 0);
-  near("[edge] negative deposit doesn't shrink the account", negative.totalValue, TOTAL);
+  const negative = planRebalance({ holdings: H, cash: CASH, deposit: -500 });
+  near("[edge] negative deposit is floored at 0", negative.totalValue, TOTAL);
+
+  const negTarget = planRebalance({ holdings: H.map((h) => ({ ...h, targetShown: -5 })), cash: CASH });
+  near("[edge] negative targets are floored at 0", negTarget.rows[0].targetPct, 0);
 
   const noMoney = planRebalance({ holdings: [], cash: 0 });
   near("[edge] an empty account is all zeros, not NaN", noMoney.cashPct, 0);
@@ -273,7 +214,7 @@ const TOTAL = 11000; // 10,000 invested + 1,000 cash
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 9. Invariants over randomized inputs.
+// 8. Invariants over randomized inputs.
 // ─────────────────────────────────────────────────────────────────────────
 {
   let bad = 0;
@@ -286,24 +227,27 @@ const TOTAL = 11000; // 10,000 invested + 1,000 cash
       ticker: `T${i}`,
       name: `T${i}`,
       value: rnd() * 20000,
-      targetShown: rnd() < 0.15 ? 0 : rnd() * 100,
+      targetShown: rnd() < 0.15 ? 0 : (rnd() * 140) / n, // sometimes over-allocates
     }));
     const cash = rnd() * 5000;
     const deposit = rnd() < 0.3 ? 0 : rnd() * 20000;
-    const idleDeploy = rnd() * cash;
     const mode = rnd() < 0.5 ? "buy-only" : "both";
-    const p = planRebalance({ holdings: hs, cash, deposit, idleDeploy, mode });
+    const p = planRebalance({ holdings: hs, cash, deposit, mode });
     const scale = Math.max(1, p.totalValue);
 
     const weights = p.rows.reduce((s, r) => s + r.afterPct, 0) + p.cashPctAfter;
     if (p.totalValue > 0 && Math.abs(weights - 100) > 1e-6) bad++;
     if (Math.abs(p.cashAfter - (p.cashNow - p.cashDeployed)) > 1e-9 * scale) bad++;
-    if (p.cashAfter < -1e-9 * scale) bad++;
+    if (p.cashAfter < -1e-6 * scale) bad++; // a plan must never overdraw cash
     if (mode === "buy-only" && p.rows.some((r) => r.tradeDollar < -1e-9)) bad++;
-    // Every plan spends the contribution unless there was no target to spend it on.
-    if (p.targetSum > 0 && Math.abs(p.cashDeployed - p.cashToInvest) > 1e-6 * scale) bad++;
+    if (mode === "buy-only" && Math.abs(p.cashDeployed - p.investableCash) > 1e-6 * scale &&
+        p.rows.some((r) => r.targetPct > 0)) bad++;
     if (p.rows.some((r) => !Number.isFinite(r.tradeDollar) || !Number.isFinite(r.afterPct))) bad++;
-    if (mode === "both" && p.targetSum > 0 && p.maxDriftAfter > 1e-6) bad++;
+    // Buy & sell always lands every holding AND the cash on target.
+    if (mode === "both" && p.maxDriftAfter > 1e-6) bad++;
+    if (mode === "both" && Math.abs(p.cashPctAfter - p.cashTargetPct) > 1e-6) bad++;
+    if (Math.abs(p.targetSum * (p.overAllocated ? 100 / p.targetSum : 1) + p.cashTargetPct - 100) > 1e-6
+        && p.rows.length > 0) bad++;
     if (p.turnover < -1e-9) bad++;
   }
   ok("[random] 400 randomized plans hold every invariant", bad === 0, `${bad} violations`);

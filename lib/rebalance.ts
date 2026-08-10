@@ -2,7 +2,7 @@
 export const TRADE_EPS = 1;
 
 /** How the plan is allowed to trade.
- *  - `buy-only`: nothing is sold. Cash is spread across the underweight
+ *  - `buy-only`: nothing is sold. Spare cash is spread across the underweight
  *    holdings, most underweight first — the "I just deposited money" case.
  *  - `both`: buys and sells freely to land every holding on its target. */
 export type RebalanceMode = "buy-only" | "both";
@@ -12,8 +12,7 @@ export interface RebalanceHolding {
   name: string;
   /** Current market value of the position in this account. */
   value: number;
-  /** The number the user typed. Read as a share of the other entries, not as
-   *  an absolute percent — the column need not sum to 100 by hand. */
+  /** The target the user typed: a percent OF THE WHOLE ACCOUNT, cash included. */
   targetShown: number;
 }
 
@@ -23,8 +22,6 @@ export interface RebalanceInput {
   cash: number;
   /** New money being added to the account. Raises the account total. */
   deposit?: number;
-  /** How much of the EXISTING `cash` to put to work. Clamped to [0, cash]. */
-  idleDeploy?: number;
   mode?: RebalanceMode;
 }
 
@@ -34,9 +31,10 @@ export interface RebalanceRow {
   value: number;
   /** Percent of the account today, counting a pending deposit as cash. */
   currentPct: number;
-  /** The number the user typed, echoed back for the input. */
+  /** The number the user typed. */
   targetShown: number;
-  /** Normalized target as a percent of the whole account. */
+  /** The target actually used. Equals `targetShown` unless the column was
+   *  over-allocated (summed past 100) and had to be scaled back. */
   targetPct: number;
   /** currentPct − targetPct. Positive = overweight. */
   driftPct: number;
@@ -52,6 +50,12 @@ export interface RebalancePlan {
   rows: RebalanceRow[];
   /** Sum of the entered target numbers — the "targets sum" readout. */
   targetSum: number;
+  /** The share of the account left over for cash: 100 − targetSum, floored at
+   *  0. This is a real target, not a remainder the plan ignores. */
+  cashTargetPct: number;
+  /** True when the entered targets summed past 100 and were scaled back to fit
+   *  — you can't hold more than the whole account. */
+  overAllocated: boolean;
   /** Largest |drift| before trading. */
   maxDrift: number;
   /** Largest |drift| left once the plan runs. ~0 unless buy-only fell short. */
@@ -59,10 +63,9 @@ export interface RebalancePlan {
   nTrades: number;
   /** One-way dollars traded = max(total buys, total sells). */
   turnover: number;
-  /** Total account value, deposit included, before and after — they're equal;
-   *  a plan only moves money between the cash and invested sleeves. */
+  /** Total account value, deposit included. A plan only moves money between
+   *  the cash and invested sleeves, so it's the same before and after. */
   totalValue: number;
-  /** Market value of the invested sleeve today and after the plan. */
   investedBefore: number;
   investedAfter: number;
   /** Cash on hand once the deposit lands, and what's left after the plan. */
@@ -70,59 +73,64 @@ export interface RebalancePlan {
   cashAfter: number;
   cashPct: number;
   cashPctAfter: number;
-  /** Cash the plan was asked to put to work = deposit + idle cash deployed. */
-  cashToInvest: number;
-  /** Cash the plan actually spends (net of any sells). */
+  /** Dollars of cash the plan puts into securities (net of any sells). */
   cashDeployed: number;
-  /** Contribution the plan couldn't place — only nonzero if every target is 0. */
-  cashLeftOver: number;
+  /** Cash above the cash target — what buy-only has to work with. */
+  investableCash: number;
 }
 
-const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
-
 /**
- * One definition of the rebalance plan, shared by every mode so the cash and
- * no-cash paths can't drift apart.
+ * One definition of the rebalance plan, shared by both modes so they can't
+ * drift apart.
  *
- * Everything is expressed against ONE denominator: the account's total value
- * with a pending deposit counted as cash already sitting in it. That keeps
- * Current %, Target %, and After % on the same basis — a deposit shows up as
- * the cash row swelling and every holding diluting, which is exactly the drift
- * the plan then closes. With no deposit and no idle cash deployed this reduces
- * to a straight rebalance of the invested sleeve, identical to the numbers the
- * tool produced before cash was modeled at all.
+ * A target is a percent OF THE WHOLE ACCOUNT, cash included — type 45 and you
+ * are asking for 45% of everything in the account, not 45% of the invested
+ * part. Targets are used exactly as entered; they are never renormalized to
+ * sum to 100. That is what makes **cash a first-class target**: whatever share
+ * of the account you don't allocate is the share meant to stay in cash. Enter
+ * targets summing to 90 and you're asking to hold 10% cash; enter 100 and
+ * you're asking to be fully invested.
  *
- * Cash is never a target: it's what funds the plan, not a holding to hit a
- * weight on. Whatever isn't deployed simply stays in cash.
+ * A deposit counts as cash from the moment it's entered, so it raises the
+ * account total and dilutes every holding — and the plan then closes exactly
+ * that gap, splitting the new money between securities and cash in whatever
+ * proportion your targets imply.
  */
 export function planRebalance(input: RebalanceInput): RebalancePlan {
   const holdings = input.holdings;
   const cash = Math.max(0, input.cash);
   const deposit = Math.max(0, input.deposit ?? 0);
-  const idleDeploy = clamp(input.idleDeploy ?? 0, 0, cash);
   const mode = input.mode ?? "both";
 
   const investedBefore = holdings.reduce((s, h) => s + h.value, 0);
   const cashNow = cash + deposit;
   const totalValue = investedBefore + cashNow;
-  const cashToInvest = deposit + idleDeploy;
-  // Both modes intend to put the whole contribution to work, so this is the
-  // sleeve the targets are measured against either way. Buy-only can leave
-  // some of it unplaced (see cashLeftOver); the target it aimed at doesn't
-  // move because of that — that's what makes the shortfall visible.
-  const investedAfter = investedBefore + cashToInvest;
 
-  const targetSum = holdings.reduce((s, h) => s + h.targetShown, 0);
-  const fracs = holdings.map((h) => (targetSum > 0 ? h.targetShown / targetSum : 0));
+  const targetSum = holdings.reduce((s, h) => s + Math.max(0, h.targetShown), 0);
+  // You can't hold more than the whole account. Past 100 the entries are read
+  // as relative weights of a fully-invested account rather than refused, so
+  // the plan stays executable — the UI says so out loud.
+  const overAllocated = targetSum > 100;
+  const scale = overAllocated ? 100 / targetSum : 1;
+
+  const pcts = holdings.map((h) => Math.max(0, h.targetShown) * scale);
+  const cashTargetPct = Math.max(0, 100 - pcts.reduce((s, p) => s + p, 0));
+
+  const targetValues = pcts.map((p) => (p / 100) * totalValue);
+  const cashTargetValue = (cashTargetPct / 100) * totalValue;
+  // What buy-only may spend: cash sitting above the cash target. Negative
+  // means the account is already short of its cash target, and raising cash
+  // would mean selling — which buy-only won't do.
+  const investableCash = Math.max(0, cashNow - cashTargetValue);
 
   const trades =
     mode === "buy-only"
       ? waterFillBuys(
           holdings.map((h) => h.value),
-          fracs,
-          cashToInvest,
+          pcts.map((p) => p / 100),
+          investableCash,
         )
-      : holdings.map((h, i) => fracs[i] * investedAfter - h.value);
+      : holdings.map((h, i) => targetValues[i] - h.value);
 
   let buys = 0;
   let sells = 0;
@@ -138,7 +146,6 @@ export function planRebalance(input: RebalanceInput): RebalancePlan {
   const rows: RebalanceRow[] = holdings
     .map((h, i) => {
       const currentPct = pct(h.value);
-      const targetPct = pct(fracs[i] * investedAfter);
       const afterPct = pct(h.value + trades[i]);
       return {
         ticker: h.ticker,
@@ -146,11 +153,11 @@ export function planRebalance(input: RebalanceInput): RebalancePlan {
         value: h.value,
         currentPct,
         targetShown: h.targetShown,
-        targetPct,
-        driftPct: currentPct - targetPct,
+        targetPct: pcts[i],
+        driftPct: currentPct - pcts[i],
         tradeDollar: trades[i],
         afterPct,
-        driftAfterPct: afterPct - targetPct,
+        driftAfterPct: afterPct - pcts[i],
       };
     })
     .sort((a, b) => b.currentPct - a.currentPct);
@@ -158,23 +165,24 @@ export function planRebalance(input: RebalanceInput): RebalancePlan {
   return {
     rows,
     targetSum,
+    cashTargetPct,
+    overAllocated,
     maxDrift: rows.reduce((m, r) => Math.max(m, Math.abs(r.driftPct)), 0),
     maxDriftAfter: rows.reduce((m, r) => Math.max(m, Math.abs(r.driftAfterPct)), 0),
     nTrades: trades.filter((t) => Math.abs(t) > TRADE_EPS).length,
-    // Buys and sells net out in `both` mode, so this matches the classic
-    // Σ|trade| ÷ 2. In buy-only there is nothing to net against and the halved
-    // figure would understate the plan by exactly half.
+    // Buys and sells net out only when no cash moves, so this can't be the
+    // classic Σ|trade| ÷ 2 — halving it would understate a plan that is
+    // mostly (or entirely) funded by cash.
     turnover: Math.max(buys, sells),
     totalValue,
     investedBefore,
-    investedAfter,
+    investedAfter: investedBefore + cashDeployed,
     cashNow,
     cashAfter,
     cashPct: pct(cashNow),
     cashPctAfter: pct(cashAfter),
-    cashToInvest,
     cashDeployed,
-    cashLeftOver: cashToInvest - cashDeployed,
+    investableCash,
   };
 }
 
