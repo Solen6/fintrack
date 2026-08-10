@@ -199,6 +199,48 @@ const TOTAL = 11000; // 10,000 invested + 1,000 cash
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// 7b. Investing cash RAISES every target — and the typed number is not the
+//     target. Carter hit this: After % came out above the number in the
+//     Target box and looked like an overshoot. It isn't. The tool seeds
+//     targets from weightWithCash, so the column sums to riskyFraction×100
+//     (90.91 here), not 100; the deposit then goes entirely into securities
+//     while the idle cash stays put, so the invested sleeve grows as a share
+//     of the account and each target rises with it. The plan still lands
+//     exactly on target — which is the assertion that matters.
+// ─────────────────────────────────────────────────────────────────────────
+{
+  const seeded: RebalanceHolding[] = H.map((h) => ({
+    ...h,
+    targetShown: Math.round((h.value / TOTAL) * 10000) / 100, // 45.45 / 22.73 / 13.64 / 9.09
+  }));
+
+  const flat = planRebalance({ holdings: seeded, cash: CASH, mode: "both" });
+  for (const r of flat.rows) {
+    near(`[basis] ${r.ticker} typed == effective when nothing moves`, r.targetPct, r.targetShown, 0.01);
+  }
+
+  const dep = planRebalance({ holdings: seeded, cash: CASH, deposit: 4000, mode: "both" });
+  near("[basis] the sleeve's share of the account grows", dep.investedAfter / dep.totalValue, 14000 / 15000, 1e-9);
+  for (const r of dep.rows) {
+    ok(
+      `[basis] ${r.ticker} target RISES once the deposit is invested`,
+      r.targetPct > r.targetShown,
+      `target ${r.targetPct.toFixed(2)} vs typed ${r.targetShown}`,
+    );
+    // The point: it isn't an overshoot — the plan is dead on the real target.
+    near(`[basis] ${r.ticker} lands exactly on that raised target`, r.afterPct, r.targetPct, 1e-9);
+  }
+  near("[basis] and the plan is still fully funded", dep.maxDriftAfter, 0, 1e-9);
+
+  // Deploying idle cash does the same thing, for the same reason.
+  const idle = planRebalance({ holdings: seeded, cash: CASH, idleDeploy: CASH, mode: "both" });
+  ok("[basis] draining cash raises targets too", idle.rows.every((r) => r.targetPct > r.targetShown));
+  // ≈50, not exactly: the seeded targets are rounded to 2dp, so 45.45/90.91
+  // isn't a clean half.
+  near("[basis] with no cash left, targets are the pure sleeve shares", idle.rows[0].targetPct, 50, 0.01);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // 8. Degenerate inputs must not produce nonsense.
 // ─────────────────────────────────────────────────────────────────────────
 {

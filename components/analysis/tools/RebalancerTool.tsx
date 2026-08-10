@@ -94,12 +94,26 @@ export function RebalancerTool() {
             <p>
               Each account above is its own sleeve, rebalanced independently. Every percentage is a
               share of that account&apos;s <em>total</em> value — invested holdings plus cash — so
-              the columns always add up to the whole account. Target % is what you type, normalized
-              to sum to 100 <em>within that account&apos;s invested sleeve</em> and then scaled down
-              by whatever share of the account is left sitting in cash. Drift is
-              current&nbsp;% − target&nbsp;%, and the trade for a holding is the dollar move that
-              lands it on that target: positive is a buy, negative a sell. Turnover is the larger of
-              total buys and total sells (the one-way figure), and a move under $
+              the columns always add up to the whole account.
+            </p>
+            <p>
+              <strong>The two numbers in the Target column.</strong> The box is what you type: a
+              share of the invested sleeve, read <em>relative to the other entries</em>, so the
+              column doesn&apos;t have to add to 100 by hand. The smaller figure beneath it is what
+              that works out to as a percent of the whole account — the column normalized to sum to
+              100 within the sleeve, then scaled down by whatever share of the account is left
+              sitting in cash. <strong>That lower figure is the real target</strong>: Drift and
+              After&nbsp;% are both measured against it, and the trades aim at it. The two match
+              only by coincidence — they line up exactly when your targets are still the current
+              weights and no cash is being moved, and they separate as soon as either changes.{" "}
+              <em>
+                In particular, investing cash raises every holding&apos;s target: the money goes
+                into securities and not into cash, so the invested sleeve becomes a larger share of
+                the account and each target rises with it.
+              </em>{" "}
+              Drift is current&nbsp;% − target&nbsp;%, and the trade for a holding is the dollar
+              move that lands it on that target: positive is a buy, negative a sell. Turnover is the
+              larger of total buys and total sells (the one-way figure), and a move under $
               {TRADE_EPS.toFixed(0)} is treated as no trade.
             </p>
             <p>
@@ -446,16 +460,30 @@ function AccountRebalancePanel({ account }: { account: string }) {
                           {formatPercent(r.currentPct, false)}
                         </td>
                         <td className="py-1.5 text-right">
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.1"
-                            inputMode="decimal"
-                            aria-label={`Target weight for ${r.ticker} in ${account}`}
-                            value={r.targetShown}
-                            onChange={(e) => onTargetChange(r.ticker, e.target.value)}
-                            className="w-20 rounded-sm border border-border bg-card px-2 py-1 text-right font-mono text-[12px] tabular-nums outline-none focus:border-[oklch(0.72_0.14_74_/_0.5)]"
-                          />
+                          <div className="flex flex-col items-end gap-0.5">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.1"
+                              inputMode="decimal"
+                              aria-label={`Target weight for ${r.ticker} in ${account}`}
+                              value={r.targetShown}
+                              onChange={(e) => onTargetChange(r.ticker, e.target.value)}
+                              className="w-20 rounded-sm border border-border bg-card px-2 py-1 text-right font-mono text-[12px] tabular-nums outline-none focus:border-[oklch(0.72_0.14_74_/_0.5)]"
+                            />
+                            {/* What the typed number actually works out to once
+                                it's normalized against the other entries and
+                                measured against the whole account — the figure
+                                Current %, Drift and After % are all compared to.
+                                Only equals the input by coincidence. */}
+                            <span
+                              className="text-[10.5px]"
+                              style={{ color: CHART.muted }}
+                              title={`${r.ticker}'s target as a share of the whole account, after normalizing the column (which sums to ${model.targetSum.toFixed(1)}) and setting aside the cash that isn't being invested. This is what Drift and After % measure against.`}
+                            >
+                              = {formatPercent(r.targetPct, false)}
+                            </span>
+                          </div>
                         </td>
                         <td className="py-1.5 text-right" style={{ color: driftColor }}>
                           {formatPercent(r.driftPct)}
