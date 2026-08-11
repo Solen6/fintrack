@@ -7,16 +7,23 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   type Row = Record<string, unknown>;
+  /* Coupons ride the same ledger as dividends (action_type 'coupon', written by
+     lib/bond-lifecycle.ts) and belong on the same income surface, so they're
+     read together. Only the READ is widened: the correction and manual-entry
+     routes still filter action_type = 'dividend', so none of the DRIP-toggle /
+     edit machinery can reach a coupon row — a coupon has no reinvestment
+     choice to correct. Redemptions are deliberately excluded: returned
+     principal is not income. */
   const read = (cols: string) =>
     supabase
       .from("applied_corporate_actions")
       .select(cols)
       .eq("user_id", user.id)
-      .eq("action_type", "dividend")
+      .in("action_type", ["dividend", "coupon"])
       .order("effective_date", { ascending: false });
 
   const BASE =
-    "id, holding_id, effective_date, detail, ticker, name, amount, reinvested, shares_delta, cash_delta, account, is_manual";
+    "id, holding_id, action_type, effective_date, detail, ticker, name, amount, reinvested, shares_delta, cash_delta, account, is_manual";
 
   let { data, error } = await read(`${BASE}, pay_date`);
   // Pre-migration (supabase/dividend-pay-date.sql not run yet) → retry without
@@ -43,6 +50,11 @@ export async function GET() {
     // Use real UUID if available (post-migration), fall back to composite key.
     id: (r.id as string | null) ?? `${r.holding_id}-${r.effective_date}`,
     holdingId: r.holding_id as string,
+    /* 'dividend' | 'coupon'. The client keys off this to label the row and,
+       more importantly, to know that everything from the ledger has actually
+       been PAID — it only projects coupons forward from today, so a projected
+       and a recorded coupon can never both count the same payment. */
+    kind: ((r.action_type as string | null) ?? "dividend") as "dividend" | "coupon",
     /* `date` is the row's INCOME date — the pay date when we know it, so the
        history sorts and reports on when the cash actually landed. The ex-date
        stays available separately; it's the entitlement date, not income. */

@@ -12,8 +12,6 @@ interface Props {
 
 const TYPE_LABEL: Record<string, string> = {
   treasury: "Treasury",
-  corporate: "Corporate",
-  muni: "Municipal",
   agency: "Agency",
   cd: "CD",
   etf: "ETF / Fund",

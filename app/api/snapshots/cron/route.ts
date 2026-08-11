@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { fetchQuotes } from "@/lib/finnhub";
 import { isMarketDay } from "@/lib/market-calendar";
 import { applyCorporateActionsWindow } from "@/lib/corporate-actions";
+import { applyBondLifecycle } from "@/lib/bond-lifecycle";
 import { generateMonthlyReports } from "@/lib/monthly-reports";
 import { computeBondMarks, type BondRow } from "@/lib/bond-marks";
 import { computeDerivativeMarks, type DerivativeRow } from "@/lib/derivative-marks";
@@ -73,6 +74,19 @@ async function run() {
     corporateActions = { error: "corporate actions failed" };
   }
 
+  // Then the fixed-income side of the same idea: pay coupons that have come
+  // due and redeem anything that matured. Also before the snapshot, since a
+  // redemption deletes the holding and moves its face value into cash — the
+  // read below has to see the post-redemption state. Unlike the corporate
+  // action sweep this needs no look-back window: coupon dates come from the
+  // bond's own terms, so it pays whatever the ledger says is still owed.
+  let bondLifecycle = null;
+  try {
+    bondLifecycle = await applyBondLifecycle(db, today);
+  } catch {
+    bondLifecycle = { error: "bond lifecycle failed" };
+  }
+
   // Pull every holding + cash balance in one shot each, then group per user.
   // RLS is bypassed by the service-role client.
   const [{ data: holdings, error }, { data: cashRows }] = await Promise.all([
@@ -94,7 +108,7 @@ async function run() {
     } catch {
       monthlyReports = { error: "monthly reports failed" };
     }
-    return { users: 0, captured: 0, corporateActions, monthlyReports };
+    return { users: 0, captured: 0, corporateActions, bondLifecycle, monthlyReports };
   }
 
   // One Finnhub call per unique ticker across all users (fetchQuotes caches
@@ -211,7 +225,7 @@ async function run() {
     monthlyReports = { error: "monthly reports failed" };
   }
 
-  return { users, captured, date: today, corporateActions, frontierSnapshots, monthlyReports };
+  return { users, captured, date: today, corporateActions, bondLifecycle, frontierSnapshots, monthlyReports };
 }
 
 export async function GET(request: NextRequest) {

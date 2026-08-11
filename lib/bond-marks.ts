@@ -5,11 +5,14 @@
  *
  * "Smart auto" pricing by bond_type:
  *   • treasury / agency → discount cash flows at the interpolated Treasury curve
- *   • corporate / muni  → hold at cost, unless a manual mark or explicit
- *                         curve+spread is set (no reliable free credit feed)
  *   • cd                → par (held to maturity, non-tradable)
  *   • etf               → NOT handled here — priced by the normal /api/quotes path
  * A `manual` price_source always wins; `cost` forces hold-at-cost.
+ *
+ * Corporates and munis were removed from the app on 2026-08-10: pricing them
+ * needs a credit-spread feed no free source provides, so they could only ever
+ * be held at cost. The hold-at-cost fallback below survives them — it is still
+ * the correct answer whenever the Treasury curve itself is unreachable.
  */
 
 import { bondAnalytics, priceAtYield, yearsToMaturity, type BondSpec } from "./bond-math";
@@ -59,7 +62,9 @@ function cleanPriceFor(row: BondRow, curve: TreasuryCurve | null, asOf: Date): {
     if (Number.isFinite(clean) && clean > 0) return { clean, source: source === "curve" ? "curve" : "auto" };
   }
 
-  // corporate / muni with no manual mark, or any bond when the curve is down.
+  // Curve unreachable (both the Treasury feed and the Yahoo fallback failed),
+  // or a bond type with no curve of its own — hold at cost so value and gain
+  // still compute rather than collapsing to zero.
   return { clean: costClean, source: "cost" };
 }
 

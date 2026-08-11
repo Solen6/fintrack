@@ -1,7 +1,12 @@
 export type AccountType = string;
 
 export type InstrumentType = "equity" | "bond" | "option" | "future";
-export type BondType = "treasury" | "cd" | "corporate" | "muni" | "agency" | "etf";
+/* 'corporate' and 'muni' were dropped 2026-08-10 — with no free credit-spread
+   feed they could only ever be held at cost, so they showed a permanently $0
+   unrealized P&L. The supabase CHECK still accepts them (there are no rows of
+   either, in any account, and a permissive constraint costs nothing); this
+   union is what actually keeps them out of the app. */
+export type BondType = "treasury" | "cd" | "agency" | "etf";
 export type DayCount = "actual/actual" | "30/360" | "actual/365";
 export type BondPriceSource = "auto" | "manual" | "cost" | "curve";
 export type OptionType = "CALL" | "PUT";

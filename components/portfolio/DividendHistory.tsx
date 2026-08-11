@@ -4,50 +4,11 @@ import { Fragment, useState, useEffect, useCallback, useMemo } from "react";
 import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { AddDividendModal } from "./AddDividendModal";
+import { buildIncomeRows, type DividendRecord } from "@/lib/income-rows";
 import type { HoldingWithMetrics } from "@/lib/types";
-
-interface DividendRecord {
-  id: string;
-  holdingId: string;
-  /** Income date — the pay date when known, else the ex-date as a placeholder. */
-  date: string;
-  /** Ex-date: the ownership deadline. Entitlement, not income. */
-  exDate?: string;
-  /** Payable date. Null = not published (every ETF, and history older than the
-      currently-declared dividend) — those rows stay Pending. */
-  payDate?: string | null;
-  /** True only when a pay date is known AND has arrived. */
-  paid?: boolean;
-  ticker: string;
-  name: string | null;
-  amount: number | null;
-  reinvested: boolean | null;
-  detail: string | null;
-  sharesDelta: number;
-  cashDelta: number;
-  account: string | null;
-  isManual: boolean;
-}
-
-/** A unified income event — a real dividend record or a computed bond coupon. */
-interface IncomeRow {
-  key: string;
-  date: string;
-  ticker: string;
-  name: string | null;
-  amount: number | null;
-  account: string | null;
-  kind: "dividend" | "coupon";
-  upcoming?: boolean;
-  dividend?: DividendRecord;
-}
 
 type RowAction = { type: "correct" | "delete"; id: string } | null;
 
-/* ─── Coupon schedule (computed — no coupon ledger yet, Phase 5) ─── */
-function isoUTC(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
 /** "2026-07-31" → "Jul 31". UTC-parsed so a timezone can't shift the day. */
 function shortDate(ds: string): string {
   const [y, m, dd] = ds.split("-").map(Number);
@@ -55,30 +16,8 @@ function shortDate(ds: string): string {
     month: "short", day: "numeric", timeZone: "UTC",
   });
 }
-function addMonthsUTC(date: Date, months: number): Date {
-  const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
-  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
-  target.setUTCDate(Math.min(date.getUTCDate(), lastDay));
-  return target;
-}
-/** Coupon payments for one bond within [start, end], stepping back from maturity. */
-function couponEvents(bond: HoldingWithMetrics, start: Date, end: Date): { date: string; amount: number }[] {
-  const face = bond.shares;
-  const rate = bond.couponRate ?? 0;
-  const freq = bond.couponFreq ?? 2;
-  if (!bond.maturityDate || rate <= 0 || freq <= 0) return [];
-  const perPayment = face * (rate / 100) / freq;
-  const stepMonths = Math.max(1, Math.round(12 / freq));
-  const issue = bond.issueDate ? new Date(`${bond.issueDate.slice(0, 10)}T00:00:00Z`) : null;
-  const out: { date: string; amount: number }[] = [];
-  let d = new Date(`${bond.maturityDate.slice(0, 10)}T00:00:00Z`);
-  for (let i = 0; i < 400 && d.getTime() >= start.getTime(); i++) {
-    if (d.getTime() <= end.getTime() && (!issue || d.getTime() >= issue.getTime())) {
-      out.push({ date: isoUTC(d), amount: perPayment });
-    }
-    d = addMonthsUTC(d, -stepMonths);
-  }
-  return out;
+function isoUTC(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }
 
 /* `bonds` arrives already scoped to the selected account; `account` scopes the
@@ -148,54 +87,17 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
     }
   }
 
-  // Merge dividends + computed coupon payments (past 12mo → next 12mo).
+  /* The merge itself lives in lib/income-rows.ts so the one rule that matters —
+     a coupon appears exactly once, recorded beating projected — is unit-tested
+     rather than eyeballed. */
   const { rows, divTotal, divPending, pendingCount, couponReceived } = useMemo(() => {
     const now = Date.now();
-    const start = new Date(now - 365 * 86_400_000);
-    const end = new Date(now + 365 * 86_400_000);
-    const todayISO = isoUTC(new Date(now));
-
-    /* A dividend is income on its PAY date, not its ex-date. Anything without
-       a pay date that has arrived is `upcoming` — it shows a Pending badge and
-       is excluded from the received total, exactly like an unpaid coupon. */
-    const divRows: IncomeRow[] = dividends.map((d) => ({
-      key: `div-${d.id}`,
-      date: d.date,
-      ticker: d.ticker,
-      name: d.name,
-      amount: d.amount,
-      account: d.account,
-      kind: "dividend",
-      upcoming: d.paid === false,
-      dividend: d,
-    }));
-
-    const couponRows: IncomeRow[] = [];
-    for (const b of bonds) {
-      for (const c of couponEvents(b, start, end)) {
-        couponRows.push({
-          key: `cpn-${b.id}-${c.date}`,
-          date: c.date,
-          ticker: b.ticker,
-          name: b.name,
-          amount: c.amount,
-          account: b.account,
-          kind: "coupon",
-          upcoming: c.date > todayISO,
-        });
-      }
-    }
-
-    const all = [...divRows, ...couponRows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-    // Received vs pending are reported separately rather than one blended
-    // number — money that hasn't been paid out shouldn't inflate income, but it
-    // shouldn't be invisible either.
-    const paidDivs = dividends.filter((d) => d.paid !== false);
-    const unpaidDivs = dividends.filter((d) => d.paid === false);
-    const divTotal = paidDivs.reduce((s, d) => s + (d.amount ?? 0), 0);
-    const divPending = unpaidDivs.reduce((s, d) => s + (d.amount ?? 0), 0);
-    const couponReceived = couponRows.filter((c) => !c.upcoming).reduce((s, c) => s + (c.amount ?? 0), 0);
-    return { rows: all, divTotal, divPending, pendingCount: unpaidDivs.length, couponReceived };
+    return buildIncomeRows({
+      dividends,
+      bonds,
+      today: isoUTC(new Date(now)),
+      horizon: isoUTC(new Date(now + 365 * 86_400_000)),
+    });
   }, [dividends, bonds]);
 
   if (loading) {
@@ -230,8 +132,12 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
             </span>
           )}
           {couponReceived > 0 && (
-            <span className="text-xs font-mono font-medium" style={{ color: "oklch(0.74 0.09 240)" }}>
-              Coupons (12mo): <Sensitive>{formatCurrency(couponReceived)}</Sensitive>
+            <span
+              className="text-xs font-mono font-medium"
+              style={{ color: "oklch(0.74 0.09 240)" }}
+              title="Bond coupons credited to cash. Upcoming payments are listed below but excluded from this total."
+            >
+              Coupons: <Sensitive>{formatCurrency(couponReceived)}</Sensitive>
             </span>
           )}
           <div className="ml-auto">
@@ -250,7 +156,7 @@ export function DividendHistory({ bonds = [], account = "all" }: { bonds?: Holdi
               {account === "all" ? "No income recorded yet." : `No income recorded in ${account}.`}
             </p>
             <p className="text-xs" style={{ color: "oklch(0.52 0.008 74)" }}>
-              Dividends are logged when a holding goes ex-dividend and count as income on their pay date; bond coupons appear from each bond’s schedule.
+              Dividends are logged when a holding goes ex-dividend and count as income on their pay date; bond coupons are credited to cash on each payment date, with the next year’s payments listed ahead of time.
             </p>
           </div>
         ) : (
