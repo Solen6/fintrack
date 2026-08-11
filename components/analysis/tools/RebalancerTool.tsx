@@ -21,6 +21,18 @@ import { HBarList, CHART } from "../charts";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** The target vector for an account: each saved value, falling back to the
+    holding's current weight for any ticker with nothing saved — so a newly
+    bought name defaults sensibly instead of to zero. */
+function seedTargets(
+  assets: { ticker: string; weightWithCash: number }[],
+  saved: Record<string, number>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const a of assets) out[a.ticker] = saved[a.ticker] ?? round2(a.weightWithCash * 100);
+  return out;
+}
+
 /** Reads a money input, treating blank/garbage/negative as nothing entered. */
 function parseMoney(raw: string): number {
   const n = Number(raw);
@@ -137,7 +149,8 @@ export function RebalancerTool() {
             <p>
               Assumptions and limits: each account&apos;s targets persist only once you click{" "}
               <strong>Save targets</strong> for that account — edits before that are local to the
-              browser tab and are lost on reload. The deposit amount is never saved; it is a
+              browser tab and are lost on reload, and <strong>Load saved</strong> discards them and
+              puts the stored targets back. The deposit amount is never saved; it is a
               planning input and resets on reload. Trades are computed against a single
               snapshot of value; execution prices, transaction costs, bid/ask spreads, taxes on
               realized gains, wash-sale rules, tax lots, and fractional-share or round-lot
@@ -192,12 +205,17 @@ function AccountRebalancePanel({ account }: { account: string }) {
   useEffect(() => {
     if (!data || data.empty || data.assets.length === 0) return;
     if (savedTargets === null) return;
-    const init: Record<string, number> = {};
-    for (const a of data.assets) {
-      init[a.ticker] = savedTargets[a.ticker] ?? round2(a.weightWithCash * 100);
-    }
-    setTargets(init);
+    setTargets(seedTargets(data.assets, savedTargets));
   }, [data, savedTargets]);
+
+  /** Put the saved targets back after editing. Shares `seedTargets` with the
+      mount effect above, so this lands on exactly what a page reload would —
+      the button and a refresh can't disagree about what "saved" means. */
+  const loadSaved = () => {
+    if (!data || data.empty || savedTargets === null) return;
+    setTargets(seedTargets(data.assets, savedTargets));
+    setSaveState("idle");
+  };
 
   const saveTargets = async () => {
     setSaveState("saving");
@@ -217,6 +235,24 @@ function AccountRebalancePanel({ account }: { account: string }) {
       setSaveError(e instanceof Error ? e.message : "Failed to save");
     }
   };
+
+  // Whether the edited targets differ from what's actually persisted for this
+  // account. Compared only over the tickers currently held — a saved entry for
+  // a name since sold would otherwise leave the account permanently "unsaved".
+  // A ticker with no saved value at all counts as dirty: there IS something to
+  // write, even though it was seeded from the current weight and looks settled.
+  const dirty = useMemo(() => {
+    if (!data || data.empty || savedTargets === null) return false;
+    return data.assets.some((a) => {
+      const saved = savedTargets[a.ticker];
+      if (saved === undefined) return true;
+      // Inputs step by 0.1 and print to 2dp, so anything under half a cent of
+      // a percent is a float artifact, not an edit.
+      return Math.abs((targets[a.ticker] ?? 0) - saved) > 0.005;
+    });
+  }, [data, savedTargets, targets]);
+
+  const hasSaved = savedTargets !== null && Object.keys(savedTargets).length > 0;
 
   const cashOnHand = data?.cash ?? 0;
   const deposit = parseMoney(depositRaw);
@@ -298,15 +334,14 @@ function AccountRebalancePanel({ account }: { account: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <ToolbarButton onClick={resetToCurrent}>Reset to current</ToolbarButton>
             <ToolbarButton onClick={equalWeight}>Equal weight</ToolbarButton>
-            <ToolbarButton onClick={saveTargets} disabled={saveState === "saving"}>
-              {saveState === "saving" ? "Saving…" : "Save targets"}
-            </ToolbarButton>
-            {saveState === "saved" && (
-              <span className="text-[11.5px]" style={{ color: CHART.positive }}>Saved</span>
-            )}
-            {saveState === "error" && (
-              <span className="text-[11.5px]" style={{ color: CHART.negative }}>{saveError}</span>
-            )}
+            <SaveTargetsControl
+              dirty={dirty}
+              hasSaved={hasSaved}
+              saveState={saveState}
+              saveError={saveError}
+              onLoadSaved={loadSaved}
+              onSave={saveTargets}
+            />
           </div>
         )}
       </div>
@@ -380,18 +415,14 @@ function AccountRebalancePanel({ account }: { account: string }) {
             </p>
           </Panel>
 
-          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
-            {model.overAllocated && (
+          {model.overAllocated && (
+            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
               <span className="text-[11.5px]" style={{ color: CHART.negative }}>
                 Targets add up to more than the whole account — scaled back to 100% to keep the
                 plan executable.
               </span>
-            )}
-            <span className="font-mono text-[11.5px] tabular-nums" style={{ color: CHART.muted }}>
-              targets sum: {model.targetSum.toFixed(1)}% · cash{" "}
-              {model.cashTargetPct.toFixed(1)}%
-            </span>
-          </div>
+            </div>
+          )}
 
           <StatRow>
             <Stat
@@ -595,6 +626,28 @@ function AccountRebalancePanel({ account }: { account: string }) {
                 </tbody>
               </table>
             </div>
+
+            {/* Save sits at the end of the thing it saves. The account header
+                carries the same control, but on an account with a long
+                holdings list it's far off-screen by the time you've finished
+                editing. */}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border pt-3">
+              <span
+                className="font-mono text-[11.5px] tabular-nums"
+                style={{ color: CHART.muted }}
+              >
+                targets sum: {model.targetSum.toFixed(1)}% · cash{" "}
+                {model.cashTargetPct.toFixed(1)}%
+              </span>
+              <SaveTargetsControl
+                dirty={dirty}
+                hasSaved={hasSaved}
+                saveState={saveState}
+                saveError={saveError}
+                onLoadSaved={loadSaved}
+                onSave={saveTargets}
+              />
+            </div>
           </Panel>
 
           <Panel title="Drift by holding">
@@ -675,10 +728,16 @@ function MoneyField({
 function ToolbarButton({
   onClick,
   disabled,
+  primary,
+  title,
   children,
 }: {
   onClick: () => void;
   disabled?: boolean;
+  /** Marks the one button that commits something, so it doesn't read as
+      another no-op like "Reset to current" sitting beside it. */
+  primary?: boolean;
+  title?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -686,10 +745,74 @@ function ToolbarButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="rounded-sm border border-border bg-card px-3 py-1.5 text-[12px] text-foreground transition-colors duration-150 hover:border-[oklch(0.28_0_0)] disabled:opacity-50"
+      title={title}
+      className={
+        "rounded-sm border px-3 py-1.5 text-[12px] transition-colors duration-150 disabled:opacity-50 " +
+        (primary
+          ? "border-[oklch(0.72_0.14_74_/_0.45)] bg-[oklch(0.72_0.14_74_/_0.12)] text-primary hover:bg-[oklch(0.72_0.14_74_/_0.2)]"
+          : "border-border bg-card text-foreground hover:border-[oklch(0.28_0_0)]")
+      }
     >
       {children}
     </button>
+  );
+}
+
+/* The load/save pair, rendered BOTH in the account header and directly under
+   the targets table. With a long holdings list the header scrolls out of sight
+   while you're typing targets, so controls that only lived up there read as no
+   controls at all. Both copies are the same elements driving the same state. */
+function SaveTargetsControl({
+  dirty,
+  hasSaved,
+  saveState,
+  saveError,
+  onLoadSaved,
+  onSave,
+}: {
+  dirty: boolean;
+  /** False when this account has never had targets saved — nothing to load. */
+  hasSaved: boolean;
+  saveState: "idle" | "saving" | "saved" | "error";
+  saveError: string | null;
+  onLoadSaved: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <ToolbarButton
+        onClick={onLoadSaved}
+        // The one control that IS disabled when inapplicable: with nothing
+        // saved for this account there is no vector to load, and saying so is
+        // more use than a button that silently does nothing.
+        disabled={!hasSaved || saveState === "saving"}
+        title={
+          hasSaved
+            ? "Discard edits and put this account's saved targets back."
+            : "No saved targets for this account yet — save some first."
+        }
+      >
+        Load saved
+      </ToolbarButton>
+      {/* Never disabled when clean — a greyed-out control is the same problem
+          as a missing one. It just stops advertising itself. */}
+      <ToolbarButton onClick={onSave} disabled={saveState === "saving"} primary={dirty}>
+        {saveState === "saving" ? "Saving…" : "Save targets"}
+      </ToolbarButton>
+      {saveState === "error" ? (
+        <span className="text-[11.5px]" style={{ color: CHART.negative }}>
+          {saveError}
+        </span>
+      ) : dirty ? (
+        <span className="text-[11.5px]" style={{ color: CHART.amber }}>
+          Unsaved changes
+        </span>
+      ) : saveState === "saved" ? (
+        <span className="text-[11.5px]" style={{ color: CHART.positive }}>
+          Saved
+        </span>
+      ) : null}
+    </div>
   );
 }
 

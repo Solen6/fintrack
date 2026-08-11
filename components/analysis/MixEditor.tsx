@@ -24,6 +24,9 @@ export function MixEditor({
   sum,
   onLoadCurrent,
   onLoadRebalance,
+  rebalanceChoices,
+  onPickRebalance,
+  onCancelRebalance,
   onEqualWeight,
   onScaleTo100,
   onSave,
@@ -43,6 +46,12 @@ export function MixEditor({
   onLoadCurrent?: () => void;
   /** Pulls the saved targets from the Rebalancer tool. */
   onLoadRebalance?: () => void;
+  /** Set by the owner when more than one account has saved targets: rebalance
+      targets are percentages of a SINGLE account, so there's no combined
+      vector to load and the account has to be chosen. */
+  rebalanceChoices?: { account: string; updatedAt: string | null }[] | null;
+  onPickRebalance?: (account: string) => void;
+  onCancelRebalance?: () => void;
   onEqualWeight: () => void;
   onScaleTo100: () => void;
   /** Omitted by tools that have nowhere to save a mix. */
@@ -101,6 +110,22 @@ export function MixEditor({
         <p className="m-0 mb-3 text-[11.5px]" style={{ color: CHART.muted }}>
           {note}
         </p>
+      )}
+
+      {rebalanceChoices && rebalanceChoices.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 rounded-sm border border-border bg-[oklch(0.10_0_0)] p-2.5">
+          <span className="mr-1 text-[11.5px]" style={{ color: CHART.muted }}>
+            Targets are saved per account — load which one?
+          </span>
+          {rebalanceChoices.map((c) => (
+            <MiniButton key={c.account} onClick={() => onPickRebalance?.(c.account)} disabled={busy}>
+              {c.account}
+            </MiniButton>
+          ))}
+          {onCancelRebalance && (
+            <MiniButton onClick={onCancelRebalance}>Cancel</MiniButton>
+          )}
+        </div>
       )}
 
       <div

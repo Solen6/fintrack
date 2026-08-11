@@ -39,7 +39,12 @@ import { useMcEngine } from "../useMcEngine";
 import { CHART } from "../charts";
 import { BasketBuilder, BASKET_MAX, type BasketItem } from "../BasketBuilder";
 import { MixEditor } from "../MixEditor";
-import { fetchRebalanceTargets, planWeightLoad, overflowMessage } from "../weight-sources";
+import {
+  fetchRebalanceTargetAccounts,
+  planWeightLoad,
+  overflowMessage,
+  type AccountTargets,
+} from "../weight-sources";
 import { FanChart } from "../montecarlo/FanChart";
 import { DrawdownPanel, TerminalPanel } from "../montecarlo/RiskPanels";
 import { GoalPanel, DepletionPanel } from "../montecarlo/GoalPanel";
@@ -98,6 +103,8 @@ export function MonteCarloTool() {
   const [autofillError, setAutofillError] = useState<string | null>(null);
   const [mixNote, setMixNote] = useState<string | null>(null);
   const [mixBusy, setMixBusy] = useState(false);
+  /** Non-null only while waiting for the user to say which account's targets. */
+  const [rebalanceAccounts, setRebalanceAccounts] = useState<AccountTargets[] | null>(null);
   const didInit = useRef(false);
 
   /* ─── Simulation settings ─── */
@@ -336,23 +343,51 @@ export function MonteCarloTool() {
     setWeighting("custom");
     setMixNote(null);
   };
+  /* Rebalance targets are percentages of ONE account, so loading them means
+     naming the account. One account with targets loads straight through; more
+     than one raises a picker rather than combining them, which would need
+     account values this tool never fetches. */
+  const applyRebalance = (account: string, targets: Record<string, number>) => {
+    const plan = planWeightLoad(targets, items.map((i) => i.ticker), BASKET_MAX);
+    if (plan.empty) {
+      setMixNote(`No targets saved for ${account}.`);
+      return;
+    }
+    setItems((prev) => [...prev, ...plan.toAdd.map((t) => ({ ticker: t, fromPortfolio: false }))]);
+    setWeightPct(plan.weights);
+    setWeighting("custom");
+    setMixNote(
+      overflowMessage(plan, BASKET_MAX) ??
+        `Loaded ${account} targets — percentages of that account, normalized to 100% here.`,
+    );
+  };
+
   const loadRebalance = async () => {
     setMixBusy(true);
+    setRebalanceAccounts(null);
     try {
-      const plan = planWeightLoad(await fetchRebalanceTargets(), items.map((i) => i.ticker), BASKET_MAX);
-      if (plan.empty) {
+      const accounts = await fetchRebalanceTargetAccounts();
+      if (accounts.length === 0) {
         setMixNote("No rebalance targets saved yet — set them in the Rebalancer tool first.");
         return;
       }
-      setItems((prev) => [...prev, ...plan.toAdd.map((t) => ({ ticker: t, fromPortfolio: false }))]);
-      setWeightPct(plan.weights);
-      setWeighting("custom");
-      setMixNote(overflowMessage(plan, BASKET_MAX));
+      if (accounts.length === 1) {
+        applyRebalance(accounts[0].account, accounts[0].targets);
+        return;
+      }
+      setRebalanceAccounts(accounts);
+      setMixNote(null);
     } catch (e) {
       setMixNote(e instanceof Error ? e.message : "Failed to load rebalance targets");
     } finally {
       setMixBusy(false);
     }
+  };
+
+  const pickRebalance = (account: string) => {
+    const hit = rebalanceAccounts?.find((a) => a.account === account);
+    setRebalanceAccounts(null);
+    if (hit) applyRebalance(hit.account, hit.targets);
   };
   const equalWeight = () => {
     const each = items.length > 0 ? 100 / items.length : 0;
@@ -617,6 +652,9 @@ export function MonteCarloTool() {
               sum={base.enteredSum}
               onLoadCurrent={base.hasActual ? loadCurrent : undefined}
               onLoadRebalance={loadRebalance}
+              rebalanceChoices={rebalanceAccounts}
+              onPickRebalance={pickRebalance}
+              onCancelRebalance={() => setRebalanceAccounts(null)}
               onEqualWeight={equalWeight}
               onScaleTo100={normalizeWeights}
               busy={mixBusy}

@@ -30,6 +30,34 @@ export async function GET(req: NextRequest) {
 
   const account = req.nextUrl.searchParams.get("account")?.trim() || DEFAULT_ACCOUNT;
 
+  // `account=*` lists every account that has targets, for the whole-portfolio
+  // tools that need to ask which one to load. The DEFAULT_ACCOUNT sentinel is
+  // filtered out: since the (user, account) re-key it only ever holds a
+  // pre-migration leftover, and serving it as if it were a real account is how
+  // stale weights got loaded silently.
+  if (account === "*") {
+    const { data, error } = await supabase
+      .from("rebalance_targets")
+      .select("account,targets,updated_at")
+      .eq("user_id", user.id)
+      .neq("account", DEFAULT_ACCOUNT)
+      .order("updated_at", { ascending: false });
+    if (error) {
+      return NextResponse.json(
+        { error: isSetup(error.message) ? SETUP_HINT : error.message },
+        { status: isSetup(error.message) ? 503 : 500 },
+      );
+    }
+    const accounts = (data ?? [])
+      .map((row) => ({
+        account: String(row.account),
+        targets: toTargets(row.targets),
+        updatedAt: (row.updated_at as string | null) ?? null,
+      }))
+      .filter((a) => Object.keys(a.targets).length > 0);
+    return NextResponse.json({ accounts });
+  }
+
   const { data, error } = await supabase
     .from("rebalance_targets")
     .select("targets")

@@ -7,12 +7,34 @@
    rather than dropping it silently.
    ────────────────────────────────────────────────────────────────────────── */
 
-/** The Rebalancer's saved target weights (ticker -> percent). */
-export async function fetchRebalanceTargets(): Promise<Record<string, number>> {
-  const r = await fetch("/api/analysis/rebalance-targets");
-  const j = (await r.json()) as { targets?: Record<string, number>; error?: string };
+/** One account's saved targets, as the Rebalancer stores them. */
+export interface AccountTargets {
+  account: string;
+  /** ticker -> percent OF THAT ACCOUNT (cash included), used exactly as typed. */
+  targets: Record<string, number>;
+  updatedAt: string | null;
+}
+
+/**
+ * Every account that has saved rebalance targets, most recently saved first.
+ *
+ * ⚠️ Targets are per-account and were re-keyed to (user, account) on 2026-08-01.
+ * Fetching this endpoint with NO account silently falls back to the '__all__'
+ * sentinel, which now only ever holds a pre-migration leftover — so the old
+ * account-less call here loaded weeks-stale weights while looking like it had
+ * worked. Callers must pick an account; there is no portfolio-wide vector to
+ * fall back to, because each account's percentages are shares of that account
+ * and combining them needs account values this layer doesn't have.
+ */
+export async function fetchRebalanceTargetAccounts(): Promise<AccountTargets[]> {
+  const r = await fetch("/api/analysis/rebalance-targets?account=*");
+  const j = (await r.json()) as { accounts?: AccountTargets[]; error?: string };
   if (!r.ok) throw new Error(j.error || "Failed to load rebalance targets");
-  return j.targets ?? {};
+  return (j.accounts ?? []).map((a) => ({
+    account: a.account,
+    targets: a.targets ?? {},
+    updatedAt: a.updatedAt ?? null,
+  }));
 }
 
 export interface WeightLoadPlan {

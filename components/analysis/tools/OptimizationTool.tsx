@@ -32,7 +32,12 @@ import {
   MiniButton,
 } from "../ui";
 import { MixEditor } from "../MixEditor";
-import { fetchRebalanceTargets, planWeightLoad, overflowMessage } from "../weight-sources";
+import {
+  fetchRebalanceTargetAccounts,
+  planWeightLoad,
+  overflowMessage,
+  type AccountTargets,
+} from "../weight-sources";
 import { useAnalysisData } from "../useAnalysisData";
 import { ScatterPlot, CHART, type ScatterPoint } from "../charts";
 import { BasketBuilder, BASKET_MAX, type BasketItem } from "../BasketBuilder";
@@ -121,6 +126,8 @@ export function OptimizationTool() {
   const [savedError, setSavedError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [mixNote, setMixNote] = useState<string | null>(null);
+  /** Non-null only while waiting for the user to say which account's targets. */
+  const [rebalanceAccounts, setRebalanceAccounts] = useState<AccountTargets[] | null>(null);
   /** What's drawn on the chart: benchmark + saved-portfolio + snapshot ids. */
   const [shown, setShown] = useState<Set<string>>(new Set([SPY_ID]));
   const [days, setDays] = useState(DEFAULT_WINDOW);
@@ -416,23 +423,51 @@ export function OptimizationTool() {
     setWeightPct(actualPct);
     setMixNote(null);
   };
+  /* Rebalance targets are percentages of ONE account, so loading them means
+     naming the account. One account with targets loads straight through; more
+     than one raises a picker rather than combining them, which would need
+     account values this tool never fetches. */
+  const applyRebalance = (account: string, targets: Record<string, number>) => {
+    const plan = planWeightLoad(targets, items.map((i) => i.ticker), BASKET_MAX);
+    if (plan.empty) {
+      setMixNote(`No targets saved for ${account}.`);
+      return;
+    }
+    setItems((prev) => [...prev, ...plan.toAdd.map((t) => ({ ticker: t, fromPortfolio: false }))]);
+    setWeightPct(plan.weights);
+    setPin(null);
+    setMixNote(
+      overflowMessage(plan, BASKET_MAX) ??
+        `Loaded ${account} targets — percentages of that account, normalized to 100% here.`,
+    );
+  };
+
   const loadRebalance = async () => {
     setBusy(true);
+    setRebalanceAccounts(null);
     try {
-      const plan = planWeightLoad(await fetchRebalanceTargets(), items.map((i) => i.ticker), BASKET_MAX);
-      if (plan.empty) {
+      const accounts = await fetchRebalanceTargetAccounts();
+      if (accounts.length === 0) {
         setMixNote("No rebalance targets saved yet — set them in the Rebalancer tool first.");
         return;
       }
-      setItems((prev) => [...prev, ...plan.toAdd.map((t) => ({ ticker: t, fromPortfolio: false }))]);
-      setWeightPct(plan.weights);
-      setPin(null);
-      setMixNote(overflowMessage(plan, BASKET_MAX));
+      if (accounts.length === 1) {
+        applyRebalance(accounts[0].account, accounts[0].targets);
+        return;
+      }
+      setRebalanceAccounts(accounts);
+      setMixNote(null);
     } catch (e) {
       setMixNote(e instanceof Error ? e.message : "Failed to load rebalance targets");
     } finally {
       setBusy(false);
     }
+  };
+
+  const pickRebalance = (account: string) => {
+    const hit = rebalanceAccounts?.find((a) => a.account === account);
+    setRebalanceAccounts(null);
+    if (hit) applyRebalance(hit.account, hit.targets);
   };
   const equalWeight = () => {
     const each = items.length > 0 ? 100 / items.length : 0;
@@ -607,6 +642,9 @@ export function OptimizationTool() {
             setWeight={setWeight}
             loadCurrent={loadCurrent}
             loadRebalance={loadRebalance}
+            rebalanceAccounts={rebalanceAccounts}
+            pickRebalance={pickRebalance}
+            clearRebalanceChoices={() => setRebalanceAccounts(null)}
             mixNote={mixNote}
             equalWeight={equalWeight}
             normalizeWeights={normalizeWeights}
@@ -692,6 +730,9 @@ function OptimizationContent({
   setWeight,
   loadCurrent,
   loadRebalance,
+  rebalanceAccounts,
+  pickRebalance,
+  clearRebalanceChoices,
   mixNote,
   equalWeight,
   normalizeWeights,
@@ -719,6 +760,9 @@ function OptimizationContent({
   setWeight: (ticker: string, pct: number) => void;
   loadCurrent: () => void;
   loadRebalance: () => void;
+  rebalanceAccounts: AccountTargets[] | null;
+  pickRebalance: (account: string) => void;
+  clearRebalanceChoices: () => void;
   mixNote: string | null;
   equalWeight: () => void;
   normalizeWeights: () => void;
@@ -1099,6 +1143,9 @@ function OptimizationContent({
         sum={model.enteredSum}
         onLoadCurrent={model.hasActual ? loadCurrent : undefined}
         onLoadRebalance={loadRebalance}
+        rebalanceChoices={rebalanceAccounts}
+        onPickRebalance={pickRebalance}
+        onCancelRebalance={clearRebalanceChoices}
         onEqualWeight={equalWeight}
         onScaleTo100={normalizeWeights}
         onSave={saveCurrentMix}
