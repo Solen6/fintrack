@@ -9,7 +9,7 @@ export type { AnalystRating };
    (watchlist, Accounts holding insights, paper stock detail). */
 
 const LABEL_COLOR: Record<AnalystRating["label"], string> = {
-  "Strong Buy":  "oklch(0.76 0.17 152)",
+  "Strong Buy":  "oklch(0.64 0.18 152)",
   "Buy":         "oklch(0.72 0.15 152)",
   "Hold":        "oklch(0.72 0.14 74)",
   "Sell":        "oklch(0.66 0.16 28)",
