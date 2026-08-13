@@ -2,10 +2,12 @@
 
 import { useState, useEffect, useRef } from "react";
 import {
+  DEFAULT_PLANS,
   NEWS_TYPES,
   PREF_SOURCES,
   type NewsType,
   type NewsPrefs,
+  type PlanTier,
 } from "@/lib/news-preferences";
 import { sourceColor } from "@/lib/news-source-color";
 import type { NewsSource } from "@/components/news/NewsSourceManager";
@@ -44,6 +46,10 @@ export function NewsPreferencesModal({
   const [selectedSources, setSelectedSources] = useState<Set<string>>(
     () => new Set(initialPrefs.sources)
   );
+  const [plans, setPlans] = useState<Record<string, PlanTier>>(
+    () => ({ ...DEFAULT_PLANS, ...initialPrefs.plans })
+  );
+  const [hideLocked, setHideLocked] = useState(initialPrefs.hideLocked);
   const firstRowRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -85,10 +91,16 @@ export function NewsPreferencesModal({
     ).map((c) => c.rss!);
 
     onSave(
-      { types: [...selectedTypes], sources: [...selectedSources] },
+      { types: [...selectedTypes], sources: [...selectedSources], plans, hideLocked },
       sourcesToAdd
     );
   }
+
+  // Only worth showing the "hide locked" switch if a whole-publisher paywall is
+  // actually in play — i.e. some enabled source is subscriber-gated and set to Free.
+  const anyLocked = PREF_SOURCES.some(
+    (s) => s.access?.paywalled && selectedSources.has(s.id) && plans[s.id] === "free"
+  );
 
   return (
     <div
@@ -178,39 +190,107 @@ export function NewsPreferencesModal({
             )}
           </div>
 
-          {/* News sources */}
+          {/* News sources + the plan you hold at each */}
           <div className="px-5 py-4">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
               News Sources
             </p>
-            <div className="flex flex-wrap gap-2">
+            <p className="text-xs text-muted-foreground opacity-70 mb-3 leading-snug">
+              Tell us which plan you have at each publisher and we&apos;ll stop showing
+              you articles you can&apos;t open.
+            </p>
+            <ul className="space-y-1.5">
               {PREF_SOURCES.map((s) => {
                 const on = selectedSources.has(s.id);
+                const tier = plans[s.id] ?? "free";
                 return (
-                  <button
-                    key={s.id}
-                    onClick={() => toggleSource(s.id)}
-                    aria-pressed={on}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors duration-150"
-                    style={{
-                      borderColor: on ? AMBER : "var(--border)",
-                      background: on ? "oklch(0.72 0.14 74 / 0.10)" : "oklch(0.10 0 0)",
-                      color: on ? "var(--foreground)" : "var(--muted-foreground)",
-                    }}
-                  >
-                    <span
-                      className="w-2 h-2 rounded-full shrink-0 transition-opacity duration-150"
-                      style={{ background: sourceColor(s.label), opacity: on ? 1 : 0.4 }}
-                      aria-hidden
-                    />
-                    {s.label}
-                  </button>
+                  <li key={s.id}>
+                    <div
+                      className="flex items-center gap-2 pl-2.5 pr-1.5 py-1.5 rounded-md border transition-colors duration-150"
+                      style={{
+                        borderColor: on ? AMBER : "var(--border)",
+                        background: on ? "oklch(0.72 0.14 74 / 0.10)" : "oklch(0.10 0 0)",
+                      }}
+                    >
+                      <button
+                        onClick={() => toggleSource(s.id)}
+                        aria-pressed={on}
+                        className="flex items-center gap-2 flex-1 min-w-0 text-left text-xs font-medium transition-colors duration-150"
+                        style={{ color: on ? "var(--foreground)" : "var(--muted-foreground)" }}
+                      >
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0 transition-opacity duration-150"
+                          style={{ background: sourceColor(s.label), opacity: on ? 1 : 0.4 }}
+                          aria-hidden
+                        />
+                        <span className="truncate">{s.label}</span>
+                      </button>
+
+                      {/* Plan control — only for publishers where the setting
+                          changes what you actually see. Reuters and CNBC are
+                          free, so they get no control rather than a dead one. */}
+                      {s.access && (
+                        <span
+                          className="flex items-center gap-0.5 shrink-0 rounded p-0.5"
+                          style={{ background: "oklch(0.08 0 0)", opacity: on ? 1 : 0.45 }}
+                          role="group"
+                          aria-label={`${s.label} plan`}
+                        >
+                          {(["free", "paid"] as PlanTier[]).map((t) => {
+                            const active = tier === t;
+                            return (
+                              <button
+                                key={t}
+                                onClick={() => setPlans((p) => ({ ...p, [s.id]: t }))}
+                                disabled={!on}
+                                aria-pressed={active}
+                                className="px-2 py-0.5 rounded text-[11px] font-medium transition-colors duration-150 disabled:cursor-not-allowed"
+                                style={{
+                                  background: active ? AMBER : "transparent",
+                                  color: active ? "oklch(0.08 0 0)" : "var(--muted-foreground)",
+                                }}
+                              >
+                                {s.access!.labels[t]}
+                              </button>
+                            );
+                          })}
+                        </span>
+                      )}
+                    </div>
+                    {on && s.access && tier === "free" && (
+                      <p className="text-[11px] text-muted-foreground opacity-60 leading-snug pl-[18px] pr-1 pt-1">
+                        {s.access.note}
+                      </p>
+                    )}
+                  </li>
                 );
               })}
-            </div>
+            </ul>
+
+            {anyLocked && (
+              <label className="flex items-start gap-2.5 mt-3 pt-3 border-t border-border cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={hideLocked}
+                  onChange={(e) => setHideLocked(e.target.checked)}
+                  className="mt-0.5 accent-[oklch(0.72_0.14_74)]"
+                />
+                <span className="min-w-0">
+                  <span className="block text-xs font-medium text-foreground">
+                    Hide paywalled articles
+                  </span>
+                  <span className="block text-[11px] text-muted-foreground opacity-70 leading-snug">
+                    Off by default — subscriber-only stories stay in the feed with a lock,
+                    so the headline still reaches you.
+                  </span>
+                </span>
+              </label>
+            )}
+
             <p className="text-xs text-muted-foreground opacity-70 mt-3 leading-snug">
               Enabling a source adds its feed to your news tab. Unchecking hides that
-              provider&apos;s articles.
+              provider&apos;s articles. Seeking Alpha transcripts, earnings decks and
+              podcasts are always filtered out — only news and analysis come through.
             </p>
           </div>
         </div>

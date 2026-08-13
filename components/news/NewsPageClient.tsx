@@ -16,6 +16,7 @@ import {
   savePrefs,
   isOnboarded,
   markOnboarded,
+  saAllows,
   type NewsPrefs,
 } from "@/lib/news-preferences";
 
@@ -59,11 +60,15 @@ async function fetchAllNews(
 
   // Merge: RSS feeds first (user-curated), then AV (broad market), then
   // Finnhub + Seeking Alpha (portfolio-specific). First-seen URL wins.
+  //
+  // saAllows drops Seeking Alpha transcripts, earnings decks and podcasts here
+  // rather than at render time, so they can't consume slots under the 150 cap
+  // and starve the feed — the site-wide SA feed is roughly half of exactly that.
   const seen = new Set<string>();
   const merged: NewsArticle[] = [];
   for (const a of [...feeds, ...av, ...finnhub, ...sa]) {
     const key = a.url || a.id;
-    if (!seen.has(key)) {
+    if (!seen.has(key) && saAllows(a)) {
       seen.add(key);
       merged.push(a);
     }

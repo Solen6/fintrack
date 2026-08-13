@@ -5,7 +5,7 @@ import type { NewsArticle } from "@/app/api/news/route";
 import type { ArticleState } from "@/app/api/news/interactions/route";
 import { formatRelativeTime } from "@/lib/format";
 import { sourceColor } from "@/lib/news-source-color";
-import { articleVisible, type NewsPrefs } from "@/lib/news-preferences";
+import { articleLocked, articleVisible, type NewsPrefs } from "@/lib/news-preferences";
 
 type Filter = "all" | "saved";
 
@@ -203,7 +203,12 @@ export function NewsFeed({
         ) : (
           <div>
             {lead && (
-              <LeadStory item={lead} state={interactions[lead.url]} onInteract={onInteract} />
+              <LeadStory
+                item={lead}
+                state={interactions[lead.url]}
+                onInteract={onInteract}
+                locked={articleLocked(lead, prefs)}
+              />
             )}
             {rest.map((item) => (
               <FeedItem
@@ -211,6 +216,7 @@ export function NewsFeed({
                 item={item}
                 state={interactions[item.url]}
                 onInteract={onInteract}
+                locked={articleLocked(item, prefs)}
               />
             ))}
           </div>
@@ -269,6 +275,29 @@ function SourceLabel({ source }: { source: string | undefined }) {
       <span className="text-xs truncate" style={{ color }}>
         {source}
       </span>
+    </span>
+  );
+}
+
+/* ─── Paywall marker ───
+   Shown when the user's plan for that publisher is the free tier and the
+   publisher gates everything (WSJ, NYT, Bloomberg, FT). Marking rather than
+   hiding is deliberate: the headline still carries information, and hiding these
+   would just duplicate the source on/off switch. "Hide locked articles" in
+   Preferences turns this into a filter for anyone who'd rather not see them. */
+function LockBadge() {
+  return (
+    <span
+      className="flex items-center gap-1 shrink-0 text-xs"
+      style={{ color: "oklch(0.55 0.02 74)" }}
+      title="Subscriber-only — you have this source set to Free in Preferences"
+    >
+      <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden>
+        <rect x="2.5" y="5.5" width="7" height="5" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M4.25 5.5V4a1.75 1.75 0 0 1 3.5 0v1.5" stroke="currentColor" strokeWidth="1.3" />
+      </svg>
+      <span className="sr-only">Subscriber-only. </span>
+      Paywalled
     </span>
   );
 }
@@ -355,10 +384,12 @@ function LeadStory({
   item,
   state,
   onInteract,
+  locked,
 }: {
   item: NewsArticle;
   state: ArticleState | undefined;
   onInteract: (url: string, update: Partial<ArticleState>) => void;
+  locked: boolean;
 }) {
   const isRead = state?.read ?? false;
 
@@ -378,6 +409,7 @@ function LeadStory({
             </span>
           )}
           <SourceLabel source={item.source} />
+          {locked && <LockBadge />}
           <span className="text-xs text-muted-foreground ml-auto shrink-0">
             {formatRelativeTime(new Date(item.timestamp))}
           </span>
@@ -421,10 +453,12 @@ function FeedItem({
   item,
   state,
   onInteract,
+  locked,
 }: {
   item: NewsArticle;
   state: ArticleState | undefined;
   onInteract: (url: string, update: Partial<ArticleState>) => void;
+  locked: boolean;
 }) {
   const isRead = state?.read ?? false;
 
@@ -445,6 +479,7 @@ function FeedItem({
               </span>
             )}
             <SourceLabel source={item.source} />
+            {locked && <LockBadge />}
             <span className="text-xs text-muted-foreground ml-auto shrink-0">
               {formatRelativeTime(new Date(item.timestamp))}
             </span>
