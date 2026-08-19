@@ -5,6 +5,7 @@ import Link from "next/link";
 import nextDynamic from "next/dynamic";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { Sensitive, PrivateGraphMask } from "@/lib/privacy";
+import { EXT_MIN_PCT, extSessionLabel } from "@/lib/ext-hours";
 import type { PerfPoint, PerfMetric, ReturnPoint, AllocationPoint } from "@/components/dashboard/charts";
 import { RemindersCard } from "@/components/dashboard/RemindersCard";
 import { isInvestedType, resolveAccountType, type AccountType } from "@/lib/account-types";
@@ -87,6 +88,15 @@ const isDerivativeType = (t?: string | null) => t === "option" || t === "future"
 interface QuoteData {
   price: number;
   changePct: number;
+  /* Extended hours, passed straight through from /api/quotes. `price` above
+     stays the regular-session mark — these are additive only. */
+  marketState?: "pre" | "regular" | "post" | "closed";
+  extPrice?: number;
+  extChange?: number;
+  extChangePct?: number;
+  extTime?: number;
+  extSession?: "pre" | "post";
+  extSeries?: number[];
 }
 
 interface Snapshot {
@@ -422,7 +432,20 @@ export function DashboardClient() {
         ? (todayChange / (positionsValue - todayChange)) * 100
         : 0;
 
-    return { positions, cash, invested, positionsValue, totalValue, totalGain, totalReturnPct, todayChange, todayPct };
+    /* Move since the regular close. Holdings with no extended print contribute
+       0 — their price genuinely did not change after the close — so the percent
+       is taken against the full positions value. */
+    let extChange = 0;
+    let extSession: "pre" | "post" | undefined;
+    for (const h of investRows) {
+      const e = quotes[h.ticker];
+      if (!e || e.extChange === undefined) continue;
+      extChange += Number(h.shares) * e.extChange;
+      extSession ??= e.extSession;
+    }
+    const extPct = positionsValue > 0 ? (extChange / positionsValue) * 100 : 0;
+
+    return { positions, cash, invested, positionsValue, totalValue, totalGain, totalReturnPct, todayChange, todayPct, extChange, extPct, extSession };
   }, [holdings, quotes, bondMarks, derivativeMarks, sectors, enabledAccounts, accountTypes, cashBalances]);
 
   // Resolved allocation view (null = auto sectors). Falls back to auto if the
@@ -928,6 +951,25 @@ export function DashboardClient() {
                   <Sensitive>{formatPercent(agg.todayPct)}</Sensitive>
                 </span>
               </div>
+              {Math.abs(agg.extPct) >= EXT_MIN_PCT && (
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    {extSessionLabel(agg.extSession)}
+                  </span>
+                  <span
+                    className="font-mono text-sm"
+                    style={toneStyle(agg.extChange >= 0 ? "pos" : "neg")}
+                  >
+                    <Sensitive>{formatCurrency(agg.extChange)}</Sensitive>
+                  </span>
+                  <span
+                    className="font-mono text-xs"
+                    style={toneStyle(agg.extPct >= 0 ? "pos" : "neg")}
+                  >
+                    <Sensitive>{formatPercent(agg.extPct)}</Sensitive>
+                  </span>
+                </div>
+              )}
             </div>
             <div className="flex flex-col">
               {/* Chart header: title + window readout, then controls */}

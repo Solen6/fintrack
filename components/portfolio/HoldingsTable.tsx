@@ -6,6 +6,8 @@ import { formatCurrency, formatPercent, formatShares } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { isFaceValueBond } from "@/lib/types";
 import type { SortField, SortDir, HoldingWithMetrics } from "@/lib/types";
+import { ExtHoursPill, ExtHoursSparkline } from "@/components/quotes/ExtHours";
+import { hasExtHours, type ExtHoursQuote } from "@/lib/ext-hours";
 import {
   Tooltip,
   TooltipContent,
@@ -25,12 +27,16 @@ interface Props {
   holdings: HoldingWithMetrics[];
   cash?: CashBalance[];
   account: string;
+  /* Extended-hours quote data by ticker. Kept beside the holdings rather than
+     folded into them, so the after-hours print can never reach `currentPrice`
+     and from there the snapshot/report path. */
+  ext?: Record<string, ExtHoursQuote>;
   onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null; drip?: boolean }) => Promise<void>;
   onClose?: (holding: HoldingWithMetrics) => void;
   onDelete?: (holding: HoldingWithMetrics) => Promise<void>;
 }
 
-export function HoldingsTable({ holdings, cash = [], account, onEdit, onClose, onDelete }: Props) {
+export function HoldingsTable({ holdings, cash = [], account, ext = {}, onEdit, onClose, onDelete }: Props) {
   const [sort, setSort] = useState<{ field: SortField; dir: SortDir }>({
     field: "value",
     dir: "desc",
@@ -113,6 +119,7 @@ export function HoldingsTable({ holdings, cash = [], account, onEdit, onClose, o
                 holding={h}
                 weight={totalValue > 0 ? (h.value / totalValue) * 100 : 0}
                 expanded={expandedId === h.id}
+                ext={ext[h.ticker]}
                 onToggle={() => setExpandedId((prev) => (prev === h.id ? null : h.id))}
                 onEdit={onEdit}
                 onClose={onClose}
@@ -255,13 +262,14 @@ interface RowProps {
   holding: HoldingWithMetrics;
   weight: number;
   expanded: boolean;
+  ext?: ExtHoursQuote;
   onToggle: () => void;
   onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null; drip?: boolean }) => Promise<void>;
   onClose?: (holding: HoldingWithMetrics) => void;
   onDelete?: (holding: HoldingWithMetrics) => Promise<void>;
 }
 
-function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, onDelete }: RowProps) {
+function HoldingRow({ holding: h, weight, expanded, ext, onToggle, onEdit, onClose, onDelete }: RowProps) {
   const [editing, setEditing] = useState(false);
   const [editShares, setEditShares] = useState(String(h.shares));
   const [editCost, setEditCost] = useState(String(isFaceValueBond(h) ? h.costBasis * 100 : h.costBasis));
@@ -324,6 +332,14 @@ function HoldingRow({ holding: h, weight, expanded, onToggle, onEdit, onClose, o
               )}
             </TooltipContent>
           </Tooltip>
+          {/* Extended hours sits UNDER the price and is never substituted for
+              it — the price above stays the regular-session mark. */}
+          {hasExtHours(ext) && (
+            <span className="mt-1 flex items-center justify-end gap-1.5">
+              <ExtHoursSparkline series={ext?.extSeries} baseline={h.currentPrice} />
+              <ExtHoursPill quote={ext} />
+            </span>
+          )}
         </td>
         <td className="px-4 py-3 text-right font-mono text-sm text-foreground">
           <Sensitive>{formatCurrency(h.value)}</Sensitive>

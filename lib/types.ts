@@ -174,6 +174,18 @@ export interface Quote {
   high: number;
   low: number;
   prevClose: number;
+
+  /* Extended hours (pre/post market), mirroring lib/finnhub.ts FinnhubQuote.
+     All optional — absent for mutual funds, crypto, and during the regular
+     session. ⚠️ `price`/`changePct` above stay the REGULAR session always;
+     these are additive and must never be substituted in (see finnhub.ts). */
+  marketState?: "pre" | "regular" | "post" | "closed";
+  extPrice?: number;
+  extChange?: number;
+  extChangePct?: number;
+  extTime?: number;
+  extSession?: "pre" | "post";
+  extSeries?: number[];
 }
 
 export function computeMetrics(h: Holding, todayChangePct = 0): HoldingWithMetrics {

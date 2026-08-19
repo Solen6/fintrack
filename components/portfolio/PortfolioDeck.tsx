@@ -6,6 +6,7 @@ import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { isFaceValueBond, isDerivative } from "@/lib/types";
 import type { HoldingWithMetrics, TickerEventInfo } from "@/lib/types";
+import { hasExtHours, extSessionLabel, type ExtHoursQuote } from "@/lib/ext-hours";
 import { NOTE_MAX } from "@/lib/notes";
 import { recognizeStrategy } from "@/lib/option-strategies";
 import { netCost, OPTION_MULTIPLIER } from "@/lib/options-math";
@@ -107,6 +108,7 @@ export function PortfolioDeck({
   holdings,
   cash = [],
   account = "all",
+  ext = {},
 }: {
   /* Already scoped to the selected account by PortfolioClient. The sidebar is
      the ONE account filter on this page — this deck used to carry its own
@@ -115,6 +117,9 @@ export function PortfolioDeck({
   holdings: HoldingWithMetrics[];
   cash?: CashBalance[];
   account?: string;
+  /* Extended-hours quotes by ticker. Kept beside the holdings, never folded
+     into them — see the snapshot-cron warning in lib/finnhub.ts. */
+  ext?: Record<string, ExtHoursQuote>;
 }) {
   const [colorBy, setColorBy] = useState<"daily" | "total">("daily");
   const [includeCash, setIncludeCash] = useState(true);
@@ -321,6 +326,7 @@ export function PortfolioDeck({
     treemapHoldings.find((h) => h.ticker === selected) ??
     holdings.find((h) => h.ticker === selected) ??
     null;
+  const selExt = selectedHolding ? ext[selectedHolding.ticker] : undefined;
   const selFaceBond = selectedHolding ? isFaceValueBond(selectedHolding) : false;
   const selDeriv = selectedHolding ? isDerivative(selectedHolding) : false;
 
@@ -489,9 +495,24 @@ export function PortfolioDeck({
                     <Sensitive>{selectedHolding.gainPercent >= 0 ? "+" : ""}{selectedHolding.gainPercent.toFixed(2)}%</Sensitive> overall
                   </div>
                 ) : (
-                  <div className="text-sm font-mono tabular-nums mt-1" style={{ color: selectedHolding.todayChangePct >= 0 ? "var(--positive)" : "var(--negative)" }}>
-                    {selectedHolding.todayChangePct >= 0 ? "+" : ""}{selectedHolding.todayChangePct.toFixed(2)}% today
-                  </div>
+                  <>
+                    <div className="text-sm font-mono tabular-nums mt-1" style={{ color: selectedHolding.todayChangePct >= 0 ? "var(--positive)" : "var(--negative)" }}>
+                      {selectedHolding.todayChangePct >= 0 ? "+" : ""}{selectedHolding.todayChangePct.toFixed(2)}% today
+                    </div>
+                    {/* Extended hours reads BELOW the day change and against the
+                        regular close — the big price above stays the official
+                        close, it is never repriced to the after-hours print. */}
+                    {hasExtHours(selExt) && (
+                      <div
+                        className="text-sm font-mono tabular-nums mt-1"
+                        style={{ color: (selExt?.extChangePct ?? 0) >= 0 ? "var(--positive)" : "var(--negative)" }}
+                        title={`Move since the regular-session close${selExt?.marketState === "closed" ? " · session closed" : ""}`}
+                      >
+                        {(selExt?.extChangePct ?? 0) >= 0 ? "+" : ""}{(selExt?.extChangePct ?? 0).toFixed(2)}%{" "}
+                        <span className="text-muted-foreground">{extSessionLabel(selExt?.extSession).toLowerCase()}</span>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}

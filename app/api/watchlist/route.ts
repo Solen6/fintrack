@@ -13,6 +13,15 @@ export interface WatchlistItem {
   price: number | null;
   dayPct: number | null;
   sincePct: number | null; // vs added_price — "% gain since started watching"
+  /* Extended hours, straight off the quote. Absent when there is no pre/post
+     session for the instrument or we are inside the regular one. */
+  marketState?: "pre" | "regular" | "post" | "closed";
+  extPrice?: number;
+  extChangePct?: number;
+  extChange?: number;
+  extTime?: number;
+  extSession?: "pre" | "post";
+  extSeries?: number[];
 }
 
 /** Company name at add time (Finnhub profile2, free tier). Best-effort. */
@@ -69,6 +78,13 @@ export async function GET() {
         price != null && addedPrice != null && addedPrice > 0
           ? ((price - addedPrice) / addedPrice) * 100
           : null,
+      marketState:  q?.marketState,
+      extPrice:     q?.extPrice,
+      extChangePct: q?.extChangePct,
+      extChange:    q?.extChange,
+      extTime:      q?.extTime,
+      extSession:   q?.extSession,
+      extSeries:    q?.extSeries,
     };
   });
 

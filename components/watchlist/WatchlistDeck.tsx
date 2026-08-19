@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { WatchlistItem } from "@/app/api/watchlist/route";
+import { ExtHoursPill, ExtHoursSparkline } from "@/components/quotes/ExtHours";
+import { hasExtHours } from "@/lib/ext-hours";
 import { RatingBadge, RatingBar, useRatings } from "@/components/ratings/RatingBadge";
 
 /* Watchlist — stocks you're WATCHING, not holding. Heatmap tiles colored by
@@ -290,8 +292,16 @@ export function WatchlistDeck() {
                     <td className="px-3 py-2 text-right font-mono tabular-nums text-foreground">
                       {fmtPx(i.price)}
                     </td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums" style={{ color: pctTone(i.dayPct) }}>
-                      {signedPct(i.dayPct)}
+                    <td className="px-3 py-2 text-right">
+                      <span className="font-mono tabular-nums" style={{ color: pctTone(i.dayPct) }}>
+                        {signedPct(i.dayPct)}
+                      </span>
+                      {hasExtHours(i) && (
+                        <span className="mt-1 flex items-center justify-end gap-1.5">
+                          <ExtHoursSparkline series={i.extSeries} baseline={i.price ?? undefined} />
+                          <ExtHoursPill quote={i} />
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-right">
                       <span className="font-mono tabular-nums" style={{ color: pctTone(i.sincePct) }}>

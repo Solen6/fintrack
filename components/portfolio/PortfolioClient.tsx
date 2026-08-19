@@ -22,6 +22,7 @@ import { DerivativesView } from "./DerivativesView";
 import { MonthlyReports } from "./MonthlyReports";
 import { WatchlistDeck } from "@/components/watchlist/WatchlistDeck";
 import { computeMetrics, isDerivative } from "@/lib/types";
+import { type ExtHoursQuote } from "@/lib/ext-hours";
 import type { HoldingWithMetrics, Quote, BondMetrics, InstrumentType, BondType, DayCount, BondPriceSource, OptionType, Direction } from "@/lib/types";
 
 interface DBHolding {
@@ -84,6 +85,11 @@ export function PortfolioClient() {
   const [selectedAccount, setSelectedAccount] = useState<string>("all");
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [quotesError, setQuotesError] = useState(false);
+  /* Extended-hours quotes by ticker, kept BESIDE the holdings on purpose. Folding
+     them into a holding would put an after-hours mark within reach of
+     `currentPrice`, and /api/snapshots/cron runs at 6pm ET — inside the
+     post-market window — so that would corrupt the stored history. */
+  const [extQuotes, setExtQuotes] = useState<Record<string, ExtHoursQuote>>({});
   const [closingHolding, setClosingHolding] = useState<HoldingWithMetrics | null>(null);
   const [managingDividends, setManagingDividends] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -217,8 +223,10 @@ export function PortfolioClient() {
       setQuotesError(false);
       try {
         const qRes = await fetch(`/api/quotes?tickers=${priceableTickers.join(",")}`);
-        if (qRes.ok) quotes = (await qRes.json()).quotes ?? {};
-        else setQuotesError(true);
+        if (qRes.ok) {
+          quotes = (await qRes.json()).quotes ?? {};
+          setExtQuotes(quotes);
+        } else setQuotesError(true);
       } catch {
         setQuotesError(true);
       }
@@ -333,6 +341,7 @@ export function PortfolioClient() {
       if (!res.ok) { setQuotesError(true); return; }
       const quotes: Record<string, Quote> = (await res.json()).quotes ?? {};
       setQuotesError(false);
+      setExtQuotes(quotes);
       setHoldings((prev) =>
         prev.map((h) => {
           if (!pricesViaQuotes(h)) return h;
@@ -486,7 +495,7 @@ export function PortfolioClient() {
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        <SummaryStrip holdings={scopedHoldings} cash={scopedCash} account={selectedAccount} cumReturn={cumReturn} />
+        <SummaryStrip holdings={scopedHoldings} cash={scopedCash} account={selectedAccount} cumReturn={cumReturn} ext={extQuotes} />
 
         {/* Toolbar */}
         <div className="flex items-center justify-between px-6 py-2 border-b border-border shrink-0">
@@ -646,6 +655,7 @@ export function PortfolioClient() {
             holdings={scopedHoldings.filter((h) => !isDerivative(h))}
             cash={scopedCash}
             account={selectedAccount}
+            ext={extQuotes}
             onEdit={async (holding, updates) => {
               const res = await fetch("/api/holdings", {
                 method: "PATCH",
@@ -675,6 +685,7 @@ export function PortfolioClient() {
             holdings={scopedHoldings.filter((h) => !isDerivative(h) || h.instrumentType === "option")}
             cash={scopedCash}
             account={selectedAccount}
+            ext={extQuotes}
           />
         )}
         {activeSubView === "bonds" && <FixedIncomeView holdings={scopedHoldings} />}

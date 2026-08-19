@@ -2,6 +2,7 @@ import { formatCurrency, formatPercent } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { computeDayChange } from "@/lib/day-change";
 import type { HoldingWithMetrics } from "@/lib/types";
+import { EXT_MIN_PCT, extSessionLabel, type ExtHoursQuote } from "@/lib/ext-hours";
 
 interface CashBalance {
   account: string;
@@ -21,9 +22,11 @@ interface Props {
      null until snapshots load or when there isn't enough history — then we fall
      back to the cost-basis unrealized figure. */
   cumReturn?: { pct: number; gain: number } | null;
+  /* Extended-hours quotes by ticker, for the after-hours metric. */
+  ext?: Record<string, ExtHoursQuote>;
 }
 
-export function SummaryStrip({ holdings, cash = [], account, cumReturn = null }: Props) {
+export function SummaryStrip({ holdings, cash = [], account, cumReturn = null, ext = {} }: Props) {
   const filtered = holdings;
 
   const cashTotal = cash.reduce((s, c) => s + c.balance, 0);
@@ -40,6 +43,22 @@ export function SummaryStrip({ holdings, cash = [], account, cumReturn = null }:
   const todayChange = today.dollar;
   const todayPct = today.pct;
 
+  /* Move since the regular close, in dollars. A holding with no extended print
+     contributes 0 — which is the literal truth, its price did not change after
+     the close — so the percentage is taken against the FULL positions value and
+     needs no "covered subset" caveat. Bonds and derivatives never appear here:
+     they don't price via /api/quotes, so they carry no ext data. */
+  let extDollar = 0;
+  let extSession: "pre" | "post" | undefined;
+  for (const h of filtered) {
+    const e = ext[h.ticker];
+    if (!e || e.extChange === undefined) continue;
+    extDollar += h.shares * e.extChange;
+    extSession ??= e.extSession;
+  }
+  const extPct = positionsValue > 0 ? (extDollar / positionsValue) * 100 : 0;
+  const showExt = Math.abs(extPct) >= EXT_MIN_PCT;
+
   return (
     <div className="flex items-center gap-8 px-6 py-4 border-b border-border text-sm shrink-0 overflow-x-auto">
       <Metric
@@ -49,6 +68,14 @@ export function SummaryStrip({ holdings, cash = [], account, cumReturn = null }:
       />
       <div className="w-px h-8 bg-border shrink-0" aria-hidden />
       <Metric label="Today" value={<Sensitive>{formatCurrency(todayChange)}</Sensitive>} change={todayPct} showSign />
+      {showExt && (
+        <Metric
+          label={extSessionLabel(extSession)}
+          value={<Sensitive>{formatCurrency(extDollar)}</Sensitive>}
+          change={extPct}
+          showSign
+        />
+      )}
       <Metric
         label="Total Return"
         value={<Sensitive>{formatCurrency(cumReturn ? cumReturn.gain : unrealized)}</Sensitive>}
