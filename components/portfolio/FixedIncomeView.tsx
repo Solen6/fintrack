@@ -1,13 +1,16 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { HoldingWithMetrics } from "@/lib/types";
 import { isBond } from "@/lib/types";
+import type { HoldingEdits } from "./HoldingsTable";
 import { formatCurrency, formatCurrencyCompact, formatPercent } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 
 interface Props {
   holdings: HoldingWithMetrics[];
+  /** Same PATCH path the holdings table uses; enables inline repricing here. */
+  onEdit?: (holding: HoldingWithMetrics, updates: HoldingEdits) => Promise<void>;
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -29,7 +32,7 @@ function fmtDate(iso?: string | null): string {
   return `${m}/${d}/${y.slice(2)}`;
 }
 
-export function FixedIncomeView({ holdings }: Props) {
+export function FixedIncomeView({ holdings, onEdit }: Props) {
   const bonds = useMemo(() => holdings.filter(isBond), [holdings]);
   // Rows with full analytics (real bonds; ETFs are funds without coupon/YTM).
   const priced = useMemo(() => bonds.filter((b) => b.bondType !== "etf" && b.bondMetrics), [bonds]);
@@ -217,7 +220,9 @@ export function FixedIncomeView({ holdings }: Props) {
                   <td className="px-3 py-2 text-right">{etf ? "—" : `${(b.couponRate ?? 0).toFixed(2)}%`}</td>
                   <td className="px-3 py-2 text-right text-muted-foreground">{etf ? "—" : fmtDate(b.maturityDate)}</td>
                   <td className="px-3 py-2 text-right"><Sensitive>{etf ? `${b.shares} sh` : formatCurrency(b.shares)}</Sensitive></td>
-                  <td className="px-3 py-2 text-right">{etf ? formatCurrency(b.currentPrice) : (b.currentPrice * 100).toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {etf ? formatCurrency(b.currentPrice) : <PriceCell bond={b} onEdit={onEdit} />}
+                  </td>
                   <td className="px-3 py-2 text-right text-foreground"><Sensitive>{formatCurrency(b.value)}</Sensitive></td>
                   <td className="px-3 py-2 text-right">{m ? formatPercent(m.ytm, false) : "—"}</td>
                   <td className="px-3 py-2 text-right">{m ? formatPercent(m.currentYield, false) : "—"}</td>
@@ -230,6 +235,96 @@ export function FixedIncomeView({ holdings }: Props) {
         </table>
       </section>
     </div>
+  );
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  manual: "manual",
+  cost:   "at cost",
+  curve:  "curve",
+};
+
+/**
+ * Clean price per 100 of par, editable in place. Saving a number pins the bond
+ * to a manual mark; saving it empty clears the override and hands pricing back
+ * to the Treasury curve. Read-only when no `onEdit` is supplied.
+ */
+function PriceCell({ bond: b, onEdit }: { bond: HoldingWithMetrics; onEdit?: (h: HoldingWithMetrics, u: HoldingEdits) => Promise<void> }) {
+  const isManual = b.priceSource === "manual" && b.manualPrice != null;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const shown = (b.currentPrice * 100).toFixed(2);
+  const source = b.bondMetrics?.source;
+
+  async function commit() {
+    if (!onEdit) return;
+    const v = parseFloat(draft);
+    const pin = draft.trim() !== "" && Number.isFinite(v) && v > 0;
+    setSaving(true);
+    try {
+      await onEdit(b, pin
+        ? { price_source: "manual", manual_price: v }
+        : { price_source: "auto", manual_price: null });
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <input
+          autoFocus
+          type="number"
+          step="any"
+          min="0"
+          disabled={saving}
+          className="w-20 px-1.5 py-0.5 text-xs font-mono text-right rounded-sm border border-border bg-transparent text-foreground focus:outline-none focus:border-[var(--primary)] disabled:opacity-50"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); void commit(); }
+            if (e.key === "Escape") setEditing(false);
+          }}
+          placeholder="auto"
+        />
+        <button
+          type="button"
+          onClick={() => void commit()}
+          disabled={saving}
+          className="text-[10px] px-1 py-0.5 rounded-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+          title="Save (blank clears the override)"
+        >
+          {saving ? "…" : "✓"}
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {source && source !== "auto" && (
+        <span className="text-[9px] uppercase tracking-wide text-muted-foreground" title={
+          source === "manual" ? "Manual mark — not priced off the curve"
+          : source === "cost" ? "Held at cost — no curve price available"
+          : "Priced off the Treasury curve"
+        }>
+          {SOURCE_LABEL[source]}
+        </span>
+      )}
+      {onEdit ? (
+        <button
+          type="button"
+          onClick={() => { setDraft(isManual ? String(b.manualPrice) : ""); setEditing(true); }}
+          className="font-mono hover:text-[var(--primary)] transition-colors"
+          title="Click to set a manual price (per 100 of par)"
+        >
+          {shown}
+        </button>
+      ) : shown}
+    </span>
   );
 }
 

@@ -688,7 +688,20 @@ export function PortfolioClient() {
             ext={extQuotes}
           />
         )}
-        {activeSubView === "bonds" && <FixedIncomeView holdings={scopedHoldings} />}
+        {activeSubView === "bonds" && (
+          <FixedIncomeView
+            holdings={scopedHoldings}
+            onEdit={async (holding, updates) => {
+              const res = await fetch("/api/holdings", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: holding.id, ...updates }),
+              });
+              if (!res.ok) throw new Error((await res.json()).error);
+              loadData();
+            }}
+          />
+        )}
         {activeSubView === "derivatives" && (
           <DerivativesView holdings={scopedHoldings} onClose={(holding) => setClosingHolding(holding)} />
         )}

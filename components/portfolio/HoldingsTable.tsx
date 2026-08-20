@@ -21,6 +21,17 @@ interface CashBalance {
   balance: number;
 }
 
+/** Fields the inline editor can PATCH. The two bond-mark fields are only sent
+ *  for face-value bonds — an empty mark box clears the override back to auto. */
+export interface HoldingEdits {
+  shares?: number;
+  cost_basis?: number;
+  notes?: string | null;
+  drip?: boolean;
+  price_source?: string;
+  manual_price?: number | null;
+}
+
 interface Props {
   /* Already scoped to the selected account by PortfolioClient — don't filter
      again here. `account` is only used to label the Cash row's scope. */
@@ -31,7 +42,7 @@ interface Props {
      folded into them, so the after-hours print can never reach `currentPrice`
      and from there the snapshot/report path. */
   ext?: Record<string, ExtHoursQuote>;
-  onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null; drip?: boolean }) => Promise<void>;
+  onEdit?: (holding: HoldingWithMetrics, updates: HoldingEdits) => Promise<void>;
   onClose?: (holding: HoldingWithMetrics) => void;
   onDelete?: (holding: HoldingWithMetrics) => Promise<void>;
 }
@@ -264,7 +275,7 @@ interface RowProps {
   expanded: boolean;
   ext?: ExtHoursQuote;
   onToggle: () => void;
-  onEdit?: (holding: HoldingWithMetrics, updates: { shares?: number; cost_basis?: number; notes?: string | null; drip?: boolean }) => Promise<void>;
+  onEdit?: (holding: HoldingWithMetrics, updates: HoldingEdits) => Promise<void>;
   onClose?: (holding: HoldingWithMetrics) => void;
   onDelete?: (holding: HoldingWithMetrics) => Promise<void>;
 }
@@ -274,6 +285,8 @@ function HoldingRow({ holding: h, weight, expanded, ext, onToggle, onEdit, onClo
   const [editShares, setEditShares] = useState(String(h.shares));
   const [editCost, setEditCost] = useState(String(isFaceValueBond(h) ? h.costBasis * 100 : h.costBasis));
   const [editNotes, setEditNotes] = useState(h.notes ?? "");
+  // Manual bond mark (clean price /100). Empty string = no override, price auto.
+  const [editMark, setEditMark] = useState(h.priceSource === "manual" && h.manualPrice != null ? String(h.manualPrice) : "");
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -370,6 +383,7 @@ function HoldingRow({ holding: h, weight, expanded, ext, onToggle, onEdit, onClo
                     setEditShares(String(h.shares));
                     setEditCost(String(faceBond ? h.costBasis * 100 : h.costBasis));
                     setEditNotes(h.notes ?? "");
+                    setEditMark(h.priceSource === "manual" && h.manualPrice != null ? String(h.manualPrice) : "");
                     setEditing(true);
                   }}
                   className="text-xs px-1.5 py-0.5 rounded-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
@@ -423,10 +437,18 @@ function HoldingRow({ holding: h, weight, expanded, ext, onToggle, onEdit, onClo
               onSubmit={async (e) => {
                 e.preventDefault();
                 setSaving(true);
+                const mark = parseFloat(editMark);
                 await onEdit(h, {
                   shares: parseFloat(editShares),
                   cost_basis: faceBond ? parseFloat(editCost) / 100 : parseFloat(editCost),
                   notes: editNotes.trim() || null,
+                  // Blank (or unparseable) clears the override and hands pricing
+                  // back to the curve; anything else pins the mark.
+                  ...(faceBond
+                    ? editMark.trim() !== "" && Number.isFinite(mark) && mark > 0
+                      ? { price_source: "manual", manual_price: mark }
+                      : { price_source: "auto", manual_price: null }
+                    : {}),
                 });
                 setSaving(false);
                 setEditing(false);
@@ -444,7 +466,7 @@ function HoldingRow({ holding: h, weight, expanded, ext, onToggle, onEdit, onClo
                 />
               </label>
               <label className="text-xs text-muted-foreground">
-                {faceBond ? "Price /100" : "Avg Cost"}
+                {faceBond ? "Cost /100" : "Avg Cost"}
                 <input
                   type="number"
                   step="any"
@@ -454,6 +476,20 @@ function HoldingRow({ holding: h, weight, expanded, ext, onToggle, onEdit, onClo
                   onChange={(e) => setEditCost(e.target.value)}
                 />
               </label>
+              {faceBond && (
+                <label className="text-xs text-muted-foreground" title="Clean price per 100 of par. Leave blank to price off the Treasury curve.">
+                  Mark /100
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    className="ml-1.5 w-24 px-2 py-1 text-xs font-mono rounded-sm border border-border bg-transparent text-foreground focus:outline-none focus:border-[var(--primary)]"
+                    value={editMark}
+                    onChange={(e) => setEditMark(e.target.value)}
+                    placeholder={`auto ${(h.currentPrice * 100).toFixed(2)}`}
+                  />
+                </label>
+              )}
               <label className="text-xs text-muted-foreground">
                 Notes
                 <input
