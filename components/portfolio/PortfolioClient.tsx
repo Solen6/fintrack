@@ -13,6 +13,7 @@ import { AddOptionFlow } from "./AddOptionFlow";
 import { AddFutureForm } from "./AddFutureForm";
 import { AddCashForm } from "./AddCashForm";
 import { DepositForm } from "./DepositForm";
+import { TransferForm } from "./TransferForm";
 import { ClosePositionModal } from "./ClosePositionModal";
 import { DividendManager } from "./DividendManager";
 import { ClosedPositions } from "./ClosedPositions";
@@ -59,7 +60,7 @@ interface DBHolding {
 type BondMark = BondMetrics & { currentPrice: number };
 type DerivativeMark = { currentPrice: number; iv?: number; spot?: number };
 
-type ViewState = "loading" | "empty" | "addAccount" | "addPosition" | "addBond" | "addOption" | "addFuture" | "addCash" | "deposit" | "ready";
+type ViewState = "loading" | "empty" | "addAccount" | "addPosition" | "addBond" | "addOption" | "addFuture" | "addCash" | "deposit" | "transfer" | "ready";
 
 /** How often live quotes are re-pulled. Matches the 60s TTL on the quote cache
  *  in lib/finnhub.ts, so polling faster would only ever return the same marks. */
@@ -483,6 +484,19 @@ export function PortfolioClient() {
     );
   }
 
+  if (view === "transfer") {
+    return (
+      <TransferForm
+        existingAccounts={existingAccounts}
+        cashByAccount={cashByAccount}
+        holdings={holdings}
+        defaultFrom={selectedAccount}
+        onSaved={() => loadData()}
+        onCancel={() => setView("ready")}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-1 overflow-hidden">
       <AccountSidebar
@@ -639,6 +653,14 @@ export function PortfolioClient() {
               className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
             >
               Deposit / Withdraw
+            </button>
+            <button
+              onClick={() => setView("transfer")}
+              disabled={existingAccounts.length < 2}
+              title={existingAccounts.length < 2 ? "Add a second account to transfer between them" : undefined}
+              className="text-xs px-3 py-1 rounded-sm border border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors disabled:opacity-40 disabled:hover:text-muted-foreground disabled:hover:border-border"
+            >
+              Transfer
             </button>
             <button
               onClick={() => setView("addAccount")}

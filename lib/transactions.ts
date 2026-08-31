@@ -7,7 +7,14 @@ import type { SupabaseClient } from "@supabase/supabase-js";
    the underlying action (insert holding / update cash) still succeeds. */
 
 export type TxnAction =
-  | "BUY" | "SELL" | "DIV" | "DEPOSIT" | "WITHDRAWAL" | "INTEREST" | "FEE" | "OTHER";
+  | "BUY" | "SELL" | "DIV" | "DEPOSIT" | "WITHDRAWAL" | "INTEREST" | "FEE"
+  // Moves between two of the user's OWN accounts, written as a matched pair:
+  // TRANSFER_OUT (−) on the source, TRANSFER_IN (+) on the destination. Both
+  // already count as external flows everywhere (snapshots, monthly + annual
+  // reports), so each account's return stays honest while the pair nets to
+  // zero at the rollup — a transfer is not a contribution.
+  | "TRANSFER_IN" | "TRANSFER_OUT"
+  | "OTHER";
 
 export interface TxnInput {
   account: string;
