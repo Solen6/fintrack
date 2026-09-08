@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { formatCurrency } from "@/lib/format";
 import { Sensitive } from "@/lib/privacy";
 import { NOTE_MAX } from "@/lib/notes";
+import { isDerivative, isFaceValueBond } from "@/lib/types";
 import type { HoldingWithMetrics } from "@/lib/types";
 
 interface Props {
@@ -18,8 +19,46 @@ interface Props {
 
 type Mode = "cash" | "position";
 
-const isEquity = (h: HoldingWithMetrics) => (h.instrumentType ?? "equity") === "equity";
+/* Stocks, ETFs and bonds move in kind. Options and futures don't: they are
+   distinct contracts, and a combo's legs carry payoff math that assumes the
+   legs sit together. */
+const isMovable = (h: HoldingWithMetrics) => !isDerivative(h);
 const fmtShares = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(6).replace(/0+$/, "").replace(/\.$/, ""));
+/* A non-ETF bond is measured in dollars of par, not shares (`shares` is face
+   value and the price is clean/100), so every quantity the user sees or types
+   for one is a dollar amount. */
+const fmtQty = (h: HoldingWithMetrics, n: number) =>
+  isFaceValueBond(h) ? formatCurrency(n) : fmtShares(n);
+/* How a position reads in the picker. A bond's ticker is its CUSIP, which
+   names nothing to a human, so bonds go by name — and the list is ordered by
+   this label rather than by ticker so what you read is what you scan. */
+const labelOf = (h: HoldingWithMetrics) =>
+  isFaceValueBond(h)
+    ? `${h.name || h.ticker} — ${formatCurrency(h.shares)} face`
+    : `${h.ticker} — ${fmtShares(h.shares)} sh`;
+
+/* Which destination row a position folds into. An equity or a bond fund IS its
+   ticker, so a ticker match settles it. An individual bond is a specific
+   security that merely carries a label, so it matches on CUSIP when both rows
+   have one and otherwise on the terms that define it — the server applies the
+   same rule, and neither side will blend a 2031 Treasury into a 2027 one. */
+const sameLot = (a: HoldingWithMetrics, b: HoldingWithMetrics) => {
+  const ka = a.instrumentType ?? "equity";
+  if (ka !== (b.instrumentType ?? "equity")) return false;
+  if (a.ticker !== b.ticker) return false;
+  if (ka !== "bond") return true;
+  if (isFaceValueBond(a) !== isFaceValueBond(b)) return false;
+  if (!isFaceValueBond(a)) return true;
+  const ca = a.cusip?.trim().toUpperCase();
+  const cb = b.cusip?.trim().toUpperCase();
+  if (ca && cb) return ca === cb;
+  return (
+    a.bondType === b.bondType &&
+    (a.couponRate ?? null) === (b.couponRate ?? null) &&
+    (a.couponFreq ?? null) === (b.couponFreq ?? null) &&
+    (a.maturityDate ?? "").slice(0, 10) === (b.maturityDate ?? "").slice(0, 10)
+  );
+};
 
 /* Move cash or shares between two of the user's own accounts. Cash moves the
    balance; a position moves IN KIND — the shares keep their cost basis and
@@ -53,8 +92,8 @@ export function TransferForm({
   const toCash = dest ? cashByAccount[dest]?.balance ?? 0 : 0;
 
   const movable = useMemo(
-    () => holdings.filter((h) => h.account === from && isEquity(h) && h.shares > 0)
-      .sort((a, b) => a.ticker.localeCompare(b.ticker)),
+    () => holdings.filter((h) => h.account === from && isMovable(h) && h.shares > 0)
+      .sort((a, b) => labelOf(a).localeCompare(labelOf(b))),
     [holdings, from],
   );
   const selected = movable.find((h) => h.id === holdingId) ?? null;
@@ -63,10 +102,12 @@ export function TransferForm({
   // position at a blended cost, or landing as its own new row.
   const mergeInto = useMemo(
     () => (selected && dest
-      ? holdings.find((h) => h.account === dest && isEquity(h) && h.ticker === selected.ticker) ?? null
+      ? holdings.find((h) => h.account === dest && sameLot(selected, h)) ?? null
       : null),
     [holdings, dest, selected],
   );
+
+  const faceBond = selected ? isFaceValueBond(selected) : false;
 
   const amt = parseFloat(amount);
   const hasAmt = Number.isFinite(amt) && amt > 0;
@@ -92,9 +133,16 @@ export function TransferForm({
       payload = { from, to: dest, amount: amt };
     } else {
       if (!selected) { setError("Pick a position to transfer."); return; }
-      if (!hasShares) { setError("Share count must be a positive number."); return; }
+      if (!hasShares) {
+        setError(faceBond ? "Face value must be a positive number." : "Share count must be a positive number.");
+        return;
+      }
       if (shareCount > selected.shares + 1e-9) {
-        setError(`Cannot transfer more than the ${fmtShares(selected.shares)} shares held.`); return;
+        setError(
+          faceBond
+            ? `Cannot transfer more than the ${formatCurrency(selected.shares)} face held.`
+            : `Cannot transfer more than the ${fmtShares(selected.shares)} shares held.`,
+        ); return;
       }
       url = "/api/holdings/transfer";
       payload = { id: selected.id, to: dest, shares: shareCount, price: selected.currentPrice };
@@ -142,7 +190,7 @@ export function TransferForm({
         <p className="text-xs text-muted-foreground">
           {isCash
             ? "Move money between two of your own accounts. It is not a deposit or a withdrawal — your total return is untouched, and each account still records the flow."
-            : "Move shares in kind, the way a broker transfer does. Cost basis and acquisition date travel with the shares, so nothing is sold and no holding period restarts."}
+            : "Move a stock, ETF or bond in kind, the way a broker transfer does. Cost basis and acquisition date travel with the position, so nothing is sold and no holding period restarts."}
         </p>
 
         <div className="grid grid-cols-2 gap-3">
@@ -204,13 +252,13 @@ export function TransferForm({
                   <option value="">Select a position…</option>
                   {movable.map((h) => (
                     <option key={h.id} value={h.id}>
-                      {h.ticker} — {fmtShares(h.shares)} sh
+                      {labelOf(h)}
                     </option>
                   ))}
                 </select>
               ) : (
                 <p className="text-xs text-muted-foreground border border-border rounded-sm px-3 py-2">
-                  {from} holds no stocks or ETFs to transfer. Bonds and options/futures can&apos;t be moved this way.
+                  {from} holds nothing that can be transferred in kind. Options and futures can&apos;t be moved this way.
                 </p>
               )}
             </div>
@@ -218,13 +266,15 @@ export function TransferForm({
             {selected && (
               <div>
                 <div className="flex items-baseline justify-between mb-1">
-                  <label className="text-xs text-muted-foreground">Shares *</label>
+                  <label className="text-xs text-muted-foreground">
+                    {faceBond ? "Face value *" : "Shares *"}
+                  </label>
                   <button
                     type="button"
-                    onClick={() => setShares(fmtShares(selected.shares))}
+                    onClick={() => setShares(String(selected.shares))}
                     className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
                   >
-                    Max {fmtShares(selected.shares)}
+                    Max {fmtQty(selected, selected.shares)}
                   </button>
                 </div>
                 <input
@@ -232,10 +282,12 @@ export function TransferForm({
                   type="number" step="any" min="0"
                   value={shares}
                   onChange={(e) => setShares(e.target.value)}
-                  placeholder={fmtShares(selected.shares)}
+                  placeholder={faceBond ? String(selected.shares) : fmtShares(selected.shares)}
                 />
                 <p className="text-[10px] text-muted-foreground mt-1">
-                  Leave blank to move the whole position.
+                  {faceBond
+                    ? "Dollars of par. Leave blank to move the whole bond."
+                    : "Leave blank to move the whole position."}
                 </p>
               </div>
             )}
@@ -297,28 +349,48 @@ export function TransferForm({
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Moving</span>
               <span className="font-mono text-foreground">
-                {fmtShares(Math.min(shareCount, selected.shares))} {selected.ticker} ·{" "}
+                {faceBond ? (
+                  <><Sensitive>{formatCurrency(Math.min(shareCount, selected.shares))}</Sensitive> face</>
+                ) : (
+                  <>{fmtShares(Math.min(shareCount, selected.shares))} {selected.ticker}</>
+                )}
+                {" · "}
                 <Sensitive>{formatCurrency(movedValue)}</Sensitive>
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">{from} keeps</span>
               <span className="font-mono text-foreground">
-                {fmtShares(Math.max(0, selected.shares - shareCount))} {selected.ticker}
+                {faceBond ? (
+                  <><Sensitive>{formatCurrency(Math.max(0, selected.shares - shareCount))}</Sensitive> face</>
+                ) : (
+                  <>{fmtShares(Math.max(0, selected.shares - shareCount))} {selected.ticker}</>
+                )}
               </span>
             </div>
             <div className="pt-1 border-t border-border text-[10px] text-muted-foreground leading-relaxed">
               {mergeInto && blended !== null ? (
                 <>
-                  {dest} already holds {fmtShares(mergeInto.shares)} {selected.ticker} — these fold into one
-                  position at a blended cost of <span className="font-mono">{formatCurrency(blended)}</span>/sh
-                  (from <span className="font-mono">{formatCurrency(mergeInto.costBasis)}</span>).
+                  {dest} already holds {fmtQty(mergeInto, mergeInto.shares)}
+                  {faceBond ? " face of this bond" : ` ${selected.ticker}`} — these fold into one
+                  position at a blended cost of{" "}
+                  <span className="font-mono">
+                    {faceBond ? (blended * 100).toFixed(2) : formatCurrency(blended)}
+                  </span>
+                  {faceBond ? "/100" : "/sh"} (from{" "}
+                  <span className="font-mono">
+                    {faceBond ? (mergeInto.costBasis * 100).toFixed(2) : formatCurrency(mergeInto.costBasis)}
+                  </span>
+                  ).
                 </>
               ) : (
                 <>
                   Lands in {dest} as its own position at{" "}
-                  <span className="font-mono">{formatCurrency(selected.costBasis)}</span>/sh — the same cost basis
-                  it has now. Nothing is realized.
+                  <span className="font-mono">
+                    {faceBond ? (selected.costBasis * 100).toFixed(2) : formatCurrency(selected.costBasis)}
+                  </span>
+                  {faceBond ? "/100" : "/sh"} — the same cost basis it has now. Nothing is realized.
+                  {faceBond && " The coupon, maturity and any manual mark travel with the face value."}
                 </>
               )}
             </div>
@@ -334,7 +406,7 @@ export function TransferForm({
             className="text-xs px-4 py-2 rounded-sm font-medium disabled:opacity-50"
             style={{ background: "oklch(0.72 0.14 74)", color: "oklch(0.08 0 0)" }}
           >
-            {saving ? "Transferring…" : isCash ? "Transfer Cash" : "Transfer Shares"}
+            {saving ? "Transferring…" : isCash ? "Transfer Cash" : faceBond ? "Transfer Bond" : "Transfer Shares"}
           </button>
           <button type="button" onClick={onCancel} className="text-xs px-3 py-2 rounded-sm text-muted-foreground hover:text-foreground transition-colors">
             Cancel

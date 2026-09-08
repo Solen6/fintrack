@@ -128,8 +128,16 @@ export function buildIncomeRows(opts: {
     dividend: d,
   }));
 
-  // Coupons that actually paid — cash really moved for each of these.
-  const paidCouponRows: IncomeRow[] = couponRecords.map((c) => ({
+  /* Coupons that actually paid — cash really moved for each of these.
+
+     A ZERO-dollar coupon record is not a payment: it is a dedupe marker
+     written by /api/holdings/transfer when a partial bond transfer splits a
+     row, claiming a coupon the source was already paid so the new row can't be
+     paid it again. Unlike a dividend, a coupon has no DRIP variant and always
+     pays cash, so amount === 0 is unambiguous. Drop them from the rows (a
+     "$0.00 coupon" is noise) but leave them in `recorded` below, which is
+     exactly where they have to bite. */
+  const paidCouponRows: IncomeRow[] = couponRecords.filter((c) => (c.amount ?? 0) !== 0).map((c) => ({
     key: `cpn-${c.id}`,
     date: c.date,
     ticker: c.ticker,
