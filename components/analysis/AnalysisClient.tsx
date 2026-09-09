@@ -16,29 +16,19 @@ import { cn } from "@/lib/utils";
 const AMBER_FILL = "oklch(0.72 0.14 74 / 0.13)";
 const BORDER_HI = "oklch(0.28 0 0)";
 
-type Cat =
-  | "risk"
-  | "allocation"
-  | "performance"
-  | "income"
-  | "tax"
-  | "projections";
+type Cat = "risk" | "allocation" | "income" | "projections";
 
 const CAT_LABEL: Record<Cat, string> = {
   risk: "Risk",
   allocation: "Allocation",
-  performance: "Performance",
   income: "Income",
-  tax: "Tax",
   projections: "Projections",
 };
 
 const CAT_COLOR: Record<Cat, string> = {
   risk: "oklch(0.66 0.19 25)",
   allocation: "oklch(0.72 0.14 74)",
-  performance: "oklch(0.64 0.07 240)",
   income: "oklch(0.72 0.15 152)",
-  tax: "oklch(0.62 0.13 300)",
   projections: "oklch(0.72 0.09 190)",
 };
 
@@ -111,19 +101,6 @@ const TOOLS: Tool[] = [
     ),
   },
   {
-    id: "stress-test",
-    title: "Stress Test",
-    cat: "risk",
-    search: "stress test scenario shock market crash rates oil drawdown",
-    desc: "Shock the book — a −20% market, a rate spike, a bad day — and see the damage before it happens.",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 3.5l9.2 15.5H2.8z" />
-        <path d="M12 10v4.5M12 17.4h.01" />
-      </svg>
-    ),
-  },
-  {
     id: "rebalancer",
     title: "Rebalancer",
     cat: "allocation",
@@ -165,32 +142,6 @@ const TOOLS: Tool[] = [
     ),
   },
   {
-    id: "attribution",
-    title: "Attribution",
-    cat: "performance",
-    search: "attribution performance selection allocation contribution return brinson sector",
-    desc: "Break returns into what you picked vs. how you weighted it — where the alpha actually came from.",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 20.5h18" />
-        <path d="M6 20.5v-7M12 20.5V5M18 20.5v-10" />
-      </svg>
-    ),
-  },
-  {
-    id: "benchmark-lab",
-    title: "Benchmark Lab",
-    cat: "performance",
-    search: "benchmark compare spy index blend custom relative alpha beta capture",
-    desc: "Race the portfolio against SPY over a window you choose, with alpha, beta, and capture ratios.",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 17l5.5-5.5 3.5 3.5 7-7.5" />
-        <path d="M16 7.5h4v4" />
-      </svg>
-    ),
-  },
-  {
     id: "dividend-forecaster",
     title: "Dividend Forecaster",
     cat: "income",
@@ -201,20 +152,6 @@ const TOOLS: Tool[] = [
         <ellipse cx="12" cy="6" rx="7" ry="3" />
         <path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6" />
         <path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
-      </svg>
-    ),
-  },
-  {
-    id: "tax-loss-harvester",
-    title: "Tax-Loss Harvester",
-    cat: "tax",
-    search: "tax loss harvest wash sale lots underwater savings",
-    desc: "Positions below cost worth realizing, wash-sale windows flagged, and the estimated tax saved.",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="6" cy="6" r="2.4" />
-        <circle cx="6" cy="18" r="2.4" />
-        <path d="M8 7.5l12 9M20 7.5l-8 6M8 16.5l4-3" />
       </svg>
     ),
   },
@@ -239,9 +176,7 @@ const CATEGORIES: { key: "all" | Cat; label: string }[] = [
   { key: "all", label: "All" },
   { key: "risk", label: "Risk" },
   { key: "allocation", label: "Allocation" },
-  { key: "performance", label: "Performance" },
   { key: "income", label: "Income" },
-  { key: "tax", label: "Tax" },
   { key: "projections", label: "Projections" },
 ];
 

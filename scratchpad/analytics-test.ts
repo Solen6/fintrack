@@ -7,7 +7,6 @@ import {
   historicalVaR,
   unconstrainedFrontier, longOnlyFrontier, portfolioMetrics, optimizeLongOnly, randomCloud,
   bootstrapProjection, gbmProjection, mulberry32,
-  brinsonAttribution,
 } from "../lib/analytics/index";
 
 let pass = 0, fail = 0;
@@ -133,20 +132,6 @@ function approx(a: number, b: number, tol = 1e-6) { return Math.abs(a - b) <= to
   const withC = gbmProjection(0.05, 0.12, { ...cfg, contribution: 1000, contributionEveryDays: 21 });
   const noC = gbmProjection(0.05, 0.12, cfg);
   ok("contributions raise median", withC.median > noC.median);
-}
-
-/* ── attribution ── */
-{
-  const inputs = [
-    { sector: "Tech", portWeight: 0.5, portReturn: 0.20, benchWeight: 0.3, benchReturn: 0.15 },
-    { sector: "Energy", portWeight: 0.2, portReturn: -0.05, benchWeight: 0.1, benchReturn: 0.00 },
-    { sector: "Health", portWeight: 0.3, portReturn: 0.08, benchWeight: 0.6, benchReturn: 0.10 },
-  ];
-  const benchTotal = inputs.reduce((s, x) => s + x.benchWeight * x.benchReturn, 0);
-  const res = brinsonAttribution(inputs, benchTotal);
-  const sumEffects = res.totals.allocation + res.totals.selection + res.totals.interaction;
-  ok("attribution sums to active", approx(sumEffects, res.totals.active, 1e-9), `Σ ${sumEffects.toFixed(5)} active ${res.totals.active.toFixed(5)}`);
-  ok("per-sector totals sum", approx(res.sectors.reduce((s, e) => s + e.total, 0), res.totals.active, 1e-9));
 }
 
 console.log(`\nanalytics-test: ${pass} passed, ${fail} failed`);
