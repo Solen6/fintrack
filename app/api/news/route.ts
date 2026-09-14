@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import type { NewsTopic } from "@/lib/news-topics";
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY!;
 const BASE = "https://finnhub.io/api/v1";
@@ -44,6 +45,9 @@ export interface NewsArticle {
   source: string;
   timestamp: number;  // unix ms
   url: string;
+  /** Topic sections this row belongs to. Set only by /api/news/topics; rows from
+   *  every other source are classified on the client (lib/news-topics). */
+  topics?: NewsTopic[];
 }
 
 function toArticle(raw: RawArticle, ticker: string | null): NewsArticle {

@@ -10,6 +10,7 @@ import { NewsPreferencesModal } from "@/components/news/NewsPreferencesModal";
 import type { NewsArticle } from "@/app/api/news/route";
 import type { ArticleState } from "@/app/api/news/interactions/route";
 import { DEFAULT_BUILTIN_PREFS, type BuiltinKey, type BuiltinPrefs } from "@/lib/news-builtins";
+import type { NewsTopic } from "@/lib/news-topics";
 import {
   DEFAULT_PREFS,
   loadPrefs,
@@ -76,11 +77,25 @@ async function fetchAllNews(
   return merged.sort((a, b) => b.timestamp - a.timestamp).slice(0, 150);
 }
 
+// The topic desks behind Rates & Inflation / Energy / Macro. Kept apart from
+// fetchAllNews on purpose: these rows must not compete for the 150 slots above,
+// and they never show in All. Throws on a bad response so a failed poll keeps the
+// rows already on screen instead of blanking the sections.
+async function fetchTopicNews(): Promise<NewsArticle[]> {
+  const r = await fetch("/api/news/topics");
+  if (!r.ok) throw new Error(`topics ${r.status}`);
+  const d = await r.json();
+  return ((d.articles ?? []) as NewsArticle[]).filter(saAllows);
+}
+
 export function NewsPageClient() {
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+  const [selectedTopic, setSelectedTopic] = useState<NewsTopic | null>(null);
   const [filter, setFilter] = useState<"all" | "saved">("all");
   const [tickers, setTickers] = useState<string[]>([]);
   const [articles, setArticles] = useState<NewsArticle[]>([]);
+  const [topicArticles, setTopicArticles] = useState<NewsArticle[]>([]);
+  const [topicsLoading, setTopicsLoading] = useState(true);
   const [interactions, setInteractions] = useState<Record<string, ArticleState>>({});
   const [sources, setSources] = useState<NewsSource[]>([]);
   const [builtins, setBuiltins] = useState<BuiltinPrefs>(DEFAULT_BUILTIN_PREFS);
@@ -100,6 +115,17 @@ export function NewsPageClient() {
       const merged = await fetchAllNews(tickersRef.current, builtinsRef.current);
       if (mountedRef.current) setArticles(merged);
     } catch { /* silent */ }
+  }, []);
+
+  const refreshTopics = useCallback(async () => {
+    try {
+      const rows = await fetchTopicNews();
+      if (mountedRef.current) setTopicArticles(rows);
+    } catch {
+      /* keep whatever the sections already show */
+    } finally {
+      if (mountedRef.current) setTopicsLoading(false);
+    }
   }, []);
 
   // Load everything on mount
@@ -156,12 +182,44 @@ export function NewsPageClient() {
     }
 
     load();
-    const interval = setInterval(refreshNews, POLL_INTERVAL);
+    // Independent of holdings, so it starts now rather than waiting on load().
+    // Written as a promise chain (not refreshTopics()) so every setState sits in
+    // a callback — react-hooks/set-state-in-effect flags the direct call.
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    fetchTopicNews()
+      .then((rows) => {
+        if (mountedRef.current) setTopicArticles(rows);
+      })
+      .catch(() => {
+        // One quick retry — a cold route or a blip shouldn't leave the sections
+        // without their desks until the 10-minute poll.
+        retry = setTimeout(refreshTopics, 30_000);
+      })
+      .finally(() => {
+        if (mountedRef.current) setTopicsLoading(false);
+      });
+    const interval = setInterval(() => {
+      refreshNews();
+      refreshTopics();
+    }, POLL_INTERVAL);
     return () => {
       mountedRef.current = false;
       clearInterval(interval);
+      clearTimeout(retry);
     };
-  }, [refreshNews]);
+  }, [refreshNews, refreshTopics]);
+
+  // A ticker and a topic are two ways of narrowing the same feed, so picking
+  // one clears the other. "All" arrives here as a null ticker.
+  const handleTickerSelect = useCallback((ticker: string | null) => {
+    setSelectedTicker(ticker);
+    setSelectedTopic(null);
+  }, []);
+
+  const handleTopicSelect = useCallback((topic: NewsTopic) => {
+    setSelectedTopic(topic);
+    setSelectedTicker(null);
+  }, []);
 
   const handleToggleBuiltin = useCallback((key: BuiltinKey, enabled: boolean) => {
     const prev = builtinsRef.current;
@@ -258,7 +316,11 @@ export function NewsPageClient() {
           articles={articles}
           loading={loading}
           selectedTicker={selectedTicker}
-          onTickerSelect={setSelectedTicker}
+          onTickerSelect={handleTickerSelect}
+          topicArticles={topicArticles}
+          topicsLoading={topicsLoading}
+          selectedTopic={selectedTopic}
+          onTopicSelect={handleTopicSelect}
           interactions={interactions}
           filter={filter}
           onFilterChange={setFilter}

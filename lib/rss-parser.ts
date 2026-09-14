@@ -8,11 +8,39 @@ function decode(s: string): string {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
     .replace(/&apos;/g, "'")
     .replace(/&nbsp;/g, " ")
+    // Numeric references, decimal and hex — OilPrice sends &#039;, the Dow Jones
+    // feeds send &#x2019;, and both used to reach the feed as literal text.
+    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => codePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d: string) => codePoint(Number(d)))
+    // Feeds that entity-escape their markup (BEA does) only turn into tags after
+    // the decode above, so strip once more.
+    .replace(/<!\[CDATA\[|\]\]>/g, "")
+    .replace(/<\/?[a-z][^>]*>/gi, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// Old feeds reference Windows-1252 punctuation by its C1 slot (&#146; for ’).
+const CP1252: Record<number, string> = {
+  0x80: "€", 0x85: "…", 0x91: "‘", 0x92: "’", 0x93: "“", 0x94: "”", 0x96: "–", 0x97: "—",
+};
+
+function codePoint(n: number): string {
+  if (CP1252[n]) return CP1252[n];
+  // Never emit what would render blank or as tofu: NUL, C0/C1 control characters
+  // (tab, LF and CR are fine), lone surrogates, or out-of-range values.
+  if (
+    n === 0 ||
+    (n < 0x20 && n !== 9 && n !== 10 && n !== 13) ||
+    (n >= 0x7f && n <= 0x9f) ||
+    (n >= 0xd800 && n <= 0xdfff) ||
+    n > 0x10ffff
+  ) {
+    return "";
+  }
+  return String.fromCodePoint(n);
 }
 
 function firstTag(xml: string, ...tags: string[]): string {
@@ -49,8 +77,10 @@ export function parseRss(xml: string, feedName: string): NewsArticle[] {
       } else {
         // RSS: <link>url</link> or <link/> followed by text, or <guid> as fallback
         const linkMatch = seg.match(/<link>(https?:\/\/[^<\s]+)<\/link>/i);
-        url = linkMatch?.[1]?.trim() ?? firstTag(seg, "guid");
+        url = linkMatch?.[1]?.trim() || firstTag(seg, "link") || firstTag(seg, "guid");
       }
+      // BEA sometimes drops the scheme: <link>www.bea.gov/news/…</link>.
+      if (/^(?:www\.|\/\/)/i.test(url)) url = `https://${url.replace(/^\/\//, "")}`;
 
       if (!url || !url.startsWith("http")) return null;
 

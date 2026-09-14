@@ -298,7 +298,11 @@ export function articleLocked(a: NewsArticle, prefs: NewsPrefs): boolean {
 }
 
 /* ─── Combined visibility filter ─── */
-export function articleVisible(a: NewsArticle, prefs: NewsPrefs): boolean {
+export function articleVisible(
+  a: NewsArticle,
+  prefs: NewsPrefs,
+  opts: { ignoreTypes?: boolean } = {},
+): boolean {
   // Source layer: hide only if it maps to a curated provider the user unchecked.
   const curated = matchCuratedSource(a.source);
   if (curated && !prefs.sources.includes(curated)) return false;
@@ -307,7 +311,10 @@ export function articleVisible(a: NewsArticle, prefs: NewsPrefs): boolean {
   if (planBlocks(a, prefs, curated)) return false;
   if (prefs.hideLocked && articleLocked(a, prefs)) return false;
 
-  // Type layer: visible if any of the article's tags is selected.
+  // Type layer: visible if any of the article's tags is selected. A topic
+  // section (lib/news-topics) skips it — opening "Energy" is an explicit ask, and
+  // unticking the Macro type here shouldn't silently empty that section.
+  if (opts.ignoreTypes) return true;
   if (prefs.types.length === 0) return true; // no constraint
   return articleTypes(a).some((t) => prefs.types.includes(t));
 }

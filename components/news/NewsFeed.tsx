@@ -6,6 +6,7 @@ import type { ArticleState } from "@/app/api/news/interactions/route";
 import { formatRelativeTime } from "@/lib/format";
 import { sourceColor } from "@/lib/news-source-color";
 import { articleLocked, articleVisible, type NewsPrefs } from "@/lib/news-preferences";
+import { articleTopics, NEWS_TOPICS, TOPIC_LABEL, type NewsTopic } from "@/lib/news-topics";
 
 type Filter = "all" | "saved";
 
@@ -15,6 +16,11 @@ interface Props {
   loading: boolean;
   selectedTicker: string | null;
   onTickerSelect: (ticker: string | null) => void;
+  /** Pre-tagged rows from the topic desks (/api/news/topics). */
+  topicArticles: NewsArticle[];
+  topicsLoading: boolean;
+  selectedTopic: NewsTopic | null;
+  onTopicSelect: (topic: NewsTopic) => void;
   interactions: Record<string, ArticleState>;
   filter: Filter;
   onFilterChange: (f: Filter) => void;
@@ -30,6 +36,10 @@ export function NewsFeed({
   loading,
   selectedTicker,
   onTickerSelect,
+  topicArticles,
+  topicsLoading,
+  selectedTopic,
+  onTopicSelect,
   interactions,
   filter,
   onFilterChange,
@@ -41,9 +51,49 @@ export function NewsFeed({
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
 
+  // Which sections each loaded row belongs to, keyed by url. Feed rows are
+  // classified by keyword; desk rows arrive tagged, and when the same story also
+  // came in through the regular feed the desk's tag carries over to it.
+  const topicsByUrl = useMemo(() => {
+    const m = new Map<string, NewsTopic[]>();
+    for (const a of articles) m.set(a.url, articleTopics(a));
+    for (const a of topicArticles) {
+      const had = m.get(a.url) ?? [];
+      const add = a.topics ?? [];
+      m.set(a.url, NEWS_TOPICS.map((t) => t.id).filter((id) => had.includes(id) || add.includes(id)));
+    }
+    return m;
+  }, [articles, topicArticles]);
+
+  // Desk rows the regular feed doesn't already carry. They surface only inside a
+  // topic section or under Saved — never in All, which stays your feed.
+  const deskOnly = useMemo(() => {
+    const inFeed = new Set(articles.map((a) => a.url));
+    return topicArticles.filter((a) => !inFeed.has(a.url));
+  }, [articles, topicArticles]);
+
+  const deskUrls = useMemo(() => new Set(deskOnly.map((a) => a.url)), [deskOnly]);
+
+  // The rows the current sidebar selection draws from, before any filtering.
+  const base = useMemo(() => {
+    const newest = (list: NewsArticle[]) => list.sort((a, b) => b.timestamp - a.timestamp);
+    if (selectedTopic) {
+      return newest(
+        [...articles, ...deskOnly].filter((a) => topicsByUrl.get(a.url)?.includes(selectedTopic)),
+      );
+    }
+    if (filter === "saved" && !selectedTicker) return newest([...articles, ...deskOnly]);
+    return articles;
+  }, [articles, deskOnly, topicsByUrl, selectedTopic, selectedTicker, filter]);
+
   const filtered = useMemo(() => {
-    let list = articles.filter((a) => !interactions[a.url]?.deleted);
-    list = list.filter((a) => articleVisible(a, prefs));
+    let list = base.filter((a) => !interactions[a.url]?.deleted);
+    // Types are skipped inside a section, and for desk rows wherever they show
+    // (outside a section that's only Saved) — a story starred in Energy mustn't
+    // vanish from Saved because Macro or Broad is unticked in Preferences.
+    list = list.filter((a) =>
+      articleVisible(a, prefs, { ignoreTypes: selectedTopic !== null || deskUrls.has(a.url) }),
+    );
     if (selectedTicker) list = list.filter((a) => a.ticker === selectedTicker);
     if (filter === "saved") list = list.filter((a) => interactions[a.url]?.saved);
     if (q) {
@@ -56,7 +106,7 @@ export function NewsFeed({
       );
     }
     return list;
-  }, [articles, selectedTicker, interactions, filter, prefs, q]);
+  }, [base, deskUrls, selectedTicker, selectedTopic, interactions, filter, prefs, q]);
 
   // Distinguish "no data" from "your preferences filtered everything out" from
   // "your search matched nothing".
@@ -66,35 +116,67 @@ export function NewsFeed({
     filtered.length === 0 &&
     filter === "all" &&
     !selectedTicker &&
-    articles.filter((a) => !interactions[a.url]?.deleted).length > 0;
+    base.filter((a) => !interactions[a.url]?.deleted).length > 0;
+
+  // A section is mostly desk rows, and Saved (outside a ticker) includes any you
+  // starred, so both hold the skeleton until the desks land — otherwise Saved
+  // briefly claims "No saved articles yet." and a section reshuffles.
+  const showSkeleton =
+    loading || (topicsLoading && (selectedTopic !== null || (filter === "saved" && !selectedTicker)));
 
   const [lead, ...rest] = filtered;
 
   return (
     <div className="flex flex-1 overflow-hidden border-r border-border">
-      {/* Ticker sidebar */}
+      {/* Sidebar: All, topic sections, then holdings */}
       <nav
-        className="w-28 shrink-0 border-r border-border overflow-y-auto py-3 flex flex-col"
+        className="w-36 shrink-0 border-r border-border overflow-y-auto py-3 flex flex-col"
         aria-label="News filter"
       >
         <div className="flex-1">
-          <button onClick={() => onTickerSelect(null)} className={tickerBtn(selectedTicker === null)}>
+          <button
+            onClick={() => onTickerSelect(null)}
+            className={topicBtn(selectedTicker === null && selectedTopic === null)}
+            aria-pressed={selectedTicker === null && selectedTopic === null}
+          >
             All
           </button>
-          {tickers.map((t) => (
-            <button
-              key={t}
-              onClick={() => onTickerSelect(t)}
-              className={tickerBtn(selectedTicker === t)}
-              aria-pressed={selectedTicker === t}
-            >
-              {t}
-            </button>
-          ))}
-          {tickers.length === 0 && !loading && (
-            <p className="px-4 py-2 text-xs text-muted-foreground leading-snug">
-              Upload a portfolio to see tickers here.
-            </p>
+
+          <SidebarLabel id="news-sidebar-topics">Topics</SidebarLabel>
+          <div role="group" aria-labelledby="news-sidebar-topics">
+            {NEWS_TOPICS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => onTopicSelect(t.id)}
+                className={topicBtn(selectedTopic === t.id)}
+                aria-pressed={selectedTopic === t.id}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {(tickers.length > 0 || !loading) && (
+            <>
+              <SidebarLabel id="news-sidebar-holdings">Holdings</SidebarLabel>
+              <div role="group" aria-labelledby="news-sidebar-holdings">
+                {tickers.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => onTickerSelect(t)}
+                    className={tickerBtn(selectedTicker === t)}
+                    aria-pressed={selectedTicker === t}
+                  >
+                    {t}
+                  </button>
+                ))}
+                {tickers.length === 0 && (
+                  <p className="px-4 py-2 text-xs text-muted-foreground leading-snug">
+                    Upload a portfolio to see tickers here.
+                  </p>
+                )}
+              </div>
+            </>
           )}
         </div>
       </nav>
@@ -160,7 +242,7 @@ export function NewsFeed({
           </div>
         </div>
 
-        {loading ? (
+        {showSkeleton ? (
           <FeedSkeleton />
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center flex-1 gap-2 px-6 text-center">
@@ -193,9 +275,15 @@ export function NewsFeed({
             ) : (
               <p className="text-sm text-muted-foreground">
                 {filter === "saved"
-                  ? "No saved articles yet."
+                  ? selectedTopic
+                    ? `No saved ${TOPIC_LABEL[selectedTopic]} articles.`
+                    : selectedTicker
+                    ? `No saved ${selectedTicker} articles.`
+                    : "No saved articles yet."
                   : selectedTicker
                   ? `No recent news for ${selectedTicker}.`
+                  : selectedTopic
+                  ? `No recent ${TOPIC_LABEL[selectedTopic]} news.`
                   : "No news found. Check back soon."}
               </p>
             )}
@@ -231,6 +319,26 @@ function tickerBtn(active: boolean) {
     "w-full text-left px-4 py-2 text-sm font-mono transition-colors duration-150",
     active ? "text-foreground font-semibold" : "text-muted-foreground hover:text-foreground",
   ].join(" ");
+}
+
+/* "All" and the topics are words, not symbols, so they're set in sans (the
+   Mono-for-Numbers rule). Same box as tickerBtn so every row is one height. */
+function topicBtn(active: boolean) {
+  return [
+    "w-full text-left px-4 py-2 text-sm transition-colors duration-150",
+    active ? "text-foreground font-semibold" : "text-muted-foreground hover:text-foreground",
+  ].join(" ");
+}
+
+function SidebarLabel({ id, children }: { id: string; children: React.ReactNode }) {
+  return (
+    <p
+      id={id}
+      className="px-4 pt-4 pb-1 text-xs font-medium uppercase tracking-[0.04em] text-muted-foreground"
+    >
+      {children}
+    </p>
+  );
 }
 
 /* Magnifier icon for the search box (SVG, not emoji). */
