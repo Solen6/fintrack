@@ -10,11 +10,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
 } from "recharts";
-
-interface Catalyst {
-  date: string;  // ISO date "YYYY-MM-DD"
-  label: string;
-}
+import { selectCatalysts, type Catalyst } from "@/lib/commodity-moves";
 
 interface CommodityData {
   id: string;
@@ -25,7 +21,6 @@ interface CommodityData {
   changePct: number;
   basePrice: number;
   data: Array<{ date: string; price: number }>;
-  catalysts: Catalyst[];
 }
 
 const TF_OPTIONS = ["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y"] as const;
@@ -34,6 +29,17 @@ type Timeframe = (typeof TF_OPTIONS)[number];
 const INTRADAY: Timeframe[] = ["1D", "5D"];
 // Catalyst markers only make sense on the daily, ≤1y windows
 const CATALYST_FRAMES: Timeframe[] = ["1M", "6M", "YTD", "1Y"];
+// Upper bounds; how many actually fit is worked out from the chart's width.
+const MAX_MARKERS: Partial<Record<Timeframe, number>> = { "1M": 3, "6M": 5, YTD: 6, "1Y": 6 };
+const CATALYST_RETRY_MS = 60_000;
+
+/* Chart geometry, needed to place badges in pixels rather than in sessions. */
+const Y_AXIS_WIDTH = 48;
+const RIGHT_MARGIN = 8;
+const BADGE_HEIGHT = 14;
+/** ~5.6px per character in Geist Mono at 9px, plus padding. */
+const badgeWidthFor = (symbol: string | null) =>
+  ((symbol ? `${symbol} ` : "").length + 7) * 5.6 + 8;
 
 // Thematic line color pinned to each commodity (by id), each evoking its material
 const COMMODITY_COLORS: Record<string, string> = {
@@ -129,6 +135,15 @@ export function CommodityChart() {
   const [tickerError, setTickerError] = useState<string | null>(null);
   const addRef = useRef<HTMLDivElement>(null);
   const tfRef = useRef<HTMLDivElement>(null);
+  // Catalysts per chart symbol. They cover a whole year, so one fetch serves every
+  // daily timeframe; `requested` stops a re-render from asking twice.
+  const [catalystMap, setCatalystMap] = useState<Record<string, Catalyst[]>>({});
+  const [catalystAttempt, setCatalystAttempt] = useState(0);
+  const requested = useRef(new Set<string>());
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Chart width, so badge spacing can be decided in pixels rather than sessions.
+  const plotBoxRef = useRef<HTMLDivElement>(null);
+  const [plotWidth, setPlotWidth] = useState(0);
 
   useEffect(() => {
     setLoading(true);
@@ -170,6 +185,16 @@ export function CommodityChart() {
       window.localStorage.setItem(CUSTOM_STORAGE_KEY, JSON.stringify(custom));
     } catch {}
   }, [custom]);
+
+  useEffect(() => {
+    const el = plotBoxRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setPlotWidth(entry.contentRect.width));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => () => clearTimeout(retryTimer.current), []);
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
@@ -262,31 +287,46 @@ export function CommodityChart() {
     return ticks;
   }, [chartData, timeframe]);
 
-  // Catalyst dates in range of actual data (primary commodity) — daily windows only
-  const catalysts = useMemo(() => {
-    if (!CATALYST_FRAMES.includes(timeframe)) return [];
-    const primary = activeCommodities.find((c) => c.data.length > 0);
-    if (!primary) return [];
-    const dates = new Set(primary.data.map((d) => d.date));
-    const allDates = primary.data.map((d) => d.date).sort();
-    const minDate = allDates[0] ?? "";
-    const maxDate = allDates[allDates.length - 1] ?? "";
+  // Markers describe ONE series — the first one the user picked that has data.
+  const primary =
+    active
+      .map((id) => activeCommodities.find((c) => c.id === id))
+      .find((c): c is CommodityData => !!c && c.data.length > 0) ?? null;
+  const primarySymbol = primary?.symbol ?? null;
+  const showsCatalysts = CATALYST_FRAMES.includes(timeframe);
+  // With one line the badge is unambiguous; with several it needs to say whose move it is.
+  const labelSymbol = activeCommodities.length > 1 ? primarySymbol : null;
 
-    const events = primary.catalysts ?? [];
-    return events
-      .filter((c) => c.date >= minDate && c.date <= maxDate)
-      .map((c) => {
-        if (dates.has(c.date)) return c;
-        // Snap to nearest available trading day
-        const nearest = allDates.reduce((a, b) =>
-          Math.abs(new Date(b).getTime() - new Date(c.date).getTime()) <
-          Math.abs(new Date(a).getTime() - new Date(c.date).getTime())
-            ? b
-            : a
-        );
-        return { ...c, date: nearest };
+  useEffect(() => {
+    if (!primarySymbol || !showsCatalysts || catalystMap[primarySymbol]) return;
+    const symbol = primarySymbol;
+    const attemptKey = `${symbol}#${catalystAttempt}`;
+    if (requested.current.has(attemptKey)) return;
+    requested.current.add(attemptKey);
+    fetch(`/api/commodities/catalysts?symbol=${encodeURIComponent(symbol)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => {
+        const list: Catalyst[] = Array.isArray(d?.catalysts) ? d.catalysts : [];
+        setCatalystMap((prev) => ({ ...prev, [symbol]: list }));
+      })
+      .catch(() => {
+        // A failed lookup shouldn't mean no markers for the rest of the visit.
+        clearTimeout(retryTimer.current);
+        retryTimer.current = setTimeout(() => setCatalystAttempt((n) => n + 1), CATALYST_RETRY_MS);
       });
-  }, [activeCommodities, timeframe]);
+  }, [primarySymbol, showsCatalysts, catalystAttempt, catalystMap]);
+
+  // The year's biggest moves that fall inside this window, thinned to the badges
+  // that actually FIT side by side — daily windows only.
+  const catalysts = useMemo(() => {
+    if (!showsCatalysts || !primary) return [];
+    const dates = primary.data.map((d) => d.date);
+    const inner = plotWidth - Y_AXIS_WIDTH - RIGHT_MARGIN;
+    const badgeWidth = badgeWidthFor(labelSymbol);
+    const minGap =
+      inner > 0 && dates.length > 0 ? (dates.length * (badgeWidth + 8)) / inner : undefined;
+    return selectCatalysts(catalystMap[primary.symbol] ?? [], dates, MAX_MARKERS[timeframe] ?? 0, minGap);
+  }, [primary, catalystMap, showsCatalysts, timeframe, plotWidth, labelSymbol]);
 
   return (
     <section className="border-t border-border px-6 py-4 shrink-0" style={{ height: 300 }}>
@@ -427,7 +467,7 @@ export function CommodityChart() {
       </div>
 
       {/* Chart */}
-      <div style={{ height: 186 }}>
+      <div style={{ height: 186 }} ref={plotBoxRef}>
         {loading ? (
           <div className="w-full h-full rounded-sm animate-pulse" style={{ background: "oklch(0.11 0 0)" }} />
         ) : active.length === 0 ? (
@@ -440,7 +480,12 @@ export function CommodityChart() {
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+            <LineChart
+              data={chartData}
+              // Headroom for the move badges, reserved for the whole timeframe so
+              // the plot doesn't jump when catalysts arrive.
+              margin={{ top: showsCatalysts ? 20 : 4, right: RIGHT_MARGIN, left: 0, bottom: 0 }}
+            >
               <XAxis
                 dataKey="date"
                 ticks={axisTicks}
@@ -457,22 +502,37 @@ export function CommodityChart() {
                 width={48}
               />
               <Tooltip
-                content={<CustomTooltip commodities={activeCommodities} timeframe={timeframe} />}
+                content={
+                  <CustomTooltip
+                    commodities={activeCommodities}
+                    timeframe={timeframe}
+                    catalysts={catalysts}
+                    catalystSymbol={labelSymbol}
+                  />
+                }
                 cursor={{ stroke: "oklch(0.28 0 0)", strokeWidth: 1 }}
               />
 
               {/* Zero line */}
               <ReferenceLine y={0} stroke="oklch(0.22 0 0)" strokeWidth={1} />
 
-              {/* Catalyst events */}
+              {/* Catalysts: the window's biggest moves, badge = the move, hover = why */}
               {catalysts.map((cat) => (
                 <ReferenceLine
-                  key={cat.date + cat.label}
+                  key={cat.date}
                   x={cat.date}
-                  stroke="oklch(0.30 0 0)"
+                  stroke={cat.pct >= 0 ? "var(--positive)" : "var(--negative)"}
+                  strokeOpacity={0.35}
                   strokeWidth={1}
                   strokeDasharray="3 3"
-                  label={<CatalystLabel value={cat.label} />}
+                  label={
+                    <CatalystBadge
+                      catalyst={cat}
+                      symbol={labelSymbol}
+                      minX={Y_AXIS_WIDTH}
+                      maxX={plotWidth - RIGHT_MARGIN}
+                    />
+                  }
                 />
               ))}
 
@@ -499,17 +559,24 @@ export function CommodityChart() {
 
 /* ─── Custom tooltip ─── */
 function CustomTooltip({
-  active, payload, label, commodities, timeframe,
+  active, payload, label, commodities, timeframe, catalysts, catalystSymbol,
 }: {
   active?: boolean;
   payload?: Array<{ dataKey: string; value: number }>;
   label?: string;
   commodities: CommodityData[];
   timeframe: Timeframe;
+  catalysts: Catalyst[];
+  /** Set when more than one series is charted — the markers describe this one. */
+  catalystSymbol?: string | null;
 }) {
   if (!active || !payload?.length || !label) return null;
+  const cat = catalysts.find((c) => c.date === label);
   return (
-    <div className="rounded-sm border border-border px-3 py-2 text-xs font-mono" style={{ background: "oklch(0.14 0 0)" }}>
+    <div
+      className="rounded-sm border border-border px-3 py-2 text-xs font-mono max-w-[280px]"
+      style={{ background: "oklch(0.14 0 0)" }}
+    >
       <p className="text-muted-foreground mb-1.5">{formatTooltipDate(label, timeframe)}</p>
       {payload.map((p) => {
         const c = commodities.find((x) => x.id === p.dataKey);
@@ -520,17 +587,90 @@ function CustomTooltip({
           </p>
         );
       })}
+      {cat && (
+        <div className="mt-2 pt-2 border-t border-border font-sans whitespace-normal">
+          <p className="font-mono" style={{ color: moveColor(cat.pct) }}>
+            {catalystSymbol ? `${catalystSymbol} ` : ""}{formatMove(cat.pct)} on the day
+          </p>
+          {cat.kind === "news" ? (
+            <>
+              <p className="text-foreground leading-snug mt-1">{cat.label}</p>
+              <p className="text-muted-foreground mt-0.5">{cat.source} · click the badge to read</p>
+            </>
+          ) : (
+            <p className="text-muted-foreground leading-snug mt-1">
+              {cat.kind === "macro"
+                ? `No headline found — coincided with ${cat.label}.`
+                : "No headline found for this move."}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-/* ─── Catalyst label rendered as SVG text ─── */
-function CatalystLabel({ value, viewBox }: { value: string; viewBox?: { x?: number; y?: number } }) {
-  const x = (viewBox?.x ?? 0) + 3;
-  const y = (viewBox?.y ?? 0) + 14;
-  return (
-    <text x={x} y={y} fontSize={9} fill="oklch(0.44 0 0)" style={{ userSelect: "none" }}>
-      {value}
-    </text>
+/* ─── Catalyst badges ─── */
+const moveColor = (pct: number) => (pct >= 0 ? "var(--positive)" : "var(--negative)");
+const formatMove = (pct: number) => `${pct >= 0 ? "▲" : "▼"} ${Math.abs(pct).toFixed(1)}%`;
+
+/* Rendered as the ReferenceLine's label, so it sits in the headroom above the plot.
+   Colour is the move's sign (the Earned Color Rule: this IS gain/loss). A news
+   catalyst links to its article; the native <title> gives the headline on hover
+   even outside the chart tooltip. */
+function CatalystBadge({
+  catalyst,
+  symbol,
+  minX,
+  maxX,
+  viewBox,
+}: {
+  catalyst: Catalyst;
+  /** Shown only when several series share the chart. */
+  symbol?: string | null;
+  minX: number;
+  maxX: number;
+  viewBox?: { x?: number; y?: number };
+}) {
+  const text = `${symbol ? `${symbol} ` : ""}${formatMove(catalyst.pct)}`;
+  const width = text.length * 5.6 + 8;
+  const lineX = viewBox?.x ?? 0;
+  // The dashed line stays on the date; only the badge slides inward, so a move on
+  // the newest session isn't half-cut at the edge.
+  const x = maxX > minX ? Math.min(Math.max(lineX, minX + width / 2), maxX - width / 2) : lineX;
+  const top = (viewBox?.y ?? 0) - 17;
+  const color = moveColor(catalyst.pct);
+  const title =
+    catalyst.kind === "news"
+      ? `${catalyst.label} — ${catalyst.source}`
+      : catalyst.kind === "macro"
+      ? `${text} — coincided with ${catalyst.label}`
+      : `${text} — no headline found`;
+
+  const badge = (
+    <g style={{ cursor: catalyst.url ? "pointer" : "default", userSelect: "none" }}>
+      <title>{title}</title>
+      <rect
+        x={x - width / 2}
+        y={top}
+        width={width}
+        height={BADGE_HEIGHT}
+        rx={2}
+        fill="oklch(0.12 0 0)"
+        stroke={color}
+        strokeOpacity={0.55}
+      />
+      <text x={x} y={top + 10} textAnchor="middle" fontSize={9} className="font-mono" fill={color}>
+        {text}
+      </text>
+    </g>
+  );
+
+  return catalyst.url ? (
+    <a href={catalyst.url} target="_blank" rel="noopener noreferrer" aria-label={title}>
+      {badge}
+    </a>
+  ) : (
+    badge
   );
 }

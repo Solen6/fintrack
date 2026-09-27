@@ -1,6 +1,7 @@
 import type { NewsArticle } from "@/app/api/news/route";
 
-function decode(s: string): string {
+/** Feed text → plain text: CDATA and tags stripped, entities decoded. */
+export function decode(s: string): string {
   return s
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, c: string) => c)
     .replace(/<[^>]+>/g, "")
