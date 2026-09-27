@@ -104,7 +104,7 @@ export const PREF_SOURCES: CuratedSource[] = [
     id: "wsj",
     label: "WSJ",
     aliases: ["wsj", "wall street journal", "dow jones"],
-    rss: { name: "WSJ Markets", url: "https://feeds.a.dj.com/rss/RSSMarketsMain.aspx" },
+    rss: { name: "WSJ Markets", url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain" },
     access: SUBSCRIBER_ACCESS,
   },
   {
