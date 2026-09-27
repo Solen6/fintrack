@@ -63,7 +63,6 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
 const SUGGESTIONS = [
   { name: "WSJ Markets",      url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain" },
   { name: "NYT Business",     url: "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml" },
-  { name: "Reuters Business", url: "https://feeds.reuters.com/reuters/businessNews" },
   { name: "CNBC Finance",     url: "https://www.cnbc.com/id/10000664/device/rss/rss.html" },
   { name: "MarketWatch",      url: "https://feeds.marketwatch.com/marketwatch/topstories/" },
   { name: "Motley Fool",      url: "https://www.fool.com/feeds/index.aspx" },

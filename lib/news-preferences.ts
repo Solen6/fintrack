@@ -115,19 +115,15 @@ export const PREF_SOURCES: CuratedSource[] = [
     access: SUBSCRIBER_ACCESS,
   },
   {
-    id: "reuters",
-    label: "Reuters",
-    aliases: ["reuters"],
-    rss: { name: "Reuters Business", url: "https://feeds.reuters.com/reuters/businessNews" },
-  },
-  {
     id: "cnbc",
     label: "CNBC",
     aliases: ["cnbc"],
     rss: { name: "CNBC Finance", url: "https://www.cnbc.com/id/10000664/device/rss/rss.html" },
   },
-  // Bloomberg & FT have no reliable free RSS feed; selecting them only affects
-  // visibility of their articles arriving via Finnhub / Alpha Vantage.
+  // Bloomberg, Reuters & FT have no reliable free RSS feed (Reuters retired its
+  // public feeds; feeds.reuters.com no longer resolves), so selecting them only
+  // affects visibility of their articles arriving via Finnhub / Alpha Vantage.
+  { id: "reuters", label: "Reuters", aliases: ["reuters"] },
   { id: "bloomberg", label: "Bloomberg", aliases: ["bloomberg"], access: SUBSCRIBER_ACCESS },
   {
     id: "financial-times",
